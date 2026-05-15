@@ -106,6 +106,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+LANES="$(printf '%s' "$LANES" | tr '[:upper:]' '[:lower:]')"
+
 mkdir -p "$OUT_ROOT"
 STATUS_LOG="$OUT_ROOT/sweep-status.jsonl"
 : > "$STATUS_LOG"
@@ -141,7 +143,7 @@ if [[ "$SKIP_PREFLIGHT" -eq 0 ]]; then
     # single chosen host needs --launch + log capture before any benchmark
     # traffic; otherwise the launcher-log verification has no log to read.
     PREFLIGHT_HOSTS=()
-    if [[ "$SERIAL" -eq 0 ]] && [[ "${LANES,,}" == "both" ]]; then
+    if [[ "$SERIAL" -eq 0 ]] && [[ "$LANES" == "both" ]]; then
         PREFLIGHT_HOSTS+=("$HOST_LANE_A" "$HOST_LANE_B")
     else
         PREFLIGHT_HOSTS+=("$HOST_LANE_A")
@@ -259,7 +261,7 @@ run_lane_serial() {
 # ----------------------------------------------------------- dispatch logic
 
 LANES_TO_RUN=()
-case "${LANES,,}" in
+case "$LANES" in
     a) LANES_TO_RUN=("A");;
     b) LANES_TO_RUN=("B");;
     both) LANES_TO_RUN=("A" "B");;
