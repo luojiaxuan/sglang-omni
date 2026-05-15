@@ -27,6 +27,13 @@ class RunConfig:
     warmup: int = 1
     disable_tqdm: bool = False
     timeout_s: int = 300
+    # read_bufsize controls aiohttp ClientSession's read buffer size in bytes.
+    # When None, aiohttp's default (~64 KiB) is used. Streaming benchmarks set
+    # this to a small value (e.g. 1024) so per-chunk SSE frames arrive at the
+    # parser without being coalesced behind a large prefetch window. The
+    # underlying TCP read still pulls MTU-sized chunks; this knob signals
+    # intent and tightens the application-visible buffer high-watermark.
+    read_bufsize: int | None = None
 
 
 class BenchmarkRunner:
@@ -47,7 +54,10 @@ class BenchmarkRunner:
 
     async def run(self, samples: list, send_fn: SendFn) -> list[RequestResult]:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        session_kwargs: dict = {"timeout": timeout}
+        if self.config.read_bufsize is not None:
+            session_kwargs["read_bufsize"] = self.config.read_bufsize
+        async with aiohttp.ClientSession(**session_kwargs) as session:
             if self.config.warmup > 0:
                 await self._warmup(session, samples, send_fn)
 

@@ -10,14 +10,52 @@ from __future__ import annotations
 import ast
 import base64
 import io
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from datasets import concatenate_datasets, load_dataset
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+
+_DEFAULT_REVISIONS_PATH = Path(__file__).parent / "mmmu_revisions.json"
+
+
+class DatasetRevisionMissing(RuntimeError):
+    """Raised when a dataset repo is loaded without a pinned revision SHA.
+
+    The benchmark fails closed on missing revisions so MMMU comparisons stay
+    bit-reproducible. To resolve, run the preflight gate
+    (``benchmarks/scripts/preflight_mmmu_sweep.py --update-revisions``) which
+    queries HuggingFace for the current resolved SHA of each repo this
+    project consumes and writes them into
+    ``benchmarks/dataset/mmmu_revisions.json``.
+    """
+
+
+def _load_revision_map(path: str | os.PathLike | None) -> dict[str, str]:
+    """Load the per-repo revision dict. Returns {} when file is missing."""
+    revisions_path = Path(path) if path else _DEFAULT_REVISIONS_PATH
+    if not revisions_path.exists():
+        return {}
+    raw = json.loads(revisions_path.read_text())
+    return dict(raw.get("revisions") or {})
+
+
+def _require_revision(repo_id: str, revisions: dict[str, str]) -> str:
+    sha = revisions.get(repo_id)
+    if not sha:
+        raise DatasetRevisionMissing(
+            f"No revision pinned for HuggingFace dataset repo {repo_id!r}. "
+            f"Populate it via `benchmarks/scripts/preflight_mmmu_sweep.py "
+            f"--update-revisions` before running the sweep, then commit the "
+            f"updated benchmarks/dataset/mmmu_revisions.json."
+        )
+    return sha
 
 DOMAIN_CAT2SUB_CAT = {
     "Art and Design": ["Art", "Art_Theory", "Design", "Music"],
@@ -139,15 +177,18 @@ def format_mmmu_prompt(
     return prompt
 
 
-def _load_full_mmmu() -> list:
+def _load_full_mmmu(revisions: dict[str, str]) -> list:
     """Load and merge all 30 subjects from MMMU/MMMU, sorted by sample id."""
+    from datasets import concatenate_datasets, load_dataset
+
     subjects: list[str] = []
     for subs in DOMAIN_CAT2SUB_CAT.values():
         subjects.extend(subs)
 
+    revision = _require_revision("MMMU/MMMU", revisions)
     ds_list = []
     for subj in subjects:
-        d = load_dataset("MMMU/MMMU", subj, split="validation")
+        d = load_dataset("MMMU/MMMU", subj, split="validation", revision=revision)
         d = d.add_column("__subject__", [subj] * len(d))
         ds_list.append(d)
 
@@ -234,6 +275,7 @@ def load_mmmu_samples(
     *,
     repo_id: str | None = None,
     instruction_override: str | None = None,
+    revisions_path: str | os.PathLike | None = None,
 ) -> list[MMMUSample]:
     """Load MMMU validation samples.
 
@@ -245,11 +287,21 @@ def load_mmmu_samples(
             "zhaochenyang20/mmmu-ci-50" to load a pre-built subset.
         instruction_override: Optional replacement for the default
             multiple-choice instruction block (see format_mmmu_prompt).
+        revisions_path: Optional override for the per-repo revision JSON.
+            Defaults to ``benchmarks/dataset/mmmu_revisions.json``. The
+            referenced repo must have an entry in ``revisions``; missing
+            entries raise ``DatasetRevisionMissing`` so MMMU runs stay
+            bit-reproducible against a pinned dataset snapshot.
     """
+    from datasets import load_dataset
+
+    revisions = _load_revision_map(revisions_path)
+
     if repo_id is not None:
-        ds = load_dataset(repo_id, split="validation")
+        revision = _require_revision(repo_id, revisions)
+        ds = load_dataset(repo_id, split="validation", revision=revision)
     else:
-        ds = _load_full_mmmu()
+        ds = _load_full_mmmu(revisions)
 
     samples = _dataset_to_samples(ds, max_samples, instruction_override)
     logger.info(f"Loaded {len(samples)} MMMU samples")

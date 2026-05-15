@@ -1,0 +1,5 @@
+{
+  "$schema_version": 1,
+  "description": "HuggingFace dataset revision SHAs per repo for MMMU benchmarking. The MMMU benchmark loader fails closed when a repo is loaded without a revision entry, forcing the preflight gate (benchmarks/scripts/preflight_mmmu_sweep.py) to populate or refresh this file before any sweep runs. Edit by running the preflight with --update-revisions; do not handcraft SHAs.",
+  "revisions": {}
+}

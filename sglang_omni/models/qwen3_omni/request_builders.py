@@ -342,6 +342,7 @@ def build_sglang_thinker_request(
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
     seed = params.get("seed")
+    ignore_eos = bool(params.get("ignore_eos", False))
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -354,6 +355,7 @@ def build_sglang_thinker_request(
         stop=stop,
         stop_token_ids=stop_token_ids,
         sampling_seed=seed,
+        ignore_eos=ignore_eos,
     )
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)

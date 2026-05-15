@@ -118,6 +118,33 @@ class MMMUEvalConfig:
     repo_id: str | None = None
     prompt_override: str | None = None
     timeout_s: int = 300
+    # Backend dispatch: "omni" uses the sglang-omni top-level images field;
+    # "sglang" uses OpenAI-style messages[].content with image_url parts.
+    # See benchmarks/tasks/visual_understand.py:build_mmmu_payload.
+    backend: str = "omni"
+    # Streaming: when True, send_fn consumes the SSE response and populates
+    # TTFT / inter-content-chunk metrics. Incompatible with enable_audio.
+    stream: bool = False
+    # Reproducibility knobs. seed forwards to the upstream SGLang sampler
+    # via SamplingParams.sampling_seed. ignore_eos forces decoding to
+    # continue until max_tokens (Lane B in the #379 sweep).
+    seed: int | None = 42
+    ignore_eos: bool = False
+    # Lane: "A" = natural EOS with default max_tokens, "B" = ignore_eos with
+    # max_tokens=256 for decode-throughput parity. Setting lane B implies
+    # ignore_eos=True and max_tokens=256 unless the caller overrides them.
+    lane: str = "A"
+    # Per-host bookkeeping for the sweep script. reps is the number of
+    # paired repetitions the orchestrator runs per cell; this CLI runs one
+    # sweep per invocation, so reps lives in the metadata block (not in
+    # the eval loop itself). repetition_index identifies the current run
+    # within the paired-rep cycle.
+    reps: int = 3
+    repetition_index: int = 0
+    # Per-repo dataset revision pinning. None = use the default JSON file at
+    # benchmarks/dataset/mmmu_revisions.json. Override for tests or to point
+    # at an alternate revision-pin file.
+    dataset_revisions: str | None = None
 
 
 def _build_base_url(config: MMMUEvalConfig) -> str:
@@ -137,6 +164,7 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         config.max_samples,
         repo_id=config.repo_id,
         instruction_override=config.prompt_override,
+        revisions_path=config.dataset_revisions,
     )
     logger.info(f"Prepared {len(samples)} MMMU samples")
 
@@ -148,8 +176,12 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
     send_fn = make_mmmu_send_fn(
         config.model,
         api_url,
+        backend=config.backend,
         max_tokens=config.max_tokens,
         temperature=config.temperature,
+        stream=config.stream,
+        seed=config.seed,
+        ignore_eos=config.ignore_eos,
         enable_audio=config.enable_audio,
         audio_dir=audio_dir,
     )
@@ -161,6 +193,10 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
             timeout_s=config.timeout_s,
+            # Streaming runs need a small read buffer so per-chunk SSE
+            # arrivals are visible to the parser without a 64KB prefetch
+            # window coalescing them.
+            read_bufsize=1024 if config.stream else None,
         )
     )
     request_results = await runner.run(samples, send_fn)
@@ -180,6 +216,13 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
         "max_concurrency": config.max_concurrency,
         "warmup": config.warmup,
         "enable_audio": config.enable_audio,
+        "backend": config.backend,
+        "stream": config.stream,
+        "seed": config.seed,
+        "ignore_eos": config.ignore_eos,
+        "lane": config.lane,
+        "reps": config.reps,
+        "repetition_index": config.repetition_index,
     }
 
     results = {
@@ -201,13 +244,35 @@ async def run_mmmu_eval(config: MMMUEvalConfig) -> dict:
 
 
 def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
+    # Apply lane defaults BEFORE constructing the config so explicit
+    # --max-tokens / --ignore-eos overrides the user passed still win.
+    lane = args.lane.upper()
+    if lane == "B":
+        # Fixed-length decode-throughput lane: ignore EOS, cap output length.
+        ignore_eos = True if not args.no_ignore_eos else False
+        max_tokens = args.max_tokens if args.max_tokens != 2048 else 256
+    elif lane == "A":
+        ignore_eos = args.ignore_eos
+        max_tokens = args.max_tokens
+    else:
+        raise SystemExit(
+            f"--lane must be 'A' (natural EOS) or 'B' (ignore_eos + 256 tokens), got {args.lane!r}"
+        )
+
+    if args.stream and args.enable_audio:
+        raise SystemExit(
+            "--stream and --enable-audio cannot be combined: the audio response shape "
+            "does not flow through the per-token SSE path. This combination is "
+            "explicitly out of scope for this PR."
+        )
+
     return MMMUEvalConfig(
         base_url=args.base_url,
         host=args.host,
         port=args.port,
         model=args.model,
         max_samples=args.max_samples,
-        max_tokens=args.max_tokens,
+        max_tokens=max_tokens,
         temperature=args.temperature,
         output_dir=args.output_dir,
         max_concurrency=args.max_concurrency,
@@ -218,6 +283,14 @@ def _config_from_args(args: argparse.Namespace) -> MMMUEvalConfig:
         asr_device=args.asr_device,
         lang=args.lang,
         repo_id=args.repo_id,
+        backend=args.backend,
+        stream=args.stream,
+        seed=args.seed,
+        ignore_eos=ignore_eos,
+        lane=lane,
+        reps=args.reps,
+        repetition_index=args.repetition_index,
+        dataset_revisions=args.dataset_revisions,
     )
 
 
@@ -295,6 +368,86 @@ def main() -> None:
         default=None,
         help="HuggingFace dataset repo (e.g. 'zhaochenyang20/mmmu-ci-50'). "
         "Defaults to loading the full MMMU/MMMU (all 30 subjects).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["omni", "sglang"],
+        default="omni",
+        help=(
+            "Which backend payload shape to emit. 'omni' uses sglang-omni's "
+            "top-level images field; 'sglang' uses OpenAI-style messages[]"
+            ".content image_url parts ordered [image, image, ..., text] "
+            "mirroring Qwen3OmniPreprocessor._build_multimodal_messages."
+        ),
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Enable per-token SSE streaming and capture client-side TTFT + "
+            "inter-content-chunk latency. Incompatible with --enable-audio."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help=(
+            "Sampling seed forwarded to upstream SGLang SamplingParams via "
+            "sampling_seed. Default 42 for reproducibility."
+        ),
+    )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help=(
+            "Force the sampler to keep emitting until max_tokens by ignoring "
+            "EOS. Used for decode-throughput parity (Lane B). Auto-enabled "
+            "when --lane B is selected; pass --no-ignore-eos to opt out of "
+            "the lane-B default."
+        ),
+    )
+    parser.add_argument(
+        "--no-ignore-eos",
+        action="store_true",
+        help="Suppress lane-B's automatic ignore_eos enable.",
+    )
+    parser.add_argument(
+        "--lane",
+        choices=["A", "B", "a", "b"],
+        default="A",
+        help=(
+            "A = natural EOS with --max-tokens 2048 (user-visible MMMU "
+            "latency). B = --ignore-eos with --max-tokens 256 (fixed-length "
+            "decode-throughput parity)."
+        ),
+    )
+    parser.add_argument(
+        "--reps",
+        type=int,
+        default=3,
+        help=(
+            "Number of paired repetitions the sweep orchestrator runs per "
+            "cell. Carried into the run-metadata block; this CLI runs one "
+            "sweep per invocation."
+        ),
+    )
+    parser.add_argument(
+        "--repetition-index",
+        type=int,
+        default=0,
+        help="Index of this run within the paired-rep cycle.",
+    )
+    parser.add_argument(
+        "--dataset-revisions",
+        type=str,
+        default=None,
+        help=(
+            "Path to the per-repo dataset revision JSON. Defaults to "
+            "benchmarks/dataset/mmmu_revisions.json. The loader fails closed "
+            "when the chosen repo lacks an entry; populate it via the "
+            "preflight gate."
+        ),
     )
     args = parser.parse_args()
 

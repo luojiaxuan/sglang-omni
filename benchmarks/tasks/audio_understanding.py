@@ -210,7 +210,8 @@ def make_mmsu_send_fn(
             )
 
             elapsed = time.perf_counter() - start_time
-            result.engine_time_s = elapsed
+            result.client_wall_time_s = elapsed
+            result.timing_source = "client_wall_time_s"
             if result.audio_duration_s > 0:
                 result.rtf = elapsed / result.audio_duration_s
             if result.completion_tokens > 0 and elapsed > 0:

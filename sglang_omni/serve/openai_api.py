@@ -376,6 +376,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         stop=stop,
         seed=req.seed,
         max_new_tokens=req.effective_max_tokens,
+        ignore_eos=req.ignore_eos,
     )
 
     # Convert messages

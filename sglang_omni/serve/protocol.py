@@ -62,6 +62,13 @@ class ChatCompletionRequest(BaseModel):
     max_completion_tokens: int | None = None
     stop: str | list[str] | None = None
     seed: int | None = None
+    # When True, force generation to reach max_tokens regardless of EOS tokens.
+    # Used by fixed-length decode-throughput benchmarks (Lane B in the issue
+    # #379 MMMU sweep) so omni and sglang backends compare on identical
+    # generated-token counts. Threads through _build_chat_generate_request
+    # into GenerateRequest.sampling and ultimately into the upstream SGLang
+    # SamplingParams instantiation inside build_sglang_thinker_request.
+    ignore_eos: bool = False
 
     # Streaming
     stream: bool = False

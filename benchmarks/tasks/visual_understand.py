@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import random
 import re
 import time
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 import aiohttp
 
@@ -220,23 +221,204 @@ def parse_multi_choice_response(
     return candidates[max(range(len(candidates)), key=starts.__getitem__)], False
 
 
+def build_mmmu_payload(
+    sample: MMMUSample,
+    model_name: str,
+    *,
+    backend: str,
+    modalities: list[str],
+    max_tokens: int,
+    temperature: float,
+    stream: bool,
+    enable_audio: bool,
+    seed: int | None = None,
+    ignore_eos: bool = False,
+) -> dict:
+    """Render the chat-completions payload for one MMMU sample.
+
+    Two backend dialects are supported:
+
+    - ``backend="omni"`` uses sglang-omni's top-level ``images`` field with
+      data-URI strings positional in the dataset image order. ``messages``
+      contains a single user message whose ``content`` is the plain prompt
+      string.
+    - ``backend="sglang"`` uses OpenAI-style ``messages[].content`` as a
+      list of typed parts in order
+      ``[image_url part for image_1, ..., image_url part for image_N, text part]``.
+      This mirrors ``Qwen3OmniPreprocessor._build_multimodal_messages()``
+      at ``sglang_omni/models/qwen3_omni/components/preprocessor.py:158``,
+      which documents ``"Placeholders come BEFORE text (Qwen3-Omni
+      format)"`` — the SGLang payload must respect the same positional
+      contract for the comparison to be semantically equivalent.
+
+    Both backends carry the same ``model``, ``modalities``,
+    ``max_tokens``, ``temperature``, ``stream``, and optional ``seed`` /
+    ``ignore_eos`` fields so the only request-shape delta is the
+    image-attachment convention.
+    """
+    image_uris = [image_to_data_uri(img) for img in sample.images]
+
+    if backend == "omni":
+        payload: dict = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": sample.prompt}],
+            "images": image_uris,
+            "modalities": modalities,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": stream,
+        }
+    elif backend == "sglang":
+        content_parts: list[dict] = []
+        for uri in image_uris:
+            content_parts.append({"type": "image_url", "image_url": {"url": uri}})
+        content_parts.append({"type": "text", "text": sample.prompt})
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": content_parts}],
+            "modalities": modalities,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": stream,
+        }
+    else:
+        raise ValueError(f"Unsupported backend: {backend!r}; expected 'omni' or 'sglang'")
+
+    if enable_audio:
+        payload["audio"] = {"format": "wav"}
+    if seed is not None:
+        payload["seed"] = seed
+    if ignore_eos:
+        payload["ignore_eos"] = True
+    return payload
+
+
+async def consume_sse_stream(
+    response: aiohttp.ClientResponse,
+    result: RequestResult,
+    request_send_time: float,
+    *,
+    clock: Callable[[], float] = time.perf_counter,
+) -> None:
+    """Consume an SSE chat-completions stream and populate result in place.
+
+    Frame classification (mirroring ``sglang_omni/serve/openai_api.py``
+    ``_chat_stream`` at lines 257-355):
+
+    - ``data: [DONE]`` sentinel: end of stream; not timed, not parsed.
+    - Role-only frame (``delta.role`` set, no ``delta.content``): parsed
+      but neither timed nor concatenated. Skipped silently.
+    - Content delta frame (non-empty ``delta.content``): timestamped via
+      a relative offset from ``request_send_time``; text concatenated
+      into ``result.text``; ``content_chunk_count`` incremented.
+    - Finish chunk (``finish_reason`` set, possibly carrying ``usage``):
+      parsed for ``prompt_tokens`` / ``completion_tokens`` extraction
+      but not timed.
+
+    TCP read boundaries do not align with SSE frame boundaries; the
+    parser buffers raw bytes and only acts on completed ``data: <json>``
+    frames terminated by ``\\n\\n``.
+
+    The ``clock`` parameter exists for deterministic unit tests; supply a
+    fake callable that returns scripted floats to drive specific
+    timestamps. In production, leave the default ``time.perf_counter``.
+    """
+    buffer = bytearray()
+    saw_done = False
+    final_usage: dict | None = None
+
+    async for chunk in response.content.iter_any():
+        if not chunk:
+            continue
+        buffer.extend(chunk)
+        while b"\n\n" in buffer:
+            sep_idx = buffer.index(b"\n\n")
+            raw_frame = bytes(buffer[:sep_idx])
+            del buffer[: sep_idx + 2]
+
+            for raw_line in raw_frame.split(b"\n"):
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                body = line[len("data: "):]
+                if body == "[DONE]":
+                    saw_done = True
+                    continue
+                try:
+                    frame = json.loads(body)
+                except json.JSONDecodeError:
+                    logger.warning("SSE: skipping malformed JSON frame: %r", body[:200])
+                    continue
+
+                choices = frame.get("choices") or []
+                delta = (choices[0].get("delta") if choices else {}) or {}
+                finish_reason = choices[0].get("finish_reason") if choices else None
+                content = delta.get("content")
+
+                if content:
+                    arrival = clock()
+                    offset_ms = max(0.0, (arrival - request_send_time) * 1000.0)
+                    if result.ttft_s is None:
+                        result.ttft_s = round(arrival - request_send_time, 6)
+                    result.content_chunk_offsets_ms.append(round(offset_ms, 4))
+                    result.content_chunk_count += 1
+                    result.text += content
+                elif finish_reason is not None:
+                    usage = frame.get("usage")
+                    if isinstance(usage, dict):
+                        final_usage = usage
+                # else: role-only frame, parsed but ignored for timing/concat.
+
+        if saw_done:
+            break
+
+    if final_usage:
+        prompt_tok = final_usage.get("prompt_tokens")
+        comp_tok = final_usage.get("completion_tokens")
+        if prompt_tok is not None:
+            result.prompt_tokens = int(prompt_tok)
+        if comp_tok is not None:
+            result.completion_tokens = int(comp_tok)
+
+
 def make_mmmu_send_fn(
     model_name: str,
     api_url: str,
     *,
+    backend: str = "omni",
     max_tokens: int = 2048,
     temperature: float = 0.0,
+    stream: bool = False,
+    seed: int | None = None,
+    ignore_eos: bool = False,
     enable_audio: bool = False,
     audio_dir: str | None = None,
 ) -> SendFn:
     """Return a *send_fn* that sends an MMMUSample to /v1/chat/completions.
 
-    Uses the sglang-omni request format with a top-level ``images`` field.
-    When *enable_audio* is ``False`` (default), requests text-only output.
-    When ``True``, requests ``["text", "audio"]`` modalities, decodes the
-    audio response, saves it as a WAV file under *audio_dir*, and stores
-    the path in ``RequestResult.wav_path``.
+    ``backend="omni"`` uses sglang-omni's top-level ``images`` field;
+    ``backend="sglang"`` uses OpenAI-style ``messages[].content`` parts.
+    See ``build_mmmu_payload`` for the exact payload contract.
+
+    ``stream=True`` enables per-content-chunk SSE consumption and
+    populates ``ttft_s`` / ``content_chunk_offsets_ms`` /
+    ``content_chunk_count`` on the result. Streaming is incompatible
+    with ``enable_audio=True`` because the audio-output path does not
+    use the same SSE shape; callers must pick one or the other.
+
+    Timing semantics: this send_fn populates ``client_wall_time_s`` and
+    sets ``timing_source = "client_wall_time_s"``; aggregate throughput
+    therefore appears under the ``tok_per_s_clientwall_agg`` key in
+    metrics, not ``tok_per_s_engine_agg``.
     """
+    if stream and enable_audio:
+        raise ValueError(
+            "stream + enable_audio is out of scope: the audio response shape "
+            "does not flow through the per-token SSE path"
+        )
+    if backend not in ("omni", "sglang"):
+        raise ValueError(f"backend must be 'omni' or 'sglang', got {backend!r}")
+
     modalities = ["text", "audio"] if enable_audio else ["text"]
     if enable_audio:
         import soundfile as sf
@@ -246,61 +428,80 @@ def make_mmmu_send_fn(
     ) -> RequestResult:
         result = RequestResult(
             request_id=sample.sample_id,
-            text=sample.prompt[:60],
+            text="" if stream else sample.prompt[:60],
         )
 
-        payload: dict = {
-            "model": model_name,
-            "messages": [{"role": "user", "content": sample.prompt}],
-            "images": [image_to_data_uri(img) for img in sample.images],
-            "modalities": modalities,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": False,
-        }
-        if enable_audio:
-            payload["audio"] = {"format": "wav"}
+        payload = build_mmmu_payload(
+            sample,
+            model_name,
+            backend=backend,
+            modalities=modalities,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=stream,
+            enable_audio=enable_audio,
+            seed=seed,
+            ignore_eos=ignore_eos,
+        )
 
         start_time = time.perf_counter()
         try:
-            async with session.post(api_url, json=payload) as response:
-                response.raise_for_status()
-                body = await response.json()
-
-            message = body.get("choices", [{}])[0].get("message", {})
-            content = message.get("content", "")
-            result.text = content or ""
-
-            if enable_audio and audio_dir:
-                audio_obj = message.get("audio")
-                if audio_obj is None:
-                    result.error = "No audio in response"
+            if stream:
+                # Streaming-mode SSE: the response body never returns as a
+                # single JSON; we consume frames as they arrive.
+                if not stream:
+                    raise RuntimeError("unreachable")
+                # Reset text to empty so consume_sse_stream concatenates from scratch.
+                result.text = ""
+                async with session.post(api_url, json=payload) as response:
+                    response.raise_for_status()
+                    await consume_sse_stream(
+                        response, result, request_send_time=start_time
+                    )
+                if result.content_chunk_count == 0 and not result.text:
+                    result.error = "stream ended with no content chunks"
                     return result
-                audio_b64 = audio_obj.get("data", "")
-                if not audio_b64:
-                    result.error = "Empty audio data in response"
-                    return result
-                wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
-                with open(wav_path, "wb") as f:
-                    f.write(base64.b64decode(audio_b64))
-                result.wav_path = wav_path
+                result.is_success = True
+            else:
+                async with session.post(api_url, json=payload) as response:
+                    response.raise_for_status()
+                    body = await response.json()
 
-                wav_info = sf.info(wav_path)
-                result.audio_duration_s = round(wav_info.duration, 4)
+                message = body.get("choices", [{}])[0].get("message", {})
+                content = message.get("content", "")
+                result.text = content or ""
 
-            result.is_success = True
+                if enable_audio and audio_dir:
+                    audio_obj = message.get("audio")
+                    if audio_obj is None:
+                        result.error = "No audio in response"
+                        return result
+                    audio_b64 = audio_obj.get("data", "")
+                    if not audio_b64:
+                        result.error = "Empty audio data in response"
+                        return result
+                    wav_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
+                    with open(wav_path, "wb") as f:
+                        f.write(base64.b64decode(audio_b64))
+                    result.wav_path = wav_path
 
-            usage = body.get("usage", {})
-            if usage:
-                result.prompt_tokens = usage.get("prompt_tokens", 0)
-                result.completion_tokens = usage.get("completion_tokens", 0)
+                    wav_info = sf.info(wav_path)
+                    result.audio_duration_s = round(wav_info.duration, 4)
+
+                result.is_success = True
+
+                usage = body.get("usage", {})
+                if usage:
+                    result.prompt_tokens = usage.get("prompt_tokens", 0)
+                    result.completion_tokens = usage.get("completion_tokens", 0)
 
             elapsed = time.perf_counter() - start_time
-            result.engine_time_s = elapsed
+            result.client_wall_time_s = elapsed
+            result.timing_source = "client_wall_time_s"
             if result.audio_duration_s > 0:
                 result.rtf = elapsed / result.audio_duration_s
-            if result.completion_tokens > 0 and result.engine_time_s > 0:
-                result.tok_per_s = result.completion_tokens / result.engine_time_s
+            if result.completion_tokens > 0 and elapsed > 0:
+                result.tok_per_s = result.completion_tokens / elapsed
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             result.error = str(exc)
         finally:

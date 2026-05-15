@@ -63,6 +63,10 @@ class SamplingParams:
     stop_token_ids: list[int] = field(default_factory=list)
     seed: int | None = None
     max_new_tokens: int | None = None
+    # When True, force the upstream SGLang sampler to keep emitting tokens
+    # until max_new_tokens, ignoring EOS. Used by fixed-length decode
+    # throughput benchmarks (Lane B in the issue #379 MMMU sweep).
+    ignore_eos: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +79,7 @@ class SamplingParams:
             "stop_token_ids": list(self.stop_token_ids),
             "seed": self.seed,
             "max_new_tokens": self.max_new_tokens,
+            "ignore_eos": self.ignore_eos,
         }
 
 
