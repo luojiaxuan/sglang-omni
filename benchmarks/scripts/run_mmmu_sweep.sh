@@ -56,7 +56,7 @@ MEM_FRACTION="0.9"
 PREFLIGHT_REMOTE="/tmp/preflight.json"
 LAUNCHER_LOG_OMNI="/tmp/sglang-omni-benchmark.log"
 LAUNCHER_LOG_SGLANG="/tmp/sglang-benchmark.log"
-REMOTE_REPO_ROOT="/sgl-workspace/sglang-omni"
+REMOTE_REPO_ROOT="${REMOTE_REPO_ROOT:-/sgl-workspace/sglang-omni}"
 
 usage() {
     cat <<'EOF'
