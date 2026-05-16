@@ -42,10 +42,8 @@ GetNextFn = Callable[[str, Any], str | list[str] | None]
 class Stage:
     """IO shell for one pipeline stage.
 
-    For AR stages: owns a Scheduler (runs in dedicated thread),
-    communicates via inbox/outbox queues.
-
-    For simple stages: calls compute_fn directly.
+    All stage compute is dispatched through the scheduler inbox/outbox
+    contract, independent of scheduler implementation.
     """
 
     def __init__(
@@ -213,6 +211,10 @@ class Stage:
                 await outbox_task
             if self._background_task_error is not None:
                 raise self._background_task_error
+            if self._scheduler_crash_error is not None:
+                raise RuntimeError(
+                    f"Scheduler thread for stage {self.name} crashed"
+                ) from self._scheduler_crash_error
 
     async def _handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
