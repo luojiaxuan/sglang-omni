@@ -83,6 +83,21 @@ def build_lightweight_mm_inputs(mm_inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def project_preprocessing_to_thinker_textonly(payload: StagePayload) -> StagePayload:
+    """Project preprocessing → thinker directly, bypassing encoders + aggregate.
+
+    Used as preprocessing.project_payload_fallback["thinker"] when
+    image_encoder / audio_encoder / mm_aggregate are pruned by an
+    enabled_stages whitelist. Logically equivalent to calling
+    merge_for_thinker({"preprocessing": payload}) — for text-only requests
+    the encoder_outs dict is empty, so the merge collapses to a
+    preprocessing-state pass-through with thinker_inputs populated.
+    """
+    from sglang_omni.models.qwen3_omni.merge import merge_for_thinker
+
+    return merge_for_thinker({"preprocessing": payload})
+
+
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
     return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
 

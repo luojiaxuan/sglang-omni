@@ -35,6 +35,16 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
                 f"{_PKG}.request_builders.project_preprocessing_to_mm_aggregate"
             ),
         },
+        # When the multimodal stages (image_encoder/audio_encoder/mm_aggregate)
+        # are pruned by enabled_stages whitelist, preprocessing routes
+        # directly to thinker. The projection collapses to a logical
+        # equivalent of merge_for_thinker({"preprocessing": payload}).
+        next_fallback=["thinker"],
+        project_payload_fallback={
+            "thinker": (
+                f"{_PKG}.request_builders.project_preprocessing_to_thinker_textonly"
+            ),
+        },
     )
 
 
@@ -90,6 +100,8 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
         next=["decode", "talker_ar"] if speech_enabled else "decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
+        # AR LM is the pipeline's reason for existing; cannot be excluded.
+        required=True,
     )
 
 
@@ -100,6 +112,8 @@ def _decode_stage(*, process: str) -> StageConfig:
         factory=f"{_PKG}.stages.create_decode_executor",
         terminal=True,
         can_accept_stream_before_payload=True,
+        # Terminal sink for text output; pipeline has no exit without it.
+        required=True,
     )
 
 
