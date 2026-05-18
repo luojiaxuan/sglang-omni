@@ -17,9 +17,7 @@ MING_THINKER_PATH = Path("sglang_omni/models/ming_omni/thinker.py")
 MING_IMAGE_ENCODER_PATH = Path(
     "sglang_omni/models/ming_omni/components/image_encoder.py"
 )
-MING_PREPROCESSOR_PATH = Path(
-    "sglang_omni/models/ming_omni/components/preprocessor.py"
-)
+MING_PREPROCESSOR_PATH = Path("sglang_omni/models/ming_omni/components/preprocessor.py")
 VENDOR_SGLANG_LAYERS_PATH = Path("sglang_omni/vendor/sglang/layers.py")
 
 
@@ -163,9 +161,7 @@ def _load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=Non
     io_module.PromptInputs = dict
     monkeypatch.setitem(sys.modules, "sglang_omni.models.ming_omni.io", io_module)
 
-    next_stage_module = ModuleType(
-        "sglang_omni.models.ming_omni.pipeline.next_stage"
-    )
+    next_stage_module = ModuleType("sglang_omni.models.ming_omni.pipeline.next_stage")
     next_stage_module.AUDIO_STAGE = "audio_encoder"
     next_stage_module.IMAGE_STAGE = "image_encoder"
     monkeypatch.setitem(

@@ -195,9 +195,9 @@ def test_ming_talker_factory_returns_scheduler_contract(monkeypatch) -> None:
 
 
 def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
-    source = Path(
-        "sglang_omni/models/ming_omni/components/audio_encoder.py"
-    ).read_text(encoding="utf-8")
+    source = Path("sglang_omni/models/ming_omni/components/audio_encoder.py").read_text(
+        encoding="utf-8"
+    )
 
     assert (
         "audio_feats = audio_feats.to(device=self._device, dtype=self._dtype)" in source

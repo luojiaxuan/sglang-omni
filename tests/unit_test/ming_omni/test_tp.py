@@ -172,9 +172,9 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
             mp.setitem(sys.modules, "transformers.utils", fake_transformers_utils)
             mp.setitem(sys.modules, "transformers.utils.hub", fake_transformers_hub)
 
-            from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
             from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
             from sglang_omni.pipeline.mp_runner import _build_stage_groups
+            from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 
             config = MingOmniPipelineConfig(
                 model_path="dummy",
