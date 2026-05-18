@@ -119,6 +119,11 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
             "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
+            # Disabled by default. Set to an integer chunk-count threshold to
+            # enable partial-prefix talker startup (build the talker request
+            # from a partial thinker stream before the upstream stream_done
+            # barrier). The scheduler floors the value at MIN_PARTIAL_START_CHUNKS.
+            "partial_start_min_chunks": None,
         },
         gpu=gpu,
         runtime_arg_map={"max_seq_len": "talker_max_seq_len"},

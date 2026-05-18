@@ -34,8 +34,27 @@ def configure_talker_server_args(
     return want_cuda_graph
 
 
+# Minimum prefetched thinker chunk count required to enter the partial-start
+# path. The 9-row assistant tail that ``build_assistant_part`` constructs
+# collapses below 3 chunks. The decode-ready operating point (at least one
+# consumable future text row after ``include_assistant_eos=False`` strips the
+# trailing EOS row) sits at 5 chunks. Both numbers are pinned by
+# ``test_partial_prompt_prefill_layout_invariants``; do not change this floor
+# without updating that test.
+MIN_PARTIAL_START_CHUNKS = 3
+
+
 class QwenTalkerScheduler(OmniScheduler):
     """Talker scheduler with Qwen-specific request and decode readiness."""
+
+    def __init__(
+        self,
+        *args: Any,
+        partial_start_min_chunks: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._partial_start_min_chunks = partial_start_min_chunks
 
     def _is_request_build_ready(
         self,
@@ -43,8 +62,13 @@ class QwenTalkerScheduler(OmniScheduler):
         *,
         pending_stream_done: bool,
     ) -> bool:
-        del payload
-        return bool(pending_stream_done)
+        if pending_stream_done:
+            return True
+        if self._partial_start_min_chunks is None:
+            return False
+        effective_min = max(self._partial_start_min_chunks, MIN_PARTIAL_START_CHUNKS)
+        prefetched = getattr(payload, "prefetched_chunks", None) or []
+        return len(prefetched) >= effective_min
 
     def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
         del req_data, payload

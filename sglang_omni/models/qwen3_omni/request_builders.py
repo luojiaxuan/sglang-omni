@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import collections
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -17,6 +18,8 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
+
+logger = logging.getLogger(__name__)
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
@@ -803,21 +806,36 @@ def make_talker_scheduler_adapters(
         thinker_chunks = list(payload.prefetched_chunks)
         thinker_done = bool(payload.prefetched_stream_done)
 
-        if not thinker_done:
-            raise RuntimeError(
-                "QwenTalkerScheduler called talker request_builder before thinker "
-                "stream completion"
-            )
-
         if not thinker_chunks:
-            thinker_chunks = _fallback_thinker_chunks_from_state(payload)
-        if not thinker_chunks:
-            raise ValueError("talker request_builder requires thinker output tokens")
+            if thinker_done:
+                thinker_chunks = _fallback_thinker_chunks_from_state(payload)
+                if not thinker_chunks:
+                    raise ValueError(
+                        "talker request_builder requires thinker output tokens"
+                    )
+            else:
+                raise RuntimeError(
+                    "talker partial-start path entered with zero usable thinker "
+                    "chunks; check the partial-start readiness policy"
+                )
 
         prompt_prefill = prefill_builder.build_prompt_prefill(
             payload,
             thinker_chunks,
-            thinker_done=True,
+            thinker_done=thinker_done,
+        )
+        pending_text_queue = prompt_prefill["pending_text_queue"]
+        pending_text_rows = (
+            len(pending_text_queue) if pending_text_queue is not None else 0
+        )
+        logger.info(
+            "talker_request_build request_id=%s thinker_chunks=%d "
+            "talker_input_rows=%d future_text_rows=%d thinker_done=%s",
+            payload.request_id,
+            len(thinker_chunks),
+            int(prompt_prefill["input_embeds"].shape[0]),
+            pending_text_rows,
+            thinker_done,
         )
         req_data = build_sglang_talker_request(
             thinker_hidden_states=torch.empty(0),
@@ -838,9 +856,9 @@ def make_talker_scheduler_adapters(
             talker_input_embeds=prompt_prefill["input_embeds"],
             talker_input_ids=prompt_prefill["input_ids"],
             input_embeds_are_projected=True,
-            pending_text_queue=prompt_prefill["pending_text_queue"],
+            pending_text_queue=pending_text_queue,
             tts_pad_embed=prompt_prefill["tts_pad_embed"],
-            thinker_chunks_done=True,
+            thinker_chunks_done=thinker_done,
             thinker_config=thinker_config,
             talker_model_inputs=prompt_prefill["prompt_model_inputs"],
             sampling_seed=sampling_cfg.get("seed"),
