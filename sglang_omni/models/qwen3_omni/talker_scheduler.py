@@ -47,6 +47,11 @@ MIN_PARTIAL_START_CHUNKS = 3
 class QwenTalkerScheduler(OmniScheduler):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
+    # Class-level default so `object.__new__(QwenTalkerScheduler)` test helpers
+    # (which bypass __init__) still see a usable disabled state. The upstream
+    # OmniScheduler.__getattr__ otherwise raises on missing attributes.
+    _partial_start_min_chunks: int | None = None
+
     def __init__(
         self,
         *args: Any,
