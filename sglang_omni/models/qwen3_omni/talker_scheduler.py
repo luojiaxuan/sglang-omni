@@ -47,19 +47,51 @@ MIN_PARTIAL_START_CHUNKS = 3
 class QwenTalkerScheduler(OmniScheduler):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
-    # Class-level default so `object.__new__(QwenTalkerScheduler)` test helpers
-    # (which bypass __init__) still see a usable disabled state. The upstream
-    # OmniScheduler.__getattr__ otherwise raises on missing attributes.
+    # Class-level defaults so `object.__new__(QwenTalkerScheduler)` test
+    # helpers (which bypass __init__) still see a usable disabled state. The
+    # upstream OmniScheduler.__getattr__ otherwise raises on missing attrs.
     _partial_start_min_chunks: int | None = None
+    _im_end_token_id: int | None = None
 
     def __init__(
         self,
         *args: Any,
         partial_start_min_chunks: int | None = None,
+        im_end_token_id: int | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        # Treat 0 / negative thresholds as disabled rather than silently
+        # promoting them to MIN_PARTIAL_START_CHUNKS. Users opt in explicitly.
+        if partial_start_min_chunks is not None and partial_start_min_chunks <= 0:
+            logger.warning(
+                "partial_start_min_chunks=%r is not a valid opt-in value; "
+                "partial-start remains disabled.",
+                partial_start_min_chunks,
+            )
+            partial_start_min_chunks = None
         self._partial_start_min_chunks = partial_start_min_chunks
+        self._im_end_token_id = im_end_token_id
+
+    def _count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
+        """Count chunks that survive prefill's <|im_end|> stripping.
+
+        ``build_prefill_input`` drops a trailing ``<|im_end|>`` from the
+        assistant segment before projection. Counting raw chunks would let
+        partial-start fire below ``MIN_PARTIAL_START_CHUNKS`` usable rows
+        when a late ``<|im_end|>`` arrives before ``stream_done``.
+        """
+        im_end = self._im_end_token_id
+        if im_end is None:
+            return len(prefetched)
+        usable = 0
+        for chunk in prefetched:
+            metadata = getattr(chunk, "metadata", None) or {}
+            token_id = metadata.get("token_id")
+            if token_id is not None and int(token_id) == int(im_end):
+                continue
+            usable += 1
+        return usable
 
     def _is_request_build_ready(
         self,
@@ -73,7 +105,7 @@ class QwenTalkerScheduler(OmniScheduler):
             return False
         effective_min = max(self._partial_start_min_chunks, MIN_PARTIAL_START_CHUNKS)
         prefetched = getattr(payload, "prefetched_chunks", None) or []
-        return len(prefetched) >= effective_min
+        return self._count_usable_prefetched_chunks(prefetched) >= effective_min
 
     def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
         del req_data, payload

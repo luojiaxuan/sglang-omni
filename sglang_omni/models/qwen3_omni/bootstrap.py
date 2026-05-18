@@ -207,6 +207,7 @@ def create_talker_scheduler(
         stream_chunk_handler=stream_chunk_handler,
         stream_done_handler=stream_done_handler,
         partial_start_min_chunks=partial_start_min_chunks,
+        im_end_token_id=root_config.im_end_token_id,
     )
 
     scheduler._model_runner = QwenTalkerModelRunner(

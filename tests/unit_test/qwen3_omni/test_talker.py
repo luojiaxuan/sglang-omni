@@ -353,6 +353,52 @@ def test_partial_floors_to_min_partial_start_chunks() -> None:
     assert scheduler._is_request_build_ready(at_floor, pending_stream_done=False)
 
 
+def test_partial_count_excludes_im_end_chunks() -> None:
+    """im_end chunks are stripped by build_prefill_input, so they do not
+    contribute to the usable-prefix count that gates partial-start.
+    """
+    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=3)
+    scheduler._im_end_token_id = 13
+
+    def _chunk(token_id: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            data=torch.tensor([0.0]),
+            metadata={"token_id": token_id},
+        )
+
+    # Three raw chunks but one is im_end -> usable count is 2 -> not ready.
+    near_floor = _make_payload(prefetched_chunks=[_chunk(100), _chunk(101), _chunk(13)])
+    assert not scheduler._is_request_build_ready(near_floor, pending_stream_done=False)
+
+    # Four raw chunks with one im_end -> usable count is 3 -> ready.
+    enough = _make_payload(
+        prefetched_chunks=[_chunk(100), _chunk(101), _chunk(102), _chunk(13)]
+    )
+    assert scheduler._is_request_build_ready(enough, pending_stream_done=False)
+
+
+def test_partial_non_positive_threshold_disables_partial_start() -> None:
+    """Zero or negative thresholds are treated as disabled rather than
+    silently promoted to MIN_PARTIAL_START_CHUNKS, so callers cannot
+    accidentally enable partial-start with a sentinel-looking value.
+    """
+    scheduler_zero = _fresh_partial_scheduler(partial_start_min_chunks=0)
+    # _fresh_partial_scheduler bypasses __init__, so we exercise the helper
+    # the way production constructs the field via __init__:
+    OmniScheduler_init = OmniScheduler.__init__
+    try:
+        OmniScheduler.__init__ = lambda self, *a, **k: None  # type: ignore[method-assign]
+        live = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
+        QwenTalkerScheduler.__init__(live, partial_start_min_chunks=0)
+        assert live._partial_start_min_chunks is None
+        live_negative = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
+        QwenTalkerScheduler.__init__(live_negative, partial_start_min_chunks=-3)
+        assert live_negative._partial_start_min_chunks is None
+    finally:
+        OmniScheduler.__init__ = OmniScheduler_init  # type: ignore[method-assign]
+    del scheduler_zero
+
+
 def test_partial_enabled_zero_chunks_stays_deferred() -> None:
     """Enabled knob with empty prefetched_chunks never satisfies the threshold."""
     scheduler = _fresh_partial_scheduler(partial_start_min_chunks=1)

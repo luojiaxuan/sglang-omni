@@ -828,7 +828,7 @@ def make_talker_scheduler_adapters(
         pending_text_rows = (
             len(pending_text_queue) if pending_text_queue is not None else 0
         )
-        logger.info(
+        logger.debug(
             "talker_request_build request_id=%s thinker_chunks=%d "
             "talker_input_rows=%d future_text_rows=%d thinker_done=%s",
             payload.request_id,
