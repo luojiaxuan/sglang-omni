@@ -369,33 +369,11 @@ class OmniScheduler:
     # ------------------------------------------------------------------
 
     def get_next_batch_to_run(self):
-        # Skip upstream batch selection while the only candidate is a decode
-        # batch we would reject. Lets us avoid prepare_for_decode's side
-        # effects (KV alloc, penalizer cumulate, seq_lens mutation) without
-        # needing a partial rollback.
-        if self._should_skip_decode_round():
-            return None
-
         batch = _Upstream.get_next_batch_to_run(self)
         if batch is not None and not self._is_batch_ready_to_run(batch):
-            # Safety fallback: a prefill->decode handoff slipped past the
-            # pre-check and upstream already ran prepare_for_decode.
             self._rollback_decode_prep_after_skip(batch)
             return None
         return batch
-
-    def _should_skip_decode_round(self) -> bool:
-        running = self.running_batch
-        if running is None or running.is_empty() or running.is_prefill_only:
-            return False
-        last = self.last_batch
-        if last is not None and last.forward_mode.is_extend():
-            return False
-        if self.waiting_queue:
-            return False
-        if getattr(self, "chunked_req", None) is not None:
-            return False
-        return not self._is_batch_ready_to_run(running)
 
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
         if not batch.forward_mode.is_decode():
