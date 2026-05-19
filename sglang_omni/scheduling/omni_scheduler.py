@@ -368,39 +368,6 @@ class OmniScheduler:
     # Overridden methods (take precedence over __getattr__)
     # ------------------------------------------------------------------
 
-    def get_next_batch_to_run(self):
-        batch = _Upstream.get_next_batch_to_run(self)
-        if batch is not None and not self._is_batch_ready_to_run(batch):
-            # Roll back upstream's prepare_for_decode alloc + counters.
-            self._rollback_decode_prep_after_skip(batch)
-            return None
-        return batch
-
-    def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
-        if not batch.forward_mode.is_decode():
-            return
-        if batch.out_cache_loc is not None:
-            self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
-            batch.out_cache_loc = None
-        if batch.output_ids is None:
-            batch.output_ids = batch.input_ids
-        for req in batch.reqs:
-            req.decode_batch_idx -= 1
-            req.kv_committed_len -= 1
-            req.kv_allocated_len -= 1
-        batch.seq_lens.sub_(1)
-        batch.seq_lens_cpu.sub_(1)
-        batch.orig_seq_lens.sub_(1)
-        batch.seq_lens_sum -= len(batch.reqs)
-
-    def self_check_during_idle(self) -> None:
-        # Partial-start stalled reqs hold live KV slots; not a leak.
-        if self.running_batch is not None and not self.running_batch.is_empty():
-            return
-        if self.waiting_queue:
-            return
-        _Upstream.self_check_during_idle(self)
-
     def recv_requests(self):
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
         recv_msgs = self._recv_scheduler_messages()

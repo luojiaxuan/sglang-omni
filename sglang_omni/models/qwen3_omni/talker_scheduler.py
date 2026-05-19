@@ -7,6 +7,8 @@ import logging
 from collections import deque
 from typing import Any
 
+from sglang.srt.managers.scheduler import Scheduler as _Upstream
+
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -40,28 +42,38 @@ MIN_PARTIAL_START_CHUNKS = 3
 
 
 class QwenTalkerScheduler(OmniScheduler):
-    """Talker scheduler with Qwen-specific request and decode readiness."""
+    """Talker scheduler with Qwen-specific request and decode readiness.
+
+    The decode-stall handling (``get_next_batch_to_run`` override + rollback
+    of ``prepare_for_decode``) is intentionally scoped here, not on the
+    shared ``OmniScheduler``. The rollback only undoes the side-effect set
+    that the talker's server_args produce — overlap scheduling is disabled
+    by ``configure_talker_server_args`` and Qwen3-Omni has no Mamba state,
+    so ``req_to_token_pool`` writes are the only remaining upstream effect
+    and they are idempotent across repeated stalls on the same step.
+    """
 
     # Class-level defaults so object.__new__ test helpers see a disabled state.
-    _partial_start_min_chunks: int | None = None
+    _enable_partial_start: bool = False
+    _partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS
     _im_end_token_id: int | None = None
 
     def __init__(
         self,
         *args: Any,
-        partial_start_min_chunks: int | None = None,
+        enable_partial_start: bool = False,
+        partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
         im_end_token_id: int | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        if partial_start_min_chunks is not None and partial_start_min_chunks <= 0:
-            logger.warning(
-                "partial_start_min_chunks=%r is not a valid opt-in value; "
-                "partial-start remains disabled.",
-                partial_start_min_chunks,
+        if partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
+            raise ValueError(
+                f"partial_start_min_chunks must be >= {MIN_PARTIAL_START_CHUNKS}, "
+                f"got {partial_start_min_chunks}"
             )
-            partial_start_min_chunks = None
-        self._partial_start_min_chunks = partial_start_min_chunks
+        self._enable_partial_start = bool(enable_partial_start)
+        self._partial_start_min_chunks = int(partial_start_min_chunks)
         self._im_end_token_id = im_end_token_id
 
     def _count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
@@ -86,11 +98,13 @@ class QwenTalkerScheduler(OmniScheduler):
     ) -> bool:
         if pending_stream_done:
             return True
-        if self._partial_start_min_chunks is None:
+        if not self._enable_partial_start:
             return False
-        effective_min = max(self._partial_start_min_chunks, MIN_PARTIAL_START_CHUNKS)
         prefetched = getattr(payload, "prefetched_chunks", None) or []
-        return self._count_usable_prefetched_chunks(prefetched) >= effective_min
+        return (
+            self._count_usable_prefetched_chunks(prefetched)
+            >= self._partial_start_min_chunks
+        )
 
     def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
         # No-op: request_builder seeds pending_text_queue itself.
@@ -110,6 +124,44 @@ class QwenTalkerScheduler(OmniScheduler):
             )
             return False
         return True
+
+    # ------------------------------------------------------------------
+    # Talker-scoped decode-stall handling. Shared OmniScheduler stays
+    # pure; the side-effect rollback is safe only under the talker
+    # server_args (disable_overlap_schedule=True, no Mamba).
+    # ------------------------------------------------------------------
+
+    def get_next_batch_to_run(self):
+        batch = _Upstream.get_next_batch_to_run(self)
+        if batch is not None and not self._is_batch_ready_to_run(batch):
+            self._rollback_decode_prep_after_skip(batch)
+            return None
+        return batch
+
+    def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
+        if not batch.forward_mode.is_decode():
+            return
+        if batch.out_cache_loc is not None:
+            self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
+            batch.out_cache_loc = None
+        if batch.output_ids is None:
+            batch.output_ids = batch.input_ids
+        for req in batch.reqs:
+            req.decode_batch_idx -= 1
+            req.kv_committed_len -= 1
+            req.kv_allocated_len -= 1
+        batch.seq_lens.sub_(1)
+        batch.seq_lens_cpu.sub_(1)
+        batch.orig_seq_lens.sub_(1)
+        batch.seq_lens_sum -= len(batch.reqs)
+
+    def self_check_during_idle(self) -> None:
+        # Partial-start stalled reqs hold live KV slots; not a leak.
+        if self.running_batch is not None and not self.running_batch.is_empty():
+            return
+        if self.waiting_queue:
+            return
+        _Upstream.self_check_during_idle(self)
 
     @staticmethod
     def _append_stream_chunk_default(req_data: Any, chunk: Any) -> None:

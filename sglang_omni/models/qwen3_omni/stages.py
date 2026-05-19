@@ -975,6 +975,7 @@ def create_talker_ar_executor_from_config(
     feedback_enabled: bool = True,
     weight_prefix: str = "talker.",
     total_gpu_memory_fraction: float | None = None,
+    enable_partial_start: bool = False,
     partial_start_min_chunks: int | None = None,
 ):
     """Returns OmniScheduler for talker."""
@@ -1025,6 +1026,7 @@ def create_talker_ar_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)

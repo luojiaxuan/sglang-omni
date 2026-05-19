@@ -97,13 +97,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--enable-partial-start",
+        action="store_true",
+        help="Enable partial-prefix talker startup.",
+    )
+    parser.add_argument(
         "--partial-start-min-chunks",
         type=int,
         default=None,
         help=(
-            "Opt-in partial-prefix talker startup: build the talker request "
-            "from a partial thinker stream after N chunks rather than waiting "
-            "for stream_done. Disabled when omitted."
+            "Chunk-count threshold for partial-start. "
+            "Only used when --enable-partial-start is set; "
+            "must be >= MIN_PARTIAL_START_CHUNKS (3)."
         ),
     )
     parser.add_argument(
@@ -244,11 +249,18 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             updates=thinker_seq_len_updates,
         )
 
+    partial_start_updates: dict[str, object] = {}
+    if args.enable_partial_start:
+        partial_start_updates["enable_partial_start"] = True
     if args.partial_start_min_chunks is not None:
+        partial_start_updates["partial_start_min_chunks"] = int(
+            args.partial_start_min_chunks
+        )
+    if partial_start_updates:
         _apply_stage_factory_updates(
             config,
             stage_name="talker_ar",
-            updates={"partial_start_min_chunks": int(args.partial_start_min_chunks)},
+            updates=partial_start_updates,
         )
 
     launch_server(

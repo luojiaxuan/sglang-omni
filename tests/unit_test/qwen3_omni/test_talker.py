@@ -293,10 +293,13 @@ def test_partial_prompt_prefill_layout_invariants() -> None:
 
 
 def _fresh_partial_scheduler(
-    partial_start_min_chunks: int | None,
+    *,
+    enable_partial_start: bool = False,
+    partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
 ) -> QwenTalkerScheduler:
     """Build a bare scheduler instance with only the partial-start state needed."""
     scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler._enable_partial_start = enable_partial_start
     scheduler._partial_start_min_chunks = partial_start_min_chunks
     return scheduler
 
@@ -315,8 +318,8 @@ def _make_payload(
 
 
 def test_partial_disabled_preserves_legacy_path() -> None:
-    """Knob None preserves legacy behavior under both stream-done states."""
-    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=None)
+    """enable_partial_start=False preserves legacy stream_done-only gating."""
+    scheduler = _fresh_partial_scheduler(enable_partial_start=False)
     payload = _make_payload(prefetched_chunks=[object()] * 50)
 
     assert not scheduler._is_request_build_ready(payload, pending_stream_done=False)
@@ -324,40 +327,50 @@ def test_partial_disabled_preserves_legacy_path() -> None:
 
 
 def test_partial_enabled_below_threshold_stays_deferred() -> None:
-    """Below the effective threshold the payload is not yet build-ready."""
-    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=10)
+    """Below the threshold the payload is not yet build-ready."""
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, partial_start_min_chunks=10
+    )
     payload = _make_payload(prefetched_chunks=[object()] * 4)
 
     assert not scheduler._is_request_build_ready(payload, pending_stream_done=False)
 
 
 def test_partial_enabled_at_threshold_returns_true_with_done_false() -> None:
-    """At or above the effective threshold the payload is build-ready early."""
-    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=5)
+    """At or above the threshold the payload is build-ready early."""
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, partial_start_min_chunks=5
+    )
     payload = _make_payload(prefetched_chunks=[object()] * 5)
 
     assert scheduler._is_request_build_ready(payload, pending_stream_done=False)
 
 
-def test_partial_floors_to_min_partial_start_chunks() -> None:
-    """User threshold below the layout floor is clamped up to MIN_PARTIAL_START_CHUNKS."""
-    assert MIN_PARTIAL_START_CHUNKS >= 1
-    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=1)
+def test_partial_rejects_min_chunks_below_layout_floor() -> None:
+    """partial_start_min_chunks below MIN_PARTIAL_START_CHUNKS raises ValueError."""
+    OmniScheduler_init = OmniScheduler.__init__
+    try:
+        OmniScheduler.__init__ = lambda self, *a, **k: None  # type: ignore[method-assign]
+        live = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
+        import pytest
 
-    below_floor = _make_payload(
-        prefetched_chunks=[object()] * (MIN_PARTIAL_START_CHUNKS - 1)
-    )
-    at_floor = _make_payload(prefetched_chunks=[object()] * MIN_PARTIAL_START_CHUNKS)
-
-    assert not scheduler._is_request_build_ready(below_floor, pending_stream_done=False)
-    assert scheduler._is_request_build_ready(at_floor, pending_stream_done=False)
+        with pytest.raises(ValueError):
+            QwenTalkerScheduler.__init__(
+                live,
+                enable_partial_start=True,
+                partial_start_min_chunks=MIN_PARTIAL_START_CHUNKS - 1,
+            )
+    finally:
+        OmniScheduler.__init__ = OmniScheduler_init  # type: ignore[method-assign]
 
 
 def test_partial_count_excludes_im_end_chunks() -> None:
     """im_end chunks are stripped by build_prefill_input, so they do not
     contribute to the usable-prefix count that gates partial-start.
     """
-    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=3)
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, partial_start_min_chunks=3
+    )
     scheduler._im_end_token_id = 13
 
     def _chunk(token_id: int) -> SimpleNamespace:
@@ -366,42 +379,20 @@ def test_partial_count_excludes_im_end_chunks() -> None:
             metadata={"token_id": token_id},
         )
 
-    # Three raw chunks but one is im_end -> usable count is 2 -> not ready.
     near_floor = _make_payload(prefetched_chunks=[_chunk(100), _chunk(101), _chunk(13)])
     assert not scheduler._is_request_build_ready(near_floor, pending_stream_done=False)
 
-    # Four raw chunks with one im_end -> usable count is 3 -> ready.
     enough = _make_payload(
         prefetched_chunks=[_chunk(100), _chunk(101), _chunk(102), _chunk(13)]
     )
     assert scheduler._is_request_build_ready(enough, pending_stream_done=False)
 
 
-def test_partial_non_positive_threshold_disables_partial_start() -> None:
-    """Zero or negative thresholds are treated as disabled rather than
-    silently promoted to MIN_PARTIAL_START_CHUNKS, so callers cannot
-    accidentally enable partial-start with a sentinel-looking value.
-    """
-    scheduler_zero = _fresh_partial_scheduler(partial_start_min_chunks=0)
-    # _fresh_partial_scheduler bypasses __init__, so we exercise the helper
-    # the way production constructs the field via __init__:
-    OmniScheduler_init = OmniScheduler.__init__
-    try:
-        OmniScheduler.__init__ = lambda self, *a, **k: None  # type: ignore[method-assign]
-        live = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
-        QwenTalkerScheduler.__init__(live, partial_start_min_chunks=0)
-        assert live._partial_start_min_chunks is None
-        live_negative = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
-        QwenTalkerScheduler.__init__(live_negative, partial_start_min_chunks=-3)
-        assert live_negative._partial_start_min_chunks is None
-    finally:
-        OmniScheduler.__init__ = OmniScheduler_init  # type: ignore[method-assign]
-    del scheduler_zero
-
-
 def test_partial_enabled_zero_chunks_stays_deferred() -> None:
     """Enabled knob with empty prefetched_chunks never satisfies the threshold."""
-    scheduler = _fresh_partial_scheduler(partial_start_min_chunks=1)
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, partial_start_min_chunks=MIN_PARTIAL_START_CHUNKS
+    )
     payload = _make_payload(prefetched_chunks=[])
 
     assert not scheduler._is_request_build_ready(payload, pending_stream_done=False)
@@ -510,162 +501,212 @@ def test_chunk_after_partial_build_appends_once() -> None:
     assert len(req_data.pending_text_queue) == 1
 
 
-def _make_request_builder_stub_env(
+def _drive_real_builder(
     *,
+    prefetched_chunks: list[Any] | None,
+    prefetched_stream_done: bool,
     fallback_chunks_from_state: list[Any] | None = None,
+    request_id: str = "r0",
+    request_params: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Inline the talker request builder around stubbed prefill / build helpers.
+    """Drive the REAL `_build_talker_request_data` helper with stub deps.
 
-    Mirrors the gate / fallback / thread-through contract enforced by the real
-    ``request_builders.make_talker_scheduler_adapters.request_builder``.
+    Reviewer flagged that hand-writing a copy of the production closure
+    produces false-confidence tests. This helper instead invokes the
+    production module-level function directly so the assertions below
+    cover the real propagation contract.
     """
+    from sglang_omni.models.qwen3_omni.request_builders import (
+        _build_talker_request_data,
+    )
+
     captured: dict[str, Any] = {}
 
-    def stub_build_prompt_prefill(
-        _payload: Any,
-        thinker_chunks: list[Any],
-        *,
-        thinker_done: bool,
-    ) -> dict[str, Any]:
-        captured["build_prompt_prefill_thinker_done"] = thinker_done
-        captured["build_prompt_prefill_chunk_count"] = len(thinker_chunks)
+    class StubPrefillBuilder:
+        def build_prompt_prefill(
+            self,
+            _payload: Any,
+            thinker_chunks: list[Any],
+            *,
+            thinker_done: bool,
+        ) -> dict[str, Any]:
+            captured["build_prompt_prefill_thinker_done"] = thinker_done
+            captured["build_prompt_prefill_chunk_count"] = len(thinker_chunks)
+            return {
+                "input_embeds": torch.zeros((9, 2), dtype=torch.float32),
+                "input_ids": torch.zeros((9,), dtype=torch.long),
+                "pending_text_queue": deque([torch.zeros((2,), dtype=torch.float32)]),
+                "tts_eos_embed": torch.full((2,), 0.5, dtype=torch.float32),
+                "tts_pad_embed": torch.full((2,), 0.25, dtype=torch.float32),
+                "prompt_model_inputs": {"audio_embeds": None},
+            }
+
+    def fake_build_sglang_talker_request(**kwargs: Any) -> SimpleNamespace:
+        captured["talker_request_kwargs"] = kwargs
+        return SimpleNamespace(req=SimpleNamespace(rid=request_id))
+
+    def resolve_sampling_config(_params: dict[str, Any]) -> dict[str, Any]:
         return {
-            "input_embeds": torch.zeros((9, 2), dtype=torch.float32),
-            "pending_text_queue": deque(),
-            "tts_eos_embed": torch.zeros((2,), dtype=torch.float32),
+            "max_new_tokens": 4096,
+            "temperature": 0.9,
+            "top_k": 50,
+            "top_p": 1.0,
+            "repetition_penalty": 1.05,
+            "codec_eos_id": 7,
+            "suppress_tokens": [],
+            "seed": (_params or {}).get("seed"),
         }
 
-    def stub_build_sglang_talker_request(
-        *, thinker_chunks_done: bool
-    ) -> SimpleNamespace:
-        captured["talker_request_thinker_chunks_done"] = thinker_chunks_done
-        return SimpleNamespace(req=SimpleNamespace(rid="r0"))
+    def fallback(_payload: Any) -> list[Any]:
+        return list(fallback_chunks_from_state or [])
 
-    def request_builder(payload: Any) -> Any:
-        thinker_chunks = list(payload.prefetched_chunks)
-        thinker_done = bool(payload.prefetched_stream_done)
+    # Patch the module-level build_sglang_talker_request used by the helper.
+    from sglang_omni.models.qwen3_omni import request_builders as rb_mod
 
-        if not thinker_chunks:
-            if thinker_done:
-                thinker_chunks = list(fallback_chunks_from_state or [])
-                if not thinker_chunks:
-                    raise ValueError(
-                        "talker request_builder requires thinker output tokens"
-                    )
-            else:
-                raise RuntimeError(
-                    "talker partial-start path entered with zero usable thinker "
-                    "chunks; check the partial-start readiness policy"
-                )
-
-        prompt_prefill = stub_build_prompt_prefill(
-            payload, thinker_chunks, thinker_done=thinker_done
-        )
-        req_data = stub_build_sglang_talker_request(thinker_chunks_done=thinker_done)
-        req_data.tts_eos_embed = prompt_prefill["tts_eos_embed"]
-        req_data.stage_payload = payload
-        return req_data
-
-    return request_builder, captured
-
-
-def test_request_builder_threads_thinker_done_false_on_partial_path() -> None:
-    """Builder passes thinker_done=False through prefill and request construction."""
-    request_builder, captured = _make_request_builder_stub_env()
-    payload = SimpleNamespace(
-        request_id="r0",
-        request=SimpleNamespace(params={}),
-        prefetched_chunks=[object(), object(), object(), object(), object()],
-        prefetched_stream_done=False,
-    )
-
-    request_builder(payload)
-
-    assert captured["build_prompt_prefill_thinker_done"] is False
-    assert captured["talker_request_thinker_chunks_done"] is False
-
-
-def test_request_builder_threads_thinker_done_true_on_completed_stream() -> None:
-    """Builder passes thinker_done=True through prefill and request construction."""
-    request_builder, captured = _make_request_builder_stub_env()
-    payload = SimpleNamespace(
-        request_id="r0",
-        request=SimpleNamespace(params={}),
-        prefetched_chunks=[object(), object(), object()],
-        prefetched_stream_done=True,
-    )
-
-    request_builder(payload)
-
-    assert captured["build_prompt_prefill_thinker_done"] is True
-    assert captured["talker_request_thinker_chunks_done"] is True
-
-
-def test_partial_path_rejects_zero_chunks_without_done() -> None:
-    """Partial path with empty prefetched_chunks raises a clear RuntimeError."""
-    request_builder, _ = _make_request_builder_stub_env()
-    payload = SimpleNamespace(
-        request_id="r0",
-        request=SimpleNamespace(params={}),
-        prefetched_chunks=[],
-        prefetched_stream_done=False,
-    )
-
+    original = rb_mod.build_sglang_talker_request
+    rb_mod.build_sglang_talker_request = fake_build_sglang_talker_request
     try:
-        request_builder(payload)
-    except RuntimeError as exc:
-        assert "partial-start path" in str(exc)
-    else:
-        raise AssertionError(
-            "request_builder must raise RuntimeError on zero-chunk partial path"
+        payload = SimpleNamespace(
+            request_id=request_id,
+            request=SimpleNamespace(params=request_params or {}),
+            prefetched_chunks=list(prefetched_chunks or []),
+            prefetched_stream_done=prefetched_stream_done,
         )
+        req_data = _build_talker_request_data(
+            payload,
+            prefill_builder=StubPrefillBuilder(),
+            tokenizer=SimpleNamespace(),
+            codec_vocab_size=4096,
+            codec_bos_id=2149,
+            audio_token_id=151646,
+            image_token_id=151647,
+            video_token_id=151648,
+            thinker_config=SimpleNamespace(),
+            resolve_sampling_config=resolve_sampling_config,
+            fallback_chunks_from_state=fallback,
+        )
+        return req_data, captured
+    finally:
+        rb_mod.build_sglang_talker_request = original
 
 
-def test_fallback_chunks_only_on_done_path() -> None:
+def test_real_builder_threads_thinker_done_false_on_partial_path() -> None:
+    """Real `_build_talker_request_data` passes thinker_done=False through prefill + request."""
+    req_data, captured = _drive_real_builder(
+        prefetched_chunks=[object()] * 5, prefetched_stream_done=False
+    )
+    assert captured["build_prompt_prefill_thinker_done"] is False
+    assert captured["talker_request_kwargs"]["thinker_chunks_done"] is False
+
+
+def test_real_builder_threads_thinker_done_true_on_completed_stream() -> None:
+    """Real builder passes thinker_done=True through prefill + request."""
+    req_data, captured = _drive_real_builder(
+        prefetched_chunks=[object()] * 3, prefetched_stream_done=True
+    )
+    assert captured["build_prompt_prefill_thinker_done"] is True
+    assert captured["talker_request_kwargs"]["thinker_chunks_done"] is True
+
+
+def test_real_builder_propagates_prefill_outputs_into_talker_request() -> None:
+    """input_ids, tts_pad_embed, pending_text_queue, talker_model_inputs all flow through."""
+    req_data, captured = _drive_real_builder(
+        prefetched_chunks=[object()] * 5, prefetched_stream_done=False
+    )
+    kw = captured["talker_request_kwargs"]
+    assert torch.equal(kw["talker_input_ids"], torch.zeros((9,), dtype=torch.long))
+    assert torch.equal(kw["tts_pad_embed"], torch.full((2,), 0.25, dtype=torch.float32))
+    assert kw["talker_model_inputs"] == {"audio_embeds": None}
+    pending = kw["pending_text_queue"]
+    assert pending is not None and len(pending) == 1
+
+
+def test_real_builder_derives_per_request_seed_when_missing() -> None:
+    """When request params carry no seed the builder must derive a stable per-request seed."""
+    req_data1, captured1 = _drive_real_builder(
+        prefetched_chunks=[object()] * 5,
+        prefetched_stream_done=False,
+        request_id="rid-A",
+    )
+    req_data2, captured2 = _drive_real_builder(
+        prefetched_chunks=[object()] * 5,
+        prefetched_stream_done=False,
+        request_id="rid-A",
+    )
+    req_data3, captured3 = _drive_real_builder(
+        prefetched_chunks=[object()] * 5,
+        prefetched_stream_done=False,
+        request_id="rid-B",
+    )
+    seed_a1 = captured1["talker_request_kwargs"]["sampling_seed"]
+    seed_a2 = captured2["talker_request_kwargs"]["sampling_seed"]
+    seed_b = captured3["talker_request_kwargs"]["sampling_seed"]
+    assert seed_a1 is not None and seed_a1 > 0
+    assert seed_a1 == seed_a2, "same request_id must derive the same seed"
+    assert seed_a1 != seed_b, "different request_id must derive different seeds"
+
+
+def test_real_builder_preserves_explicit_seed_from_request_params() -> None:
+    """If the request explicitly carries a seed, builder must not override it."""
+    _, captured = _drive_real_builder(
+        prefetched_chunks=[object()] * 5,
+        prefetched_stream_done=False,
+        request_params={"seed": 42},
+    )
+    assert captured["talker_request_kwargs"]["sampling_seed"] == 42
+
+
+def test_real_builder_attaches_tts_eos_and_stage_payload() -> None:
+    """req_data.tts_eos_embed must come from prefill output; stage_payload must round-trip."""
+    req_data, _ = _drive_real_builder(
+        prefetched_chunks=[object()] * 5, prefetched_stream_done=False
+    )
+    assert torch.equal(
+        req_data.tts_eos_embed, torch.full((2,), 0.5, dtype=torch.float32)
+    )
+    assert req_data.stage_payload.request_id == "r0"
+
+
+def test_real_builder_rejects_zero_chunks_without_done() -> None:
+    """Partial path with empty prefetched_chunks raises RuntimeError naming the path."""
+    import pytest
+
+    with pytest.raises(RuntimeError, match="partial-start path"):
+        _drive_real_builder(prefetched_chunks=[], prefetched_stream_done=False)
+
+
+def test_real_builder_uses_fallback_chunks_on_done_path_only() -> None:
     """Completed-stream path with empty chunks consults the fallback helper."""
-    request_builder, captured = _make_request_builder_stub_env(
+    _, captured = _drive_real_builder(
+        prefetched_chunks=[],
+        prefetched_stream_done=True,
         fallback_chunks_from_state=[object(), object(), object()],
     )
-    payload = SimpleNamespace(
-        request_id="r0",
-        request=SimpleNamespace(params={}),
-        prefetched_chunks=[],
-        prefetched_stream_done=True,
-    )
-
-    request_builder(payload)
-
     assert captured["build_prompt_prefill_thinker_done"] is True
     assert captured["build_prompt_prefill_chunk_count"] == 3
 
 
-def test_done_path_with_no_fallback_raises_value_error() -> None:
-    """Completed-stream path with no fallback chunks still raises ValueError."""
-    request_builder, _ = _make_request_builder_stub_env(fallback_chunks_from_state=[])
-    payload = SimpleNamespace(
-        request_id="r0",
-        request=SimpleNamespace(params={}),
-        prefetched_chunks=[],
-        prefetched_stream_done=True,
-    )
+def test_real_builder_raises_when_done_and_fallback_empty() -> None:
+    """Completed-stream path with no fallback chunks raises ValueError."""
+    import pytest
 
-    try:
-        request_builder(payload)
-    except ValueError as exc:
-        assert "thinker output tokens" in str(exc)
-    else:
-        raise AssertionError(
-            "request_builder must raise ValueError when no chunks and no fallback"
+    with pytest.raises(ValueError, match="thinker output tokens"):
+        _drive_real_builder(
+            prefetched_chunks=[],
+            prefetched_stream_done=True,
+            fallback_chunks_from_state=[],
         )
 
 
 def _build_state_machine_scheduler(
     *,
-    partial_start_min_chunks: int | None,
+    enable_partial_start: bool = False,
+    partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
     request_builder_stub: Any,
 ) -> QwenTalkerScheduler:
     """Construct a scheduler with just enough state for process_input_requests."""
     scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler._enable_partial_start = enable_partial_start
     scheduler._partial_start_min_chunks = partial_start_min_chunks
     scheduler._pending_stream_chunks = {}
     scheduler._pending_stream_done = set()
@@ -697,6 +738,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
         )
 
     scheduler = _build_state_machine_scheduler(
+        enable_partial_start=True,
         partial_start_min_chunks=5,
         request_builder_stub=stub_request_builder,
     )
@@ -744,6 +786,7 @@ def test_process_input_requests_keeps_deferred_when_below_threshold() -> None:
         )
 
     scheduler = _build_state_machine_scheduler(
+        enable_partial_start=True,
         partial_start_min_chunks=10,
         request_builder_stub=fail_if_called,
     )
@@ -803,25 +846,132 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
 
 
 def test_wiring_propagation_factory_args_to_scheduler() -> None:
-    """factory_args partial_start_min_chunks flows to the live scheduler attribute."""
+    """factory_args enable_partial_start + partial_start_min_chunks flow to scheduler."""
     from sglang_omni.models.qwen3_omni.config import _talker_stage
 
     talker_stage = _talker_stage(gpu=0, process="talker_ar")
-    assert "partial_start_min_chunks" in talker_stage.factory_args
-    assert talker_stage.factory_args["partial_start_min_chunks"] is None
+    assert talker_stage.factory_args["enable_partial_start"] is False
+    assert talker_stage.factory_args["partial_start_min_chunks"] == 5
 
-    # Verify the scheduler constructor accepts and stores the kwarg without
-    # triggering the heavy OmniScheduler bring-up: stub the parent __init__
-    # to a no-op for the duration of the propagation check.
     scheduler = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
     original_parent_init = OmniScheduler.__init__
     try:
         OmniScheduler.__init__ = lambda self, *args, **kwargs: None  # type: ignore[method-assign]
-        QwenTalkerScheduler.__init__(scheduler, partial_start_min_chunks=7)
+        QwenTalkerScheduler.__init__(
+            scheduler, enable_partial_start=True, partial_start_min_chunks=7
+        )
     finally:
         OmniScheduler.__init__ = original_parent_init  # type: ignore[method-assign]
 
+    assert scheduler._enable_partial_start is True
     assert scheduler._partial_start_min_chunks == 7
+
+
+def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() -> None:
+    """Repeated stalls must leave talker scheduler state identical to pre-prepare_for_decode.
+
+    Reviewer flagged that an incomplete rollback in shared OmniScheduler could
+    leak state across the side-effect set that ``prepare_for_decode`` writes
+    (out_cache_loc, seq_lens, decode_batch_idx, kv_committed_len,
+    kv_allocated_len). Under talker server_args (overlap disabled, no Mamba)
+    those are the only writes; assert that rolling back twice leaves counters
+    where they started.
+    """
+    freed: list[Any] = []
+
+    class FakeAllocator:
+        def free(self, slot: Any) -> None:
+            freed.append(slot)
+
+    class FakeForwardMode:
+        @staticmethod
+        def is_decode() -> bool:
+            return True
+
+    pre_seq_lens = torch.tensor([12, 12])
+    pre_seq_lens_cpu = torch.tensor([12, 12])
+    pre_orig_seq_lens = torch.tensor([10, 11])
+    pre_seq_lens_sum = 24
+
+    reqs = [
+        SimpleNamespace(decode_batch_idx=5, kv_committed_len=12, kv_allocated_len=13),
+        SimpleNamespace(decode_batch_idx=7, kv_committed_len=12, kv_allocated_len=13),
+    ]
+    batch = SimpleNamespace(
+        forward_mode=FakeForwardMode(),
+        out_cache_loc=object(),
+        output_ids=None,
+        input_ids=torch.tensor([99, 100]),
+        reqs=reqs,
+        seq_lens=pre_seq_lens.clone(),
+        seq_lens_cpu=pre_seq_lens_cpu.clone(),
+        orig_seq_lens=pre_orig_seq_lens.clone(),
+        seq_lens_sum=pre_seq_lens_sum,
+    )
+
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.token_to_kv_pool_allocator = FakeAllocator()
+
+    # Simulate one prepare_for_decode round: counters already incremented +
+    # an out_cache_loc allocation handed in. One stall -> one rollback.
+    scheduler._rollback_decode_prep_after_skip(batch)
+    assert batch.out_cache_loc is None
+    assert batch.output_ids is batch.input_ids
+    for req in reqs:
+        assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
+        assert req.kv_committed_len == 11
+        assert req.kv_allocated_len == 12
+    assert torch.equal(batch.seq_lens, pre_seq_lens - 1)
+    assert torch.equal(batch.seq_lens_cpu, pre_seq_lens_cpu - 1)
+    assert torch.equal(batch.orig_seq_lens, pre_orig_seq_lens - 1)
+    assert batch.seq_lens_sum == pre_seq_lens_sum - len(reqs)
+    assert len(freed) == 1
+
+    # A second stall on the next iteration must roll back again without
+    # accumulating state — the contract is "leaves no residue per stall".
+    # Re-simulate prepare_for_decode having run: counters re-incremented +
+    # a fresh out_cache_loc was allocated.
+    batch.out_cache_loc = object()
+    for req in reqs:
+        req.decode_batch_idx += 1
+        req.kv_committed_len += 1
+        req.kv_allocated_len += 1
+    batch.seq_lens.add_(1)
+    batch.seq_lens_cpu.add_(1)
+    batch.orig_seq_lens.add_(1)
+    batch.seq_lens_sum += len(reqs)
+
+    scheduler._rollback_decode_prep_after_skip(batch)
+    assert batch.out_cache_loc is None
+    for req in reqs:
+        assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
+        assert req.kv_committed_len == 11
+        assert req.kv_allocated_len == 12
+    assert batch.seq_lens_sum == pre_seq_lens_sum - len(reqs)
+    assert len(freed) == 2
+
+
+def test_rollback_decode_prep_after_skip_is_noop_for_prefill_batches() -> None:
+    """Rollback must not fire for prefill batches — those have no decode prep to undo."""
+
+    class FakeForwardMode:
+        @staticmethod
+        def is_decode() -> bool:
+            return False
+
+    freed: list[Any] = []
+    batch = SimpleNamespace(
+        forward_mode=FakeForwardMode(),
+        out_cache_loc=object(),
+        seq_lens_sum=99,
+    )
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(free=freed.append)
+
+    scheduler._rollback_decode_prep_after_skip(batch)
+    assert batch.out_cache_loc is not None
+    assert batch.seq_lens_sum == 99
+    assert freed == []
 
 
 def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
