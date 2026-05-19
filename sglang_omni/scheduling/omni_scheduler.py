@@ -371,6 +371,9 @@ class OmniScheduler:
     def get_next_batch_to_run(self):
         batch = _Upstream.get_next_batch_to_run(self)
         if batch is not None and not self._is_batch_ready_to_run(batch):
+            # Upstream already ran prepare_for_decode; release the alloc and
+            # roll the counters back, otherwise seq_lens grows unbounded and
+            # eventually overflows max_context_len.
             self._rollback_decode_prep_after_skip(batch)
             return None
         return batch
@@ -378,19 +381,15 @@ class OmniScheduler:
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
         if not batch.forward_mode.is_decode():
             return
-
         if batch.out_cache_loc is not None:
             self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
             batch.out_cache_loc = None
-
         if batch.output_ids is None:
             batch.output_ids = batch.input_ids
-
         for req in batch.reqs:
             req.decode_batch_idx -= 1
             req.kv_committed_len -= 1
             req.kv_allocated_len -= 1
-
         batch.seq_lens.sub_(1)
         batch.seq_lens_cpu.sub_(1)
         batch.orig_seq_lens.sub_(1)
@@ -761,10 +760,8 @@ class OmniScheduler:
             self.inbox.put(msg)
 
     def _find_request_data(self, request_id: str) -> Any | None:
-        # The req lives in cur_batch/last_batch during the prefill->decode
-        # handoff. Stream chunks arriving in that window would otherwise be
-        # buffered as if the req did not exist yet, and never appended to
-        # the live request's pending_text_queue.
+        # Stream chunks must reach the live req regardless of which batch
+        # owns it at the moment — running, in-flight, or just-completed.
         for batch in (self.running_batch, self.cur_batch, self.last_batch):
             if batch is None:
                 continue
