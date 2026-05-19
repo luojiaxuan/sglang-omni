@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Streaming time-to-first-audio-chunk (TTFT) benchmark for Qwen3-Omni speech.
 
-Measures the wall-clock latency from request submission to the first audio
-byte returned by ``POST /v1/audio/speech`` (streamed). Designed to surface
+Measures wall-clock latency from request submission to the first audio
+delta returned by ``POST /v1/chat/completions`` with
+``modalities=["text","audio"]`` and ``stream=true``. Designed to surface
 the gain from partial-prefix talker startup (``partial_start_min_chunks``),
 which MMMU end-to-end accuracy benchmarks cannot observe because their
 total-request latency is dominated by the thinker.
@@ -64,7 +65,7 @@ class RunResult:
     repeat: int
     ttft_seconds: float
     total_seconds: float
-    body_bytes: int
+    audio_chunks: int
     status_code: int
 
 
@@ -86,20 +87,25 @@ async def _measure_one(
     seed: int,
     timeout_s: float,
 ) -> tuple[float, float, int, int]:
-    url = f"{base_url.rstrip('/')}/v1/audio/speech"
+    """Stream a chat completion with modalities=[text, audio] and time the
+    first audio delta. The talker_ar pipeline owns the audio output; this is
+    the metric ``partial_start_min_chunks`` is designed to move.
+    """
+    url = f"{base_url.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": model,
-        "input": prompt,
-        "voice": "alloy",
-        "response_format": "wav",
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["text", "audio"],
+        "audio": {"voice": "alloy", "format": "wav"},
         "stream": True,
         "seed": seed,
+        "max_tokens": 256,
         "metadata": {"client_label": request_id_hint},
     }
 
     start = time.perf_counter()
     ttft: float | None = None
-    body_bytes = 0
+    audio_chunks = 0
     status_code = 0
 
     async with client.stream("POST", url, json=payload, timeout=timeout_s) as response:
@@ -107,15 +113,29 @@ async def _measure_one(
         if status_code >= 400:
             text = await response.aread()
             raise RuntimeError(f"server returned {status_code}: {text[:512]!r}")
-        async for chunk in response.aiter_bytes():
-            if ttft is None and chunk:
-                ttft = time.perf_counter() - start
-            body_bytes += len(chunk)
+        async for raw_line in response.aiter_lines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            body = line[len("data:") :].strip()
+            if body == "[DONE]":
+                continue
+            try:
+                evt = json.loads(body)
+            except json.JSONDecodeError:
+                continue
+            for choice in evt.get("choices", []):
+                delta = choice.get("delta") or {}
+                audio = delta.get("audio")
+                if audio and audio.get("data"):
+                    if ttft is None:
+                        ttft = time.perf_counter() - start
+                    audio_chunks += 1
 
     total = time.perf_counter() - start
     if ttft is None:
-        raise RuntimeError("server returned 200 but no audio bytes")
-    return ttft, total, body_bytes, status_code
+        raise RuntimeError("server returned 200 but no audio delta arrived")
+    return ttft, total, audio_chunks, status_code
 
 
 async def _run(args: argparse.Namespace) -> Summary:
@@ -127,7 +147,7 @@ async def _run(args: argparse.Namespace) -> Summary:
             for warm in range(args.warmup):
                 seed = 9000 + warm
                 hint = f"{args.label}-{prompt_id}-warmup{warm}"
-                ttft, total, body_bytes, status_code = await _measure_one(
+                ttft, total, audio_chunks, status_code = await _measure_one(
                     client,
                     args.base_url,
                     args.model,
@@ -150,7 +170,7 @@ async def _run(args: argparse.Namespace) -> Summary:
             for repeat in range(args.repeats):
                 seed = 1000 + repeat
                 hint = f"{args.label}-{prompt_id}-{repeat}"
-                ttft, total, body_bytes, status_code = await _measure_one(
+                ttft, total, audio_chunks, status_code = await _measure_one(
                     client,
                     args.base_url,
                     args.model,
@@ -166,20 +186,20 @@ async def _run(args: argparse.Namespace) -> Summary:
                         repeat=repeat,
                         ttft_seconds=ttft,
                         total_seconds=total,
-                        body_bytes=body_bytes,
+                        audio_chunks=audio_chunks,
                         status_code=status_code,
                     )
                 )
                 ttfts.append(ttft)
                 totals.append(total)
                 logger.info(
-                    "[%s] prompt=%s repeat=%d ttft=%.3fs total=%.3fs bytes=%d",
+                    "[%s] prompt=%s repeat=%d ttft=%.3fs total=%.3fs audio_chunks=%d",
                     args.label,
                     prompt_id,
                     repeat,
                     ttft,
                     total,
-                    body_bytes,
+                    audio_chunks,
                 )
 
             summary.aggregate[prompt_id] = {
