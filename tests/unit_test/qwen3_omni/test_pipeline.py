@@ -78,6 +78,21 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert _stage(speech_config, "talker_ar").can_accept_stream_before_payload
     assert _stage(speech_config, "code2wav").can_accept_stream_before_payload
 
+    # Early-submit wiring (issue #473): the talker stage receives its
+    # new_request from mm_aggregate so it can enter its deferred state
+    # before the thinker finishes streaming. The thinker therefore only
+    # routes its final payload to decode; its hidden-state stream to
+    # talker_ar is preserved via stream_to (locked above).
+    speech_aggregate = _stage(speech_config, "mm_aggregate")
+    assert speech_aggregate.next == ["thinker", "talker_ar"]
+    assert speech_aggregate.project_payload is not None
+    assert "talker_ar" in speech_aggregate.project_payload
+    assert _stage(speech_config, "thinker").next == "decode"
+
+    text_aggregate = _stage(text_config, "mm_aggregate")
+    assert text_aggregate.next == "thinker"
+    assert _stage(text_config, "thinker").next == "decode"
+
     state = PipelineState.from_dict(
         {
             "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},

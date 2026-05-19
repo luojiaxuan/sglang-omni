@@ -66,14 +66,32 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _aggregate_stage(*, process: str) -> StageConfig:
+def _aggregate_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
+    # When speech is enabled, route the merged mm_aggregate payload to the
+    # talker stage as well so the talker can receive its new_request BEFORE
+    # the thinker finishes generation. The talker's request_builder only
+    # reads prompt + thinker_inputs (no thinker output tokens), so this
+    # early payload is sufficient for the talker to enter its deferred
+    # state. Live thinker tokens then arrive through
+    # ``thinker.stream_to=["talker_ar"]`` and fill ``prefetched_chunks`` —
+    # which is what lets the partial-start policy hook actually fire
+    # (otherwise the talker's new_request only arrives after
+    # ``stream_done`` and the policy hook can never see a partial prefix).
+    next_stages: list[str] | str = "thinker"
+    project_payload: dict[str, str] | None = None
+    if speech_enabled:
+        next_stages = ["thinker", "talker_ar"]
+        project_payload = {
+            "talker_ar": (f"{_PKG}.request_builders.project_mm_aggregate_to_talker_ar"),
+        }
     return StageConfig(
         name="mm_aggregate",
         process=process,
         factory=f"{_PKG}.stages.create_aggregate_executor",
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         merge_fn=f"{_PKG}.merge.merge_for_thinker",
-        next="thinker",
+        next=next_stages,
+        project_payload=project_payload,
     )
 
 
@@ -88,7 +106,11 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory_args=factory_args,
         gpu=gpu,
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
-        next=["decode", "talker_ar"] if speech_enabled else "decode",
+        # talker_ar receives its new_request from mm_aggregate (early submit)
+        # so the thinker only needs to send its final payload to decode. The
+        # streaming edge to talker_ar (``stream_to`` below) remains the only
+        # path that carries live thinker tokens into the talker scheduler.
+        next="decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
     )
 
@@ -150,7 +172,7 @@ def _text_stages() -> list[StageConfig]:
         _preprocessing_stage(process="pipeline"),
         _image_encoder_stage(gpu=0, process="pipeline"),
         _audio_encoder_stage(gpu=0, process="pipeline"),
-        _aggregate_stage(process="pipeline"),
+        _aggregate_stage(process="pipeline", speech_enabled=False),
         _thinker_stage(gpu=0, speech_enabled=False, process="pipeline"),
         _decode_stage(process="pipeline"),
     ]
@@ -172,7 +194,10 @@ def _speech_stages(
             gpu=thinker_gpu,
             process=process_by_stage["audio_encoder"],
         ),
-        _aggregate_stage(process=process_by_stage["mm_aggregate"]),
+        _aggregate_stage(
+            process=process_by_stage["mm_aggregate"],
+            speech_enabled=True,
+        ),
         _thinker_stage(
             gpu=thinker_gpu,
             speech_enabled=True,

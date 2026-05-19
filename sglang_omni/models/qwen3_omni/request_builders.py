@@ -113,6 +113,31 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
+def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
+    """Project mm_aggregate output for early-submit to the talker stage.
+
+    The talker's request_builder reads only ``state.prompt`` and
+    ``state.thinker_inputs`` from the PipelineState. Everything else
+    (``mm_inputs``, ``encoder_outs``, ``thinker_out``, ...) is irrelevant to
+    talker prefill and would only inflate the relay-payload size.
+
+    Routing this payload via mm_aggregate's ``next`` edge gives the talker
+    an early ``new_request`` BEFORE the thinker finishes generation, so the
+    talker scheduler can enter its deferred state. Live thinker tokens then
+    arrive via the existing ``thinker.stream_to=["talker_ar"]`` edge and
+    fill ``payload.prefetched_chunks``. The partial-start policy hook fires
+    once the chunk threshold is satisfied.
+    """
+    state = PipelineState.from_dict(payload.data)
+    projected = PipelineState(
+        prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
+        thinker_inputs=(
+            dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
+        ),
+    )
+    return _payload_with_state(payload, projected)
+
+
 def _project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
