@@ -106,6 +106,15 @@ def parse_args() -> argparse.Namespace:
             "for stream_done. Disabled when omitted."
         ),
     )
+    parser.add_argument(
+        "--colocated",
+        action="store_true",
+        help=(
+            "Use Qwen3OmniSpeechColocatedPipelineConfig (single-GPU topology). "
+            "Required when --gpu-thinker, --gpu-talker, and --gpu-code2wav point "
+            "to the same device."
+        ),
+    )
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -156,7 +165,10 @@ def _set_stage_gpu(config: Any, stage_name: str, gpu_id: int) -> None:
 
 
 def _launch_speech_server(args: argparse.Namespace) -> None:
-    from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+    from sglang_omni.models.qwen3_omni.config import (
+        Qwen3OmniSpeechColocatedPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+    )
     from sglang_omni.serve import launch_server
 
     for flag_name, value in (
@@ -177,7 +189,12 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             "stage. Use the same GPU for --gpu-code-predictor and --gpu-talker."
         )
 
-    config = Qwen3OmniSpeechPipelineConfig(
+    config_cls = (
+        Qwen3OmniSpeechColocatedPipelineConfig
+        if args.colocated
+        else Qwen3OmniSpeechPipelineConfig
+    )
+    config = config_cls(
         model_path=args.model_path,
         relay_backend=args.relay_backend,
     )
