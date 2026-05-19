@@ -96,6 +96,16 @@ def parse_args() -> argparse.Namespace:
             "Overrides --mem-fraction-static for talker."
         ),
     )
+    parser.add_argument(
+        "--partial-start-min-chunks",
+        type=int,
+        default=None,
+        help=(
+            "Opt-in partial-prefix talker startup: build the talker request "
+            "from a partial thinker stream after N chunks rather than waiting "
+            "for stream_done. Disabled when omitted."
+        ),
+    )
     # Server
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -215,6 +225,13 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             config,
             stage_name="preprocessing",
             updates=thinker_seq_len_updates,
+        )
+
+    if args.partial_start_min_chunks is not None:
+        _apply_stage_factory_updates(
+            config,
+            stage_name="talker_ar",
+            updates={"partial_start_min_chunks": int(args.partial_start_min_chunks)},
         )
 
     launch_server(
