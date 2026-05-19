@@ -828,6 +828,15 @@ def make_talker_scheduler_adapters(
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
         params = payload.request.params
         sampling_cfg = _resolve_talker_sampling_config(params)
+        if sampling_cfg.get("seed") is None:
+            # Without a per-request seed the talker sampler falls back to
+            # batch-shared RNG state — partial-start then makes audio_duration
+            # drift with batch composition. Derive a deterministic per-request
+            # seed from request_id so each request's audio is invariant.
+            sampling_cfg["seed"] = (
+                xxhash.xxh64_intdigest(str(payload.request_id).encode("utf-8"))
+                & 0x7FFFFFFF
+            )
         thinker_chunks = list(payload.prefetched_chunks)
         thinker_done = bool(payload.prefetched_stream_done)
 
