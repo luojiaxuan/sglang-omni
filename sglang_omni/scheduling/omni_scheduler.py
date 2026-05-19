@@ -371,9 +371,7 @@ class OmniScheduler:
     def get_next_batch_to_run(self):
         batch = _Upstream.get_next_batch_to_run(self)
         if batch is not None and not self._is_batch_ready_to_run(batch):
-            # Upstream already ran prepare_for_decode; release the alloc and
-            # roll the counters back, otherwise seq_lens grows unbounded and
-            # eventually overflows max_context_len.
+            # Roll back upstream's prepare_for_decode alloc + counters.
             self._rollback_decode_prep_after_skip(batch)
             return None
         return batch
@@ -396,8 +394,7 @@ class OmniScheduler:
         batch.seq_lens_sum -= len(batch.reqs)
 
     def self_check_during_idle(self) -> None:
-        # Skip the upstream "leak" check while a partial-start req is stalled
-        # in running_batch — its KV slots are in flight, not leaked.
+        # Partial-start stalled reqs hold live KV slots; not a leak.
         if self.running_batch is not None and not self.running_batch.is_empty():
             return
         if self.waiting_queue:
@@ -760,8 +757,7 @@ class OmniScheduler:
             self.inbox.put(msg)
 
     def _find_request_data(self, request_id: str) -> Any | None:
-        # Stream chunks must reach the live req regardless of which batch
-        # owns it at the moment — running, in-flight, or just-completed.
+        # Scan all batches a live req can sit in during prefill→decode handoff.
         for batch in (self.running_batch, self.cur_batch, self.last_batch):
             if batch is None:
                 continue

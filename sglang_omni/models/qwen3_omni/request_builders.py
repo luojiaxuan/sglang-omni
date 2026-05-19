@@ -114,20 +114,7 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
 
 
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
-    """Project mm_aggregate output for early-submit to the talker stage.
-
-    The talker's request_builder reads only ``state.prompt`` and
-    ``state.thinker_inputs`` from the PipelineState. Everything else
-    (``mm_inputs``, ``encoder_outs``, ``thinker_out``, ...) is irrelevant to
-    talker prefill and would only inflate the relay-payload size.
-
-    Routing this payload via mm_aggregate's ``next`` edge gives the talker
-    an early ``new_request`` BEFORE the thinker finishes generation, so the
-    talker scheduler can enter its deferred state. Live thinker tokens then
-    arrive via the existing ``thinker.stream_to=["talker_ar"]`` edge and
-    fill ``payload.prefetched_chunks``. The partial-start policy hook fires
-    once the chunk threshold is satisfied.
-    """
+    """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = PipelineState.from_dict(payload.data)
     projected = PipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
@@ -829,10 +816,7 @@ def make_talker_scheduler_adapters(
         params = payload.request.params
         sampling_cfg = _resolve_talker_sampling_config(params)
         if sampling_cfg.get("seed") is None:
-            # Without a per-request seed the talker sampler falls back to
-            # batch-shared RNG state — partial-start then makes audio_duration
-            # drift with batch composition. Derive a deterministic per-request
-            # seed from request_id so each request's audio is invariant.
+            # Per-request seed so sampling is invariant to batch composition.
             sampling_cfg["seed"] = (
                 xxhash.xxh64_intdigest(str(payload.request_id).encode("utf-8"))
                 & 0x7FFFFFFF

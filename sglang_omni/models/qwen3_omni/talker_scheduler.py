@@ -34,22 +34,15 @@ def configure_talker_server_args(
     return want_cuda_graph
 
 
-# Minimum prefetched thinker chunk count required to enter the partial-start
-# path. The 9-row assistant tail that ``build_assistant_part`` constructs
-# collapses below 3 chunks. The decode-ready operating point (at least one
-# consumable future text row after ``include_assistant_eos=False`` strips the
-# trailing EOS row) sits at 5 chunks. Both numbers are pinned by
-# ``test_partial_prompt_prefill_layout_invariants``; do not change this floor
-# without updating that test.
+# Floor for the partial-start gate; pinned by
+# ``test_partial_prompt_prefill_layout_invariants``.
 MIN_PARTIAL_START_CHUNKS = 3
 
 
 class QwenTalkerScheduler(OmniScheduler):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
-    # Class-level defaults so `object.__new__(QwenTalkerScheduler)` test
-    # helpers (which bypass __init__) still see a usable disabled state. The
-    # upstream OmniScheduler.__getattr__ otherwise raises on missing attrs.
+    # Class-level defaults so object.__new__ test helpers see a disabled state.
     _partial_start_min_chunks: int | None = None
     _im_end_token_id: int | None = None
 
@@ -61,8 +54,6 @@ class QwenTalkerScheduler(OmniScheduler):
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
-        # Treat 0 / negative thresholds as disabled rather than silently
-        # promoting them to MIN_PARTIAL_START_CHUNKS. Users opt in explicitly.
         if partial_start_min_chunks is not None and partial_start_min_chunks <= 0:
             logger.warning(
                 "partial_start_min_chunks=%r is not a valid opt-in value; "
@@ -74,13 +65,7 @@ class QwenTalkerScheduler(OmniScheduler):
         self._im_end_token_id = im_end_token_id
 
     def _count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
-        """Count chunks that survive prefill's <|im_end|> stripping.
-
-        ``build_prefill_input`` drops a trailing ``<|im_end|>`` from the
-        assistant segment before projection. Counting raw chunks would let
-        partial-start fire below ``MIN_PARTIAL_START_CHUNKS`` usable rows
-        when a late ``<|im_end|>`` arrives before ``stream_done``.
-        """
+        """Count chunks that survive prefill's <|im_end|> stripping."""
         im_end = self._im_end_token_id
         if im_end is None:
             return len(prefetched)
@@ -108,9 +93,8 @@ class QwenTalkerScheduler(OmniScheduler):
         return self._count_usable_prefetched_chunks(prefetched) >= effective_min
 
     def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
+        # No-op: request_builder seeds pending_text_queue itself.
         del req_data, payload
-        # The talker request builder consumes the full thinker stream up front and
-        # seeds pending_text_queue itself, so the scheduler must not replay it.
         return None
 
     def _is_batch_ready_to_run(self, batch: Any) -> bool:

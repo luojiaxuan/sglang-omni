@@ -67,16 +67,8 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
 
 
 def _aggregate_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
-    # When speech is enabled, route the merged mm_aggregate payload to the
-    # talker stage as well so the talker can receive its new_request BEFORE
-    # the thinker finishes generation. The talker's request_builder only
-    # reads prompt + thinker_inputs (no thinker output tokens), so this
-    # early payload is sufficient for the talker to enter its deferred
-    # state. Live thinker tokens then arrive through
-    # ``thinker.stream_to=["talker_ar"]`` and fill ``prefetched_chunks`` —
-    # which is what lets the partial-start policy hook actually fire
-    # (otherwise the talker's new_request only arrives after
-    # ``stream_done`` and the policy hook can never see a partial prefix).
+    # Route the merged payload to talker_ar so partial-start can fire — the
+    # policy hook needs the new_request before `stream_done` arrives.
     if speech_enabled:
         return StageConfig(
             name="mm_aggregate",
@@ -112,10 +104,6 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory_args=factory_args,
         gpu=gpu,
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
-        # talker_ar receives its new_request from mm_aggregate (early submit)
-        # so the thinker only needs to send its final payload to decode. The
-        # streaming edge to talker_ar (``stream_to`` below) remains the only
-        # path that carries live thinker tokens into the talker scheduler.
         next="decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
     )
@@ -147,10 +135,8 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
             "talker_max_seq_len": 32768,
             "speech_enabled": True,
             "feedback_enabled": True,
-            # Disabled by default. Set to an integer chunk-count threshold to
-            # enable partial-prefix talker startup (build the talker request
-            # from a partial thinker stream before the upstream stream_done
-            # barrier). The scheduler floors the value at MIN_PARTIAL_START_CHUNKS.
+            # Opt-in chunk-count threshold for partial-prefix talker startup;
+            # floored at MIN_PARTIAL_START_CHUNKS. None = disabled.
             "partial_start_min_chunks": None,
         },
         gpu=gpu,
