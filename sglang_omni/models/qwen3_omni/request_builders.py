@@ -98,10 +98,12 @@ def project_preprocessing_to_thinker_textonly(payload: StagePayload) -> StagePay
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
         if _has_real_encoder_work(state.encoder_inputs.get(stage_name))
     ]
-    if blocked:
+    blocked_mm = _mm_inputs_with_real_work(state.mm_inputs)
+    if blocked or blocked_mm:
         raise ValueError(
             "Qwen3-Omni text-minimal enabled_stages can only serve text-only "
-            f"requests; preprocessing produced media encoder work for {blocked}. "
+            "requests; preprocessing produced media work "
+            f"(encoder_inputs={blocked}, mm_inputs={blocked_mm}). "
             "Use the full multimodal pipeline or remove media inputs."
         )
     return merge_for_thinker({"preprocessing": payload})
@@ -173,6 +175,17 @@ def _has_real_encoder_work(stage_inputs: Any) -> bool:
         and bool(stage_inputs)
         and not stage_inputs.get("_skip")
     )
+
+
+def _mm_inputs_with_real_work(mm_inputs: dict[str, Any]) -> list[str]:
+    blocked: list[str] = []
+    for modality in ("image", "video", "audio"):
+        inputs = mm_inputs.get(modality)
+        if isinstance(inputs, dict) and any(
+            value is not None for value in inputs.values()
+        ):
+            blocked.append(modality)
+    return blocked
 
 
 def _project_encoder_input_metadata(

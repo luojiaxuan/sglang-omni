@@ -533,6 +533,15 @@ def test_qwen_textonly_fallback_rejects_real_media_encoder_work() -> None:
         project_preprocessing_to_thinker_textonly(make_qwen_payload(state))
 
 
+def test_qwen_textonly_fallback_rejects_real_mm_inputs() -> None:
+    state = make_qwen_state(
+        mm_inputs={"image": {"image_grid_thw": torch.tensor([[1, 1, 1]])}}
+    )
+
+    with pytest.raises(ValueError, match="text-only.*image"):
+        project_preprocessing_to_thinker_textonly(make_qwen_payload(state))
+
+
 def test_qwen_textonly_fallback_allows_skip_encoder_work() -> None:
     state = make_qwen_state(
         encoder_inputs={"image_encoder": {"_skip": True, "_result": {}}}
