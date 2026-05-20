@@ -78,6 +78,19 @@ def test_qwen_talker_decode_input_consumes_device_text_queue() -> None:
     assert len(text_req.data.pending_text_queue) == 0
 
 
+def test_qwen_talker_decode_input_rejects_implicit_row_transfer() -> None:
+    """Keeps decode hot path free of implicit dtype/device conversions."""
+    sched_req = _sched_req(
+        pending_feedback_queue=deque([torch.tensor([1.0, 2.0])]),
+        pending_text_queue=deque([torch.tensor([20.0, 20.0], dtype=torch.float64)]),
+        tts_pad_embed=torch.tensor([7.0, 8.0]),
+        thinker_chunks_done=False,
+    )
+
+    with pytest.raises(RuntimeError, match="must already match"):
+        _take_decode_input(sched_req)
+
+
 def test_qwen_talker_decode_input_preserves_feedback_until_text_arrives() -> None:
     """Preserves queued feedback when neither text nor final pad is ready."""
     sched_req = _sched_req(
