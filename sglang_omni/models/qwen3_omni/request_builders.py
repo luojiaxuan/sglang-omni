@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -427,7 +428,7 @@ def build_sglang_talker_request(
     talker_input_ids: torch.Tensor | list[int] | None = None,
     input_embeds_are_projected: bool = False,
     pending_text_queue: (
-        PendingTextTensorQueue | list[torch.Tensor] | torch.Tensor | None
+        PendingTextTensorQueue | Iterable[torch.Tensor] | torch.Tensor | None
     ) = None,
     tts_pad_embed: torch.Tensor | None = None,
     thinker_chunks_done: bool = True,

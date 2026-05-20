@@ -3,22 +3,23 @@
 
 from __future__ import annotations
 
-import collections.abc
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 import torch
 
 
 def _as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
     tensor = tensor.detach()
-    if tensor.numel() == 0:
-        return None
     if tensor.dim() == 1:
+        if tensor.numel() == 0:
+            return None
         return tensor.reshape(1, -1)
     if tensor.dim() == 2:
+        if tensor.numel() == 0:
+            return None
         return tensor
-    return tensor.reshape(-1, tensor.shape[-1])
+    raise ValueError("pending text rows must be a 1D row tensor or a 2D row batch")
 
 
 @dataclass(slots=True)
@@ -42,6 +43,9 @@ class PendingTextTensorQueue:
 
     def __bool__(self) -> bool:
         return len(self) > 0
+
+    def copy(self) -> "PendingTextTensorQueue":
+        return type(self)(rows=self.rows, cursor=self.cursor)
 
     def __len__(self) -> int:
         if self.rows is None:
@@ -92,10 +96,10 @@ class PendingTextTensorQueue:
 
 def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:
     if isinstance(value, PendingTextTensorQueue):
-        return value
+        return value.copy()
     if isinstance(value, torch.Tensor) or value is None:
         return PendingTextTensorQueue.from_tensor(value)
-    if isinstance(value, collections.abc.Iterable):
+    if isinstance(value, Iterable):
         queue = PendingTextTensorQueue()
         for row in value:
             if isinstance(row, torch.Tensor):

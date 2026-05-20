@@ -5,13 +5,17 @@ from __future__ import annotations
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
-from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.models.qwen3_omni.pending_text_queue import (
+    PendingTextTensorQueue,
+    coerce_pending_text_queue,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
 
@@ -226,6 +230,26 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert isinstance(queue, PendingTextTensorQueue)
     assert len(queue) == 2
     assert queue[0].device.type == "meta"
+
+
+def test_pending_text_queue_rejects_unexpected_rank() -> None:
+    """Keeps queue shape handling explicit instead of flattening unknown ranks."""
+    queue = PendingTextTensorQueue()
+
+    with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
+        queue.append_rows(torch.zeros((1, 2, 3)))
+
+
+def test_coerce_pending_text_queue_copies_cursor_state() -> None:
+    """Avoids sharing mutable FIFO cursor state across request data objects."""
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+
+    copied = coerce_pending_text_queue(queue)
+    copied.popleft()
+
+    assert copied is not queue
+    assert len(copied) == 1
+    assert len(queue) == 2
 
 
 def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
