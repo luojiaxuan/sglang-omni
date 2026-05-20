@@ -238,6 +238,19 @@ def test_pending_text_queue_rejects_unexpected_rank() -> None:
 
     with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
         queue.append_rows(torch.zeros((1, 2, 3)))
+    with pytest.raises(ValueError, match="non-empty hidden dimension"):
+        queue.append_rows(torch.zeros((1, 0)))
+
+
+def test_pending_text_queue_rejects_non_tensor_input() -> None:
+    """Keeps conversion failures explicit instead of skipping invalid rows."""
+    with pytest.raises(TypeError, match="pending text rows must be tensors"):
+        PendingTextTensorQueue.from_tensor(None)
+
+    with pytest.raises(TypeError, match="pending text rows must be tensors"):
+        coerce_pending_text_queue([torch.tensor([1.0]), object()])
+    with pytest.raises(TypeError, match="pending text queue must be None"):
+        coerce_pending_text_queue(object())
 
 
 def test_coerce_pending_text_queue_copies_cursor_state() -> None:

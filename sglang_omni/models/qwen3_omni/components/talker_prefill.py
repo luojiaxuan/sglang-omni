@@ -328,6 +328,8 @@ class TalkerPrefillBuilder:
     def tensor_rows_to_queue(
         self, tensor: torch.Tensor | None
     ) -> PendingTextTensorQueue:
+        if tensor is None:
+            return PendingTextTensorQueue()
         return PendingTextTensorQueue.from_tensor(tensor)
 
     def _reconstruct_prompt_states(

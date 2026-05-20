@@ -10,14 +10,19 @@ import torch
 
 
 def _as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
-    tensor = tensor.detach()
+    try:
+        tensor = tensor.detach()
+    except AttributeError as exc:
+        raise TypeError("pending text rows must be tensors") from exc
     if tensor.dim() == 1:
-        if tensor.numel() == 0:
+        if tensor.shape[0] == 0:
             return None
         return tensor.reshape(1, -1)
     if tensor.dim() == 2:
-        if tensor.numel() == 0:
+        if tensor.shape[0] == 0:
             return None
+        if tensor.shape[1] == 0:
+            raise ValueError("pending text rows must have a non-empty hidden dimension")
         return tensor
     raise ValueError("pending text rows must be a 1D row tensor or a 2D row batch")
 
@@ -35,10 +40,9 @@ class PendingTextTensorQueue:
     cursor: int = 0
 
     @classmethod
-    def from_tensor(cls, tensor: torch.Tensor | None) -> "PendingTextTensorQueue":
+    def from_tensor(cls, tensor: torch.Tensor) -> "PendingTextTensorQueue":
         queue = cls()
-        if isinstance(tensor, torch.Tensor):
-            queue.append_rows(tensor)
+        queue.append_rows(tensor)
         return queue
 
     def __bool__(self) -> bool:
@@ -95,14 +99,18 @@ class PendingTextTensorQueue:
 
 
 def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:
+    if value is None:
+        return PendingTextTensorQueue()
     if isinstance(value, PendingTextTensorQueue):
         return value.copy()
-    if isinstance(value, torch.Tensor) or value is None:
+    if isinstance(value, torch.Tensor):
         return PendingTextTensorQueue.from_tensor(value)
     if isinstance(value, Iterable):
         queue = PendingTextTensorQueue()
         for row in value:
-            if isinstance(row, torch.Tensor):
-                queue.append(row)
+            queue.append(row)
         return queue
-    return PendingTextTensorQueue()
+    raise TypeError(
+        "pending text queue must be None, a tensor, a PendingTextTensorQueue, "
+        "or an iterable of tensors"
+    )
