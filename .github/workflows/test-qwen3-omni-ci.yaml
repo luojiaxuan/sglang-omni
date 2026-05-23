@@ -12,24 +12,49 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
+  issues: read
 
 # DAG:
-#   setup ──► stage-1-thinker
-#         ├─► stage-2-tts
-#         ├─► stage-3-mmmu
-#         ├─► stage-4-mmmu-talker
-#         ├─► stage-5-mmsu
-#         ├─► stage-6-mmsu-talker
-#         ├─► stage-7-videomme
-#         ├─► stage-8-videomme-talker
-#         ├─► stage-9-videoamme
-#         ├─► stage-10-videoamme-talker
-#         └─► stage-11-thinker-tp2
+#   priority-gate ──► setup ──► stage-1-thinker
+#                            ├─► stage-2-tts
+#                            ├─► stage-3-mmmu
+#                            ├─► stage-4-mmmu-talker
+#                            ├─► stage-5-mmsu
+#                            ├─► stage-6-mmsu-talker
+#                            ├─► stage-7-videomme
+#                            ├─► stage-8-videomme-talker
+#                            ├─► stage-9-videoamme
+#                            ├─► stage-10-videoamme-talker
+#                            └─► stage-11-thinker-tp2
 # All 11 stages run in parallel after setup passes — they are independent.
 
 jobs:
+  priority-gate:
+    name: priority gate
+    # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
+    # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci.yaml.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-ci'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait behind high-priority CI
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/ci_priority_gate.py
+
   setup:
     name: setup
+    needs: priority-gate
     # CI gate — runs on workflow_dispatch, or on non-draft PRs carrying the `run-ci` label.
     # Keep in sync with the same gate in test.yaml / test-examples.yaml / test-s2pro-ci.yaml.
     if: >-
@@ -65,7 +90,7 @@ jobs:
     name: stage 1 - thinker length integration
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 40
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -98,7 +123,7 @@ jobs:
     name: stage 2 - TTS speed + WER + SIM
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 50
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -148,7 +173,7 @@ jobs:
     name: stage 3 - MMMU accuracy + speed
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 40
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -185,7 +210,7 @@ jobs:
     name: stage 4 - MMMU Talker
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 30
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -222,7 +247,7 @@ jobs:
     name: stage 5 - MMSU accuracy + speed
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 40
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -260,7 +285,7 @@ jobs:
     name: stage 6 - MMSU Talker
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 30
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -297,7 +322,7 @@ jobs:
     name: stage 7 - Video-MME accuracy + speed
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -334,7 +359,7 @@ jobs:
     name: stage 8 - Video-MME Talker
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -371,7 +396,7 @@ jobs:
     name: stage 9 - Video-AMME accuracy + speed
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -408,7 +433,7 @@ jobs:
     name: stage 10 - Video-AMME Talker
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 60
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -445,7 +470,7 @@ jobs:
     name: stage 11 - Thinker TP=2 (Video-AMME Talker)
     needs: setup
     runs-on: [self-hosted]
-    timeout-minutes: 70
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
