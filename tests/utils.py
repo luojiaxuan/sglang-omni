@@ -304,7 +304,7 @@ def apply_slack(
 ) -> dict[int, dict[str, float]]:
     """Derive CI thresholds from P95 references with uniform slack.
 
-    Higher-is-better metrics (throughput, token rate): threshold = P95 x slack_higher
+    Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
     Lower-is-better metrics (latency, rtf):            threshold = P95 x slack_lower
     """
     result: dict[int, dict[str, float]] = {}

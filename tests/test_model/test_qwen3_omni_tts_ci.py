@@ -86,7 +86,7 @@ _VC_NON_STREAM_P95 = {
 
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput, token rate): threshold = P95 x slack_higher
+# Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
 
 QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.95

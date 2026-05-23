@@ -93,7 +93,7 @@ STREAMING_BENCHMARK_MAX_SAMPLES = 32
 # CI machines and compute the thresholds based on the results.
 
 # Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput, tok/s): threshold = P95 × slack_higher
+# Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 × slack_higher
 # Lower-is-better metrics (latency, rtf): threshold = P95 × slack_lower
 
 THRESHOLD_SLACK_HIGHER = 0.75
