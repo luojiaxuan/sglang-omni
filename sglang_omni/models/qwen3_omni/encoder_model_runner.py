@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.environ import envs
 
 from sglang_omni.model_runner.encoder_model_runner import (
     EncoderBatchItem,
@@ -306,12 +307,15 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         graph_key: Any,
         static_prepared: dict[str, Any],
     ) -> dict[str, Any]:
-        del graph_key
-        return self._forward_visual_graph_body(
-            hidden_states=static_prepared["hidden_states"],
-            cu_seqlens=static_prepared["cu_seqlens"],
-            position_embeddings=static_prepared["position_embeddings"],
-        )
+        with envs.SGLANG_VIT_ENABLE_CUDA_GRAPH.override(True):
+            return self._forward_visual_graph_body(
+                hidden_states=static_prepared["hidden_states"],
+                cu_seqlens=static_prepared["cu_seqlens"],
+                position_embeddings=static_prepared["position_embeddings"],
+                graph_key=graph_key,
+                cu_seqlens_lengths=static_prepared["cu_seqlens_lengths"],
+                output_ws=static_prepared["output_ws"],
+            )
 
     def post(self, prepared: dict[str, Any], combined: dict[str, Any]) -> list[Any]:
         image_grid_all = combined.get("image_grid_thw")
@@ -395,6 +399,11 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         )
         if any(not hasattr(visual, attr) for attr in required_attrs):
             return False
+        if self._visual_attention_impl() not in (
+            "VisionFlash3Attention",
+            "VisionTritonAttention",
+        ):
+            return False
         try:
             return next(visual.parameters()).device.type == "cuda"
         except StopIteration:
@@ -463,17 +472,6 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         device = next(self.model.visual.parameters()).device
         dtype = next(self.model.visual.parameters()).dtype
         attention_impl = self._visual_attention_impl()
-        if attention_impl != "flash_attention_2":
-            return QwenVisionCudaGraphBudget(
-                mode="exact",
-                token_budget=actual_tokens,
-                sequence_budget=actual_sequences,
-                max_sequence_token_budget=actual_max_sequence_tokens,
-                dtype=str(dtype),
-                device=str(device),
-                attention_impl=attention_impl,
-                exact_cu_seqlens=_exact_visual_cu_seqlens_tuple(grid_thw),
-            )
 
         for token_budget in self.cuda_graph_token_budgets:
             if token_budget < actual_tokens:
@@ -522,9 +520,7 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
                 dtype=torch.int32,
                 device="cpu",
             )
-            if graph_key.attention_impl == "flash_attention_2":
-                return cu_seqlens.to(device=device, non_blocking=True)
-            return cu_seqlens
+            return cu_seqlens.to(device=device, non_blocking=True)
 
         lengths = torch.repeat_interleave(
             grid_thw[:, 1] * grid_thw[:, 2],
@@ -583,8 +579,14 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         self, budget: QwenVisionCudaGraphBudget
     ) -> int:
         visual = self.model.visual
-        hidden_size = int(getattr(visual.config, "hidden_size"))
-        num_heads = int(getattr(visual.config, "num_heads"))
+        visual_config = getattr(visual, "config", None)
+        hidden_size = int(
+            getattr(visual, "hidden_size", None)
+            or getattr(visual_config, "hidden_size")
+        )
+        num_heads = int(
+            getattr(visual, "num_heads", None) or getattr(visual_config, "num_heads")
+        )
         head_dim = hidden_size // num_heads
         merge = int(self.model.spatial_merge_size) ** 2
         out_hidden = int(self.model.out_hidden_size)
@@ -647,13 +649,10 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
 
         hidden_states = visual.patch_embed(pixel_values)
         hidden_states = hidden_states + visual.fast_pos_embed_interpolate(grid_thw)
-        rotary_pos_emb = visual.rot_pos_emb(grid_thw).reshape(
-            hidden_states.shape[0], -1
-        )
-        rotary_pos_emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
+        rotary_pos_emb_cos, rotary_pos_emb_sin = visual.rot_pos_emb(grid_thw.tolist())
         position_embeddings = (
-            rotary_pos_emb.cos().contiguous(),
-            rotary_pos_emb.sin().contiguous(),
+            rotary_pos_emb_cos.contiguous(),
+            rotary_pos_emb_sin.contiguous(),
         )
 
         cu_seqlens = torch.repeat_interleave(
@@ -661,8 +660,7 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
             grid_thw[:, 0],
         ).cumsum(dim=0, dtype=torch.int32)
         cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
-        if self._visual_attention_impl() == "flash_attention_2":
-            cu_seqlens = cu_seqlens.to(device=device, non_blocking=True)
+        cu_seqlens = cu_seqlens.to(device=device, non_blocking=True)
 
         return {
             "hidden_states": hidden_states.contiguous(),
@@ -730,6 +728,15 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         )
         cu_seqlens_buffer.copy_(cu_seqlens)
 
+        cu_seqlens_lengths = self.static_metadata_buffer(
+            graph_key,
+            "cu_seqlens_lengths",
+            shape=(graph_key.sequence_budget,),
+            dtype=cu_seqlens.dtype,
+            device=cu_seqlens.device,
+        )
+        cu_seqlens_lengths.copy_(cu_seqlens[1:] - cu_seqlens[:-1])
+
         cos_buffer = self.static_metadata_buffer(
             graph_key,
             "position_cos",
@@ -750,10 +757,27 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         cos_buffer[:actual_tokens].copy_(position_cos)
         sin_buffer[:actual_tokens].copy_(position_sin)
 
+        output_ws = None
+        if self._visual_attention_impl() == "VisionTritonAttention":
+            first_attn = self.model.visual.blocks[0].attn
+            output_ws = self.static_input_buffer(
+                graph_key,
+                "attention_output_ws",
+                shape=(
+                    graph_key.token_budget,
+                    int(first_attn.num_attention_heads_per_partition),
+                    int(first_attn.head_size),
+                ),
+                dtype=hidden_states.dtype,
+                device=hidden_states.device,
+            )
+
         return {
             "hidden_states": hidden_buffer,
             "cu_seqlens": cu_seqlens_buffer,
+            "cu_seqlens_lengths": cu_seqlens_lengths,
             "position_embeddings": (cos_buffer, sin_buffer),
+            "output_ws": output_ws,
         }
 
     def _forward_visual_graph_body(
@@ -762,6 +786,9 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        graph_key: QwenVisionCudaGraphBudget | None = None,
+        cu_seqlens_lengths: torch.Tensor | None = None,
+        output_ws: torch.Tensor | None = None,
     ) -> dict[str, Any]:
         visual = self.model.visual
         deepstack_features: list[torch.Tensor] = []
@@ -769,12 +796,28 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
             int(layer_idx): idx
             for idx, layer_idx in enumerate(visual.deepstack_visual_indexes)
         }
+        rotary_pos_emb_cos, rotary_pos_emb_sin = position_embeddings
+        hidden_states = hidden_states.unsqueeze(1)
+        cu_seqlens_arg: Any = cu_seqlens
+        if graph_key is not None:
+            if graph_key.attention_impl == "VisionFlash3Attention":
+                cu_seqlens_arg = [cu_seqlens, graph_key.max_sequence_token_budget]
+            elif graph_key.attention_impl == "VisionTritonAttention":
+                if cu_seqlens_lengths is None:
+                    raise RuntimeError("Triton vision graph requires seqlens lengths")
+                cu_seqlens_arg = [
+                    cu_seqlens,
+                    cu_seqlens_lengths,
+                    graph_key.max_sequence_token_budget,
+                ]
 
         for layer_num, block in enumerate(visual.blocks):
             hidden_states = block(
                 hidden_states,
-                cu_seqlens=cu_seqlens,
-                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens_arg,
+                rotary_pos_emb_cos=rotary_pos_emb_cos,
+                rotary_pos_emb_sin=rotary_pos_emb_sin,
+                output_ws=output_ws,
             )
             deepstack_idx = deepstack_index_by_layer.get(layer_num)
             if deepstack_idx is not None:
@@ -791,6 +834,9 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         visual = self.model.visual
         for block in visual.blocks:
             attn = getattr(block, "attn", None)
+            qkv_backend = getattr(attn, "qkv_backend", None)
+            if qkv_backend is not None:
+                return type(qkv_backend).__name__
             config = getattr(attn, "config", None)
             implementation = getattr(config, "_attn_implementation", None)
             if implementation is not None:

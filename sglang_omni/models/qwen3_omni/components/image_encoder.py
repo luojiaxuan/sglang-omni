@@ -4,20 +4,33 @@
 from __future__ import annotations
 
 import logging
+import os
+import socket
 import types
 
 import torch
 import torch.nn as nn
-from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
+from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeVisionEncoderConfig
+from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeVisionEncoder
 
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
-from sglang_omni.models.weight_loader import load_module, resolve_dtype
-from sglang_omni.utils import instantiate_module
+from sglang_omni.models.weight_loader import (
+    default_weight_loader,
+    load_weights_by_prefix,
+    resolve_dtype,
+)
 
 logger = logging.getLogger(__name__)
 
 VISUAL_PREFIX = ("thinker.visual.", "visual.")
-VISUAL_CLASS = hf_modeling.Qwen3OmniMoeVisionEncoder
+VISUAL_CLASS = Qwen3OmniMoeVisionEncoder
+
+_SKIPPED_VISUAL_WEIGHT_SUFFIXES = (
+    "rotary_emb.inv_freq",
+    "rotary_emb.cos_cached",
+    "rotary_emb.sin_cached",
+    "rotary_pos_emb.inv_freq",
+)
 
 
 def _patch_embed_forward(self: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -74,7 +87,6 @@ def _optimize_patch_embed(visual: nn.Module) -> None:
         linear.weight.copy_(conv.weight.view(embed_dim, -1))
         linear.bias.copy_(conv.bias)
 
-    del patch_embed.proj
     patch_embed.linear = linear
     patch_embed.forward = types.MethodType(_patch_embed_forward, patch_embed)
     logger.info(
@@ -86,6 +98,125 @@ def _optimize_patch_embed(visual: nn.Module) -> None:
     )
 
 
+def _vision_config_dict(vision_cfg: object) -> dict[str, object]:
+    if hasattr(vision_cfg, "to_dict"):
+        values = vision_cfg.to_dict()
+    else:
+        values = {
+            key: value
+            for key, value in vars(vision_cfg).items()
+            if not key.startswith("_")
+        }
+    for key in ("model_type", "transformers_version", "torch_dtype"):
+        values.pop(key, None)
+    return values
+
+
+def _ensure_sglang_vision_runtime(model_path: str, *, device: str) -> None:
+    """Initialize the minimal SGLang runtime needed by VisionAttention."""
+    from sglang.srt.distributed import parallel_state
+    from sglang.srt.layers import dp_attention as dp
+    from sglang.srt.server_args import (
+        ServerArgs,
+        get_global_server_args,
+        set_global_server_args_for_scheduler,
+    )
+
+    try:
+        get_global_server_args()
+    except ValueError:
+        mm_attention_backend = None if torch.device(device).type == "cuda" else "sdpa"
+        set_global_server_args_for_scheduler(
+            ServerArgs(
+                model_path=model_path,
+                mm_attention_backend=mm_attention_backend,
+            )
+        )
+
+    dp_tp_ready = (
+        getattr(dp, "_ATTN_TP_SIZE", None) is not None and dp._ATTN_TP_SIZE > 0
+    )
+    if dp_tp_ready and parallel_state.model_parallel_is_initialized():
+        return
+
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    if "MASTER_PORT" not in os.environ:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("", 0))
+            os.environ["MASTER_PORT"] = str(sock.getsockname()[1])
+
+    if not parallel_state.model_parallel_is_initialized():
+        backend = "nccl" if torch.device(device).type == "cuda" else "gloo"
+        parallel_state.init_distributed_environment(
+            backend=backend,
+            world_size=1,
+            rank=0,
+            local_rank=0,
+        )
+        parallel_state.initialize_model_parallel()
+
+    dp._ATTN_TP_SIZE = 1
+    dp._ATTN_TP_RANK = 0
+
+
+def _mapped_sglang_visual_weight_name(name: str) -> tuple[str, str | None]:
+    for weight_name, shard_id in (
+        ("attn.q.", "q"),
+        ("attn.k.", "k"),
+        ("attn.v.", "v"),
+    ):
+        if weight_name in name:
+            return name.replace(weight_name, "attn.qkv_proj."), shard_id
+    return name.replace("attn.qkv.", "attn.qkv_proj."), None
+
+
+def _load_sglang_visual_weights(
+    visual: nn.Module,
+    weights: dict[str, torch.Tensor],
+) -> set[str]:
+    params = dict(visual.named_parameters(remove_duplicate=False))
+    loaded: set[str] = set()
+    skipped: list[str] = []
+    unexpected: list[str] = []
+
+    for name, tensor in weights.items():
+        mapped_name, shard_id = _mapped_sglang_visual_weight_name(name)
+        if mapped_name not in params:
+            if name.endswith(_SKIPPED_VISUAL_WEIGHT_SUFFIXES):
+                skipped.append(name)
+            else:
+                unexpected.append(name)
+            continue
+
+        param = params[mapped_name]
+        weight_loader = getattr(param, "weight_loader", default_weight_loader)
+        if shard_id is None:
+            weight_loader(param, tensor)
+        else:
+            weight_loader(param, tensor, shard_id)
+        loaded.add(mapped_name)
+
+    missing = sorted(set(params) - loaded)
+    if unexpected or missing:
+        details = []
+        if unexpected:
+            details.append(f"unexpected={unexpected[:5]}")
+        if missing:
+            details.append(f"missing={missing[:5]}")
+        raise RuntimeError(
+            "Qwen3-Omni visual weight loading mismatch: " + ", ".join(details)
+        )
+
+    if skipped:
+        logger.debug(
+            "Skipping %d non-parameter Qwen3-Omni visual weights; first skipped=%s",
+            len(skipped),
+            skipped[0],
+        )
+
+    return loaded
+
+
 def _build_visual(
     model_path: str,
     *,
@@ -94,16 +225,25 @@ def _build_visual(
     device: str,
 ) -> nn.Module:
     vision_cfg = thinker_cfg.vision_config
-    visual = instantiate_module(VISUAL_CLASS, vision_cfg)
-    visual = load_module(
-        visual,
+    _ensure_sglang_vision_runtime(model_path, device=device)
+    visual_config = Qwen3OmniMoeVisionEncoderConfig(**_vision_config_dict(vision_cfg))
+    visual = VISUAL_CLASS(visual_config)
+    visual.config = visual_config
+    state_dict = load_weights_by_prefix(
         model_path,
         prefix=VISUAL_PREFIX,
-        dtype=torch_dtype,
-        device=device,
-        strict=True,
     )
+    loaded = _load_sglang_visual_weights(visual, state_dict)
+    if not loaded:
+        raise RuntimeError("No Qwen3-Omni visual weights were loaded")
+    visual.to(device=device, dtype=torch_dtype)
+    visual.eval()
     _optimize_patch_embed(visual)
+    logger.info(
+        "Loaded Qwen3-Omni visual encoder with SGLang VisionAttention backend "
+        "(%d tensors)",
+        len(loaded),
+    )
     return visual
 
 
@@ -136,6 +276,28 @@ class Qwen3OmniImageEncoder(nn.Module):
         ).element_size()
         self.eval()
 
+    def _split_visual_output(
+        self,
+        visual_output: torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]],
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        if isinstance(visual_output, tuple):
+            return visual_output
+
+        hidden = self.out_hidden_size
+        expected_hidden = hidden * (1 + self.deepstack_layers)
+        if visual_output.shape[-1] != expected_hidden:
+            raise RuntimeError(
+                "Unexpected Qwen3-Omni visual output hidden size: "
+                f"got {visual_output.shape[-1]}, expected {expected_hidden}"
+            )
+
+        embeds = visual_output[:, :hidden]
+        deepstack = [
+            visual_output[:, hidden * (idx + 1) : hidden * (idx + 2)]
+            for idx in range(self.deepstack_layers)
+        ]
+        return embeds, deepstack
+
     def forward(
         self,
         *,
@@ -153,8 +315,8 @@ class Qwen3OmniImageEncoder(nn.Module):
         ):
             image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
             pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
-            image_embeds, image_embeds_multiscale = self.visual(
-                pixel_values, grid_thw=image_grid_thw
+            image_embeds, image_embeds_multiscale = self._split_visual_output(
+                self.visual(pixel_values, grid_thw=image_grid_thw)
             )
             image_token_counts = image_grid_thw.prod(-1) // merge
             outputs.update(
@@ -173,8 +335,8 @@ class Qwen3OmniImageEncoder(nn.Module):
             pixel_values_videos = pixel_values_videos.to(
                 device=self._device, dtype=self.visual.dtype
             )
-            video_embeds, video_embeds_multiscale = self.visual(
-                pixel_values_videos, grid_thw=video_grid_thw
+            video_embeds, video_embeds_multiscale = self._split_visual_output(
+                self.visual(pixel_values_videos, grid_thw=video_grid_thw)
             )
             video_token_counts = video_grid_thw.prod(-1) // merge
             outputs.update(

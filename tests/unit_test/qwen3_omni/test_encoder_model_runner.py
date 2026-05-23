@@ -8,6 +8,10 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.encoder_model_runner import EncoderModelRunner
+from sglang_omni.models.qwen3_omni.components.image_encoder import (
+    _ensure_sglang_vision_runtime,
+    _load_sglang_visual_weights,
+)
 from sglang_omni.models.qwen3_omni.encoder_model_runner import (
     Qwen3OmniAudioEncoderModelRunner,
     Qwen3OmniImageEncoderModelRunner,
@@ -20,6 +24,17 @@ from tests.unit_test.fixtures.qwen_fakes import (
     make_qwen_payload,
     make_qwen_state,
 )
+
+
+def _set_sglang_mm_attention_backend(backend: str | None) -> None:
+    from sglang.srt.server_args import get_global_server_args
+
+    get_global_server_args().mm_attention_backend = backend
+
+
+def _init_finite_parameters(module: torch.nn.Module) -> None:
+    for param in module.parameters():
+        torch.nn.init.uniform_(param, -0.01, 0.01)
 
 
 class _GraphDispatchRunner(EncoderModelRunner):
@@ -134,12 +149,10 @@ def test_qwen_image_encoder_runner_batches_splits_and_uses_cache() -> None:
 
 
 def test_qwen_image_encoder_graph_body_matches_visual_forward() -> None:
-    config_module = pytest.importorskip(
-        "transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe"
-    )
-    modeling_module = pytest.importorskip(
-        "transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe"
-    )
+    config_module = pytest.importorskip("sglang.srt.configs.qwen3_omni")
+    modeling_module = pytest.importorskip("sglang.srt.models.qwen3_omni_moe")
+    _ensure_sglang_vision_runtime("dummy", device="cpu")
+    _set_sglang_mm_attention_backend("sdpa")
 
     config = config_module.Qwen3OmniMoeVisionEncoderConfig(
         depth=2,
@@ -155,6 +168,7 @@ def test_qwen_image_encoder_graph_body_matches_visual_forward() -> None:
         deepstack_visual_indexes=[0],
     )
     visual = modeling_module.Qwen3OmniMoeVisionEncoder(config).eval()
+    _init_finite_parameters(visual)
     model = SimpleNamespace(
         visual=visual,
         spatial_merge_size=1,
@@ -170,7 +184,9 @@ def test_qwen_image_encoder_graph_body_matches_visual_forward() -> None:
     grid_thw = torch.tensor([[1, 2, 2]], dtype=torch.long)
 
     with torch.no_grad():
-        eager_embeds, eager_deepstack = visual(pixel_values, grid_thw)
+        eager_output = visual(pixel_values, grid_thw)
+        eager_embeds = eager_output[:, :8]
+        eager_deepstack = [eager_output[:, 8:16]]
         prepared = runner._prepare_visual_forward_inputs(pixel_values, grid_thw)
         graph_body = runner._forward_visual_graph_body(
             hidden_states=prepared["hidden_states"],
@@ -187,13 +203,63 @@ def test_qwen_image_encoder_graph_body_matches_visual_forward() -> None:
         torch.testing.assert_close(graph_tensor, eager_tensor)
 
 
-def test_qwen_image_encoder_uses_finite_video_graph_budgets() -> None:
-    config_module = pytest.importorskip(
+def test_qwen_image_encoder_sglang_weight_loader_matches_hf_visual() -> None:
+    hf_config_module = pytest.importorskip(
         "transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe"
     )
-    modeling_module = pytest.importorskip(
+    hf_modeling_module = pytest.importorskip(
         "transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe"
     )
+    sgl_config_module = pytest.importorskip("sglang.srt.configs.qwen3_omni")
+    sgl_modeling_module = pytest.importorskip("sglang.srt.models.qwen3_omni_moe")
+    _ensure_sglang_vision_runtime("dummy", device="cpu")
+    _set_sglang_mm_attention_backend("sdpa")
+
+    config_kwargs = dict(
+        depth=2,
+        hidden_size=8,
+        intermediate_size=16,
+        num_heads=2,
+        out_hidden_size=8,
+        num_position_embeddings=16,
+        spatial_merge_size=1,
+        patch_size=2,
+        temporal_patch_size=1,
+        in_channels=3,
+        deepstack_visual_indexes=[0],
+    )
+    hf_visual = hf_modeling_module.Qwen3OmniMoeVisionEncoder(
+        hf_config_module.Qwen3OmniMoeVisionEncoderConfig(**config_kwargs)
+    ).eval()
+    _init_finite_parameters(hf_visual)
+    sgl_visual = sgl_modeling_module.Qwen3OmniMoeVisionEncoder(
+        sgl_config_module.Qwen3OmniMoeVisionEncoderConfig(**config_kwargs)
+    ).eval()
+
+    loaded = _load_sglang_visual_weights(sgl_visual, dict(hf_visual.state_dict()))
+
+    assert len(loaded) == len(dict(sgl_visual.named_parameters(remove_duplicate=False)))
+
+    pixel_values = torch.randn(4, 12)
+    grid_thw = torch.tensor([[1, 2, 2]], dtype=torch.long)
+    with torch.no_grad():
+        hf_embeds, hf_deepstack = hf_visual(pixel_values, grid_thw)
+        sgl_output = sgl_visual(pixel_values, grid_thw)
+
+    torch.testing.assert_close(sgl_output[:, :8], hf_embeds, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(
+        sgl_output[:, 8:16],
+        hf_deepstack[0],
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
+
+def test_qwen_image_encoder_uses_finite_video_graph_budgets() -> None:
+    config_module = pytest.importorskip("sglang.srt.configs.qwen3_omni")
+    modeling_module = pytest.importorskip("sglang.srt.models.qwen3_omni_moe")
+    _ensure_sglang_vision_runtime("dummy", device="cpu")
+    _set_sglang_mm_attention_backend("sdpa")
 
     config = config_module.Qwen3OmniMoeVisionEncoderConfig(
         depth=1,
@@ -209,7 +275,7 @@ def test_qwen_image_encoder_uses_finite_video_graph_budgets() -> None:
         deepstack_visual_indexes=[],
     )
     visual = modeling_module.Qwen3OmniMoeVisionEncoder(config).eval()
-    visual.config._attn_implementation = "flash_attention_2"
+    _init_finite_parameters(visual)
     model = SimpleNamespace(
         visual=visual,
         spatial_merge_size=1,
@@ -257,13 +323,10 @@ def test_qwen_image_encoder_uses_finite_video_graph_budgets() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
 def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
-    pytest.importorskip("flash_attn")
-    config_module = pytest.importorskip(
-        "transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe"
-    )
-    modeling_module = pytest.importorskip(
-        "transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe"
-    )
+    config_module = pytest.importorskip("sglang.srt.configs.qwen3_omni")
+    modeling_module = pytest.importorskip("sglang.srt.models.qwen3_omni_moe")
+    _ensure_sglang_vision_runtime("dummy", device="cuda")
+    _set_sglang_mm_attention_backend(None)
 
     config = config_module.Qwen3OmniMoeVisionEncoderConfig(
         depth=2,
@@ -278,8 +341,12 @@ def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
         in_channels=3,
         deepstack_visual_indexes=[0],
     )
-    config._attn_implementation = "flash_attention_2"
-    visual = modeling_module.Qwen3OmniMoeVisionEncoder(config).cuda().eval()
+    visual = (
+        modeling_module.Qwen3OmniMoeVisionEncoder(config)
+        .to(device="cuda", dtype=torch.bfloat16)
+        .eval()
+    )
+    _init_finite_parameters(visual)
     model = SimpleNamespace(
         visual=visual,
         spatial_merge_size=1,
@@ -308,11 +375,15 @@ def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
 
     with torch.no_grad():
         first_pixels = torch.randn(4, 12)
-        first_eager, first_deepstack = visual(first_pixels.cuda(), grid_thw.cuda())
+        first_eager_output = visual(first_pixels.cuda(), grid_thw)
+        first_eager = first_eager_output[:, :64]
+        first_deepstack = [first_eager_output[:, 64:128]]
         first_graph = run_graph(first_pixels)
 
         second_pixels = torch.randn(4, 12)
-        second_eager, second_deepstack = visual(second_pixels.cuda(), grid_thw.cuda())
+        second_eager_output = visual(second_pixels.cuda(), grid_thw)
+        second_eager = second_eager_output[:, :64]
+        second_deepstack = [second_eager_output[:, 64:128]]
         second_graph = run_graph(second_pixels)
 
     assert len(runner.cuda_graphs) == 1
