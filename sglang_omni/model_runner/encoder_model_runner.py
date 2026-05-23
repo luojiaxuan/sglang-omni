@@ -24,6 +24,14 @@ class EncoderBatchItem:
     request: Any
 
 
+@dataclass(slots=True)
+class EncoderCudaGraphStats:
+    hits: int = 0
+    misses: int = 0
+    captures: int = 0
+    fallbacks: int = 0
+
+
 def tensor_bytes(value: Any) -> int:
     if not isinstance(value, torch.Tensor):
         return 0
@@ -78,6 +86,7 @@ class EncoderModelRunner:
         self.cuda_graph_input_buffers: dict[Any, dict[str, torch.Tensor]] = {}
         self.cuda_graph_metadata_buffers: dict[Any, dict[str, torch.Tensor]] = {}
         self.cuda_graph_output_buffers: dict[Any, Any] = {}
+        self.cuda_graph_stats = EncoderCudaGraphStats()
 
     def execute(self, payload: StagePayload) -> StagePayload:
         return self.execute_batch([payload])[0]
@@ -241,7 +250,10 @@ class EncoderModelRunner:
 
     def run_cuda_graph_piece(self, graph_key: Any, prepared: Any) -> Any:
         if graph_key not in self.cuda_graphs:
+            self.cuda_graph_stats.misses += 1
             self.capture_cuda_graph(graph_key, prepared)
+        else:
+            self.cuda_graph_stats.hits += 1
 
         self.prepare_cuda_graph_replay(graph_key, prepared)
         self.cuda_graphs[graph_key].replay()
@@ -265,6 +277,7 @@ class EncoderModelRunner:
                 graph_key, static_prepared
             )
         self.cuda_graphs[graph_key] = graph
+        self.cuda_graph_stats.captures += 1
         logger.info(
             "encoder_cuda_graph_captured stage=%s graph_key=%r",
             self.stage_name,
@@ -373,14 +386,14 @@ class EncoderModelRunner:
         return result
 
     def request_model_inputs(self, request: Any) -> dict[str, Any]:
-        return getattr(request, "model_inputs", {})
+        return request.model_inputs
 
     def request_cache_key(self, request: Any) -> str | None:
-        cache_key = getattr(request, "cache_key", None)
+        cache_key = request.cache_key
         return str(cache_key) if cache_key is not None else None
 
     def request_skip_result(self, request: Any) -> Any | None:
-        return getattr(request, "skip_result", None)
+        return request.skip_result
 
     def lookup_cached_output(self, *, request: Any, request_id: str) -> Any | None:
         cache_key = self.request_cache_key(request)

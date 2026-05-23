@@ -171,7 +171,7 @@ def test_qwen_image_encoder_graph_body_matches_visual_forward() -> None:
 
     with torch.no_grad():
         eager_embeds, eager_deepstack = visual(pixel_values, grid_thw)
-        prepared = runner._prepare_visual_graph_inputs(pixel_values, grid_thw)
+        prepared = runner._prepare_visual_forward_inputs(pixel_values, grid_thw)
         graph_body = runner._forward_visual_graph_body(
             hidden_states=prepared["hidden_states"],
             cu_seqlens=prepared["cu_seqlens"],
@@ -187,8 +187,7 @@ def test_qwen_image_encoder_graph_body_matches_visual_forward() -> None:
         torch.testing.assert_close(graph_tensor, eager_tensor)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
-def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
+def test_qwen_image_encoder_uses_finite_video_graph_budgets() -> None:
     config_module = pytest.importorskip(
         "transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe"
     )
@@ -197,7 +196,7 @@ def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
     )
 
     config = config_module.Qwen3OmniMoeVisionEncoderConfig(
-        depth=2,
+        depth=1,
         hidden_size=8,
         intermediate_size=16,
         num_heads=2,
@@ -207,17 +206,93 @@ def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
         patch_size=2,
         temporal_patch_size=1,
         in_channels=3,
-        deepstack_visual_indexes=[0],
+        deepstack_visual_indexes=[],
     )
-    visual = modeling_module.Qwen3OmniMoeVisionEncoder(config).cuda().eval()
+    visual = modeling_module.Qwen3OmniMoeVisionEncoder(config).eval()
+    visual.config._attn_implementation = "flash_attention_2"
     model = SimpleNamespace(
         visual=visual,
         spatial_merge_size=1,
         out_hidden_size=8,
+        deepstack_layers=0,
+        visual_dtype_bytes=4,
+    )
+    runner = Qwen3OmniImageEncoderModelRunner(
+        model=model,
+        cuda_graph_token_budgets=(64,),
+        cuda_graph_sequence_budgets=(8,),
+        cuda_graph_max_sequence_token_budgets=(16,),
+    )
+    first_grid = torch.tensor([[2, 4, 4]], dtype=torch.long)
+    second_grid = torch.tensor([[1, 4, 4], [2, 2, 4]], dtype=torch.long)
+    first_pixels = torch.randn(32, 12)
+    second_pixels = torch.randn(32, 12)
+
+    first_budget = runner._select_visual_graph_budget(first_pixels, first_grid)
+    second_budget = runner._select_visual_graph_budget(second_pixels, second_grid)
+
+    assert first_budget == second_budget
+    assert first_budget is not None
+    assert first_budget.token_budget == 64
+    assert first_budget.sequence_budget == 8
+    assert first_budget.max_sequence_token_budget == 16
+
+    first_cu = runner._build_budgeted_cu_seqlens(
+        grid_thw=first_grid,
+        graph_key=first_budget,
+        device=torch.device("cpu"),
+    )
+    second_cu = runner._build_budgeted_cu_seqlens(
+        grid_thw=second_grid,
+        graph_key=second_budget,
+        device=torch.device("cpu"),
+    )
+
+    assert first_cu.shape == second_cu.shape == (9,)
+    assert int(first_cu[-1].item()) == 64
+    assert int(second_cu[-1].item()) == 64
+    assert int((first_cu[1:] - first_cu[:-1]).max().item()) == 16
+    assert int((second_cu[1:] - second_cu[:-1]).max().item()) == 16
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
+def test_qwen_image_encoder_runner_replays_cuda_graph() -> None:
+    pytest.importorskip("flash_attn")
+    config_module = pytest.importorskip(
+        "transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe"
+    )
+    modeling_module = pytest.importorskip(
+        "transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe"
+    )
+
+    config = config_module.Qwen3OmniMoeVisionEncoderConfig(
+        depth=2,
+        hidden_size=64,
+        intermediate_size=128,
+        num_heads=4,
+        out_hidden_size=64,
+        num_position_embeddings=16,
+        spatial_merge_size=1,
+        patch_size=2,
+        temporal_patch_size=1,
+        in_channels=3,
+        deepstack_visual_indexes=[0],
+    )
+    config._attn_implementation = "flash_attention_2"
+    visual = modeling_module.Qwen3OmniMoeVisionEncoder(config).cuda().eval()
+    model = SimpleNamespace(
+        visual=visual,
+        spatial_merge_size=1,
+        out_hidden_size=64,
         deepstack_layers=1,
         visual_dtype_bytes=4,
     )
-    runner = Qwen3OmniImageEncoderModelRunner(model=model)
+    runner = Qwen3OmniImageEncoderModelRunner(
+        model=model,
+        cuda_graph_token_budgets=(16,),
+        cuda_graph_sequence_budgets=(4,),
+        cuda_graph_max_sequence_token_budgets=(4,),
+    )
     grid_thw = torch.tensor([[1, 2, 2]], dtype=torch.long)
 
     def run_graph(pixel_values: torch.Tensor) -> dict[str, Any]:
