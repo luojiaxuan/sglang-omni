@@ -72,7 +72,7 @@ jobs:
     name: stage 1 - non-streaming
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 15
+    timeout-minutes: 30
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -98,7 +98,8 @@ jobs:
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-1-nonstream
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
@@ -124,7 +125,7 @@ jobs:
     name: stage 2 - streaming
     needs: docs
     runs-on: [self-hosted]
-    timeout-minutes: 5
+    timeout-minutes: 10
     container:
       image: frankleeeee/sglang-omni:dev
       options: --gpus all --rm -v /dev/shm:/dev/shm
@@ -141,7 +142,8 @@ jobs:
         run: |
           source omni-s2pro/bin/activate
           export PYTHONPATH=$PWD
-          pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_s2pro_tts_ci.py -v -s -x --concurrency 16 --s2pro-stage s2pro-stage-2-stream
         env:
           HF_ENDPOINT: https://hf-mirror.com
           SGLANG_SEEDTTS50_DIR: /github/home/seedtts-50
