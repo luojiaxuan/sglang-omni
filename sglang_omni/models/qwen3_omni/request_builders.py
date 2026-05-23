@@ -856,7 +856,7 @@ def make_thinker_stream_output_builder():
         if (
             isinstance(layer_hidden, torch.Tensor)
             and layer_hidden.ndim == 2
-            and layer_hidden.shape[0] > 1
+            and layer_hidden.shape[0] > 0
         ):
             metadata["prefill_layer_hidden"] = layer_hidden.detach().to(
                 device="cpu", copy=True

@@ -196,16 +196,21 @@ class SGLangOutputProcessor:
         reqs = getattr(batch_data, "reqs", None) if batch_data is not None else None
         if reqs is not None:
             num_requests = len(reqs)
+            forward_mode = getattr(batch_data, "forward_mode", None)
+            is_extend = getattr(forward_mode, "is_extend", None)
+            is_extend_batch = bool(is_extend()) if callable(is_extend) else False
 
             lengths = [int(req.extend_input_len) for req in reqs]
             total_tokens = sum(lengths)
             if tensor.shape[0] == total_tokens:
+                start = sum(lengths[:request_index])
+                end = start + lengths[request_index]
+                if is_extend_batch:
+                    return tensor[start:end]
                 if total_tokens == num_requests and all(
                     length == 1 for length in lengths
                 ):
                     return tensor[request_index]
-                start = sum(lengths[:request_index])
-                end = start + lengths[request_index]
                 return tensor[start:end]
 
             if tensor.shape[0] == num_requests:
