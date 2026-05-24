@@ -644,7 +644,7 @@ Derived (computed from stages, not set manually): `terminal_stages`, `gpu_placem
 
 ```
 pipeline/
-├── stage_workers.py    # StageProcessSpec, subprocess entrypoint, StageGroup
+├── stage_workers.py    # StageLaunchConfig, subprocess entrypoint, StageGroup
 └── mp_runner.py        # MultiProcessRunner — orchestrates all groups
 ```
 
@@ -671,11 +671,11 @@ graph TB
     Main -->|ZMQ| P3
 ```
 
-> **Note (Chenyang):** `stage_group.py` and `stage_process.py` are tightly coupled — `StageGroup` is the only consumer of `StageProcessSpec`, the subprocess entrypoint is ~40 lines, and the spec is a small dataclass. None of the three justifies its own file. Merging into a single `stage_workers.py` keeps everything about "how a stage's processes get defined, spawned, and managed" in one place, and leaves `mp_runner.py` focused on cross-stage orchestration. Two files, cleaner ownership.
+> **Note (Chenyang):** `stage_group.py` and `stage_process.py` are tightly coupled — `StageGroup` is the only consumer of `StageLaunchConfig`, the subprocess entrypoint is ~40 lines, and the spec is a small dataclass. None of the three justifies its own file. Merging into a single `stage_workers.py` keeps everything about "how a stage's processes get defined, spawned, and managed" in one place, and leaves `mp_runner.py` focused on cross-stage orchestration. Two files, cleaner ownership.
 
-> Resolved: `StageProcessSpec`, `StageGroup`, and the subprocess entrypoint now live together in `stage_workers.py`.
+> Resolved: `StageLaunchConfig`, `StageGroup`, and the subprocess entrypoint now live together in `stage_workers.py`.
 
-### `StageProcessSpec`
+### `StageLaunchConfig`
 
 A fully-resolved, picklable dataclass built once in the main process. Subprocesses never re-compile the pipeline config — they just construct a `Stage` from the spec and run it.
 
@@ -693,7 +693,7 @@ Manages the lifecycle (spawn, `wait_ready`, shutdown, health monitoring) of all 
 
 ### `MultiProcessRunner`
 
-Orchestrates startup across all `StageGroup`s. `_build_stage_groups(config)` turns a `PipelineConfig` into `list[StageGroup]` by iterating over stages, resolving factory args, allocating endpoints, and building one `StageProcessSpec` per TP rank per stage. The Coordinator runs in the main process and only talks to rank 0 of each group.
+Orchestrates startup across all `StageGroup`s. `_build_stage_groups(config)` turns a `PipelineConfig` into `list[StageGroup]` by iterating over stages, resolving factory args, allocating endpoints, and building one `StageLaunchConfig` per TP rank per stage. The Coordinator runs in the main process and only talks to rank 0 of each group.
 
 ### Tensor Parallelism Support
 
