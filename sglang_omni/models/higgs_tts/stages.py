@@ -232,6 +232,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    max_new_tokens: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """sglang-backed AR engine for Higgs TTS — composes :class:`OmniScheduler`
@@ -286,7 +287,10 @@ def create_sglang_tts_engine_executor(
     )
     model_runner = HiggsTTSModelRunner(model_worker, output_proc)
     model = model_worker.model_runner.model
-    request_builder, result_adapter = make_higgs_scheduler_adapters(model)
+    request_builder, result_adapter = make_higgs_scheduler_adapters(
+        model,
+        max_new_tokens_cap=max_new_tokens,
+    )
 
     return OmniScheduler(
         tp_worker=model_worker,
