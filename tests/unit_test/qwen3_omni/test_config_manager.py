@@ -179,6 +179,29 @@ def test_qwen_preprocessing_runtime_video_fps_resolves_to_factory_arg() -> None:
     assert args["video_fps"] == 2.0
 
 
+def test_qwen_image_encoder_config_exposes_cuda_graph_switch() -> None:
+    default_config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+    default_args = resolve_stage_factory_args(
+        _stage(default_config, "image_encoder"),
+        default_config,
+    )
+    config = Qwen3OmniSpeechColocatedPipelineConfig(
+        model_path="dummy",
+        runtime_overrides={
+            "image_encoder": {
+                "enable_cuda_graph": False,
+                "cuda_graph_max_graphs": 2,
+            }
+        },
+    )
+
+    args = resolve_stage_factory_args(_stage(config, "image_encoder"), config)
+
+    assert default_args["enable_cuda_graph"] is True
+    assert args["enable_cuda_graph"] is False
+    assert args["cuda_graph_max_graphs"] == 2
+
+
 def test_h20_colocated_example_reserve_keeps_raw_budget_in_resolved_config() -> None:
     config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_h20.yaml"
     config = ConfigManager.from_file(str(config_path)).config

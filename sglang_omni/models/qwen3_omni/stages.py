@@ -21,9 +21,12 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     create_streaming_detokenize_scheduler,
 )
 from sglang_omni.models.qwen3_omni.encoder_model_runner import (
+    QWEN3_VISION_CUDA_GRAPH_MAX_BUFFER_BYTES,
+    QWEN3_VISION_CUDA_GRAPH_MAX_GRAPHS,
     Qwen3OmniAudioEncoderModelRunner,
     Qwen3OmniImageEncoderModelRunner,
 )
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
@@ -190,6 +193,12 @@ def create_image_encoder_executor(
     *,
     device: str = "cuda",
     dtype: str | None = None,
+    enable_cuda_graph: bool = True,
+    cuda_graph_token_budgets: tuple[int, ...] | None = None,
+    cuda_graph_sequence_budgets: tuple[int, ...] | None = None,
+    cuda_graph_max_sequence_token_budgets: tuple[int, ...] | None = None,
+    cuda_graph_max_graphs: int = QWEN3_VISION_CUDA_GRAPH_MAX_GRAPHS,
+    cuda_graph_max_buffer_bytes: int = QWEN3_VISION_CUDA_GRAPH_MAX_BUFFER_BYTES,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -199,13 +208,52 @@ def create_image_encoder_executor(
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
-    runner = Qwen3OmniImageEncoderModelRunner(model=model, cache=cache)
+    runner = Qwen3OmniImageEncoderModelRunner(
+        model=model,
+        cache=cache,
+        enable_cuda_graph=enable_cuda_graph,
+        cuda_graph_token_budgets=cuda_graph_token_budgets,
+        cuda_graph_sequence_budgets=cuda_graph_sequence_budgets,
+        cuda_graph_max_sequence_token_budgets=cuda_graph_max_sequence_token_budgets,
+        cuda_graph_max_graphs=cuda_graph_max_graphs,
+        cuda_graph_max_buffer_bytes=cuda_graph_max_buffer_bytes,
+    )
 
     def _encode(payload: StagePayload) -> StagePayload:
-        return runner.execute(payload)
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_start",
+            metadata={"modality": "image", "batch_size": 1},
+        )
+        try:
+            return runner.execute(payload)
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="encoder_end",
+                metadata={"modality": "image", "batch_size": 1},
+            )
 
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return runner.execute_batch(payloads)
+        for p in payloads:
+            _emit_event(
+                request_id=p.request_id,
+                stage=None,
+                event_name="encoder_start",
+                metadata={"modality": "image", "batch_size": len(payloads)},
+            )
+        try:
+            return runner.execute_batch(payloads)
+        finally:
+            for p in payloads:
+                _emit_event(
+                    request_id=p.request_id,
+                    stage=None,
+                    event_name="encoder_end",
+                    metadata={"modality": "image", "batch_size": len(payloads)},
+                )
 
     # Preserve the calibrated image-encoder batching shape and add a small
     # batch_wait so video benchmarks at concurrency=16 batch together.
@@ -236,10 +284,40 @@ def create_audio_encoder_executor(
     runner = Qwen3OmniAudioEncoderModelRunner(model=model, cache=cache)
 
     def _encode(payload: StagePayload) -> StagePayload:
-        return runner.execute(payload)
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_start",
+            metadata={"modality": "audio", "batch_size": 1},
+        )
+        try:
+            return runner.execute(payload)
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="encoder_end",
+                metadata={"modality": "audio", "batch_size": 1},
+            )
 
     def _encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        return runner.execute_batch(payloads)
+        for p in payloads:
+            _emit_event(
+                request_id=p.request_id,
+                stage=None,
+                event_name="encoder_start",
+                metadata={"modality": "audio", "batch_size": len(payloads)},
+            )
+        try:
+            return runner.execute_batch(payloads)
+        finally:
+            for p in payloads:
+                _emit_event(
+                    request_id=p.request_id,
+                    stage=None,
+                    event_name="encoder_end",
+                    metadata={"modality": "audio", "batch_size": len(payloads)},
+                )
 
     return SimpleScheduler(
         _encode,

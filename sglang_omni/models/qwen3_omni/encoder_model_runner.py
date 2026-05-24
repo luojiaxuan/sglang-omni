@@ -222,6 +222,7 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         image_budget = self._select_visual_graph_budget(
             model_inputs.get("pixel_values"),
             model_inputs.get("image_grid_thw"),
+            record_fallback=True,
         )
         if image_budget is not None:
             graph_keys.append(("image", image_budget))
@@ -231,6 +232,7 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         video_budget = self._select_visual_graph_budget(
             model_inputs.get("pixel_values_videos"),
             model_inputs.get("video_grid_thw"),
+            record_fallback=True,
         )
         if video_budget is not None:
             graph_keys.append(("video", video_budget))
@@ -241,7 +243,6 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
 
     def forward_cuda_graph(self, prepared: dict[str, Any]) -> dict[str, Any]:
         if not self._prepared_visual_graph_budgets_fit(prepared):
-            self.cuda_graph_stats.fallbacks += 1
             return self.forward_eager(prepared)
 
         model_inputs = prepared["model_inputs"]
@@ -454,6 +455,8 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         self,
         pixel_values: Any,
         grid_thw: Any,
+        *,
+        record_fallback: bool = False,
     ) -> QwenVisionCudaGraphBudget | None:
         if not isinstance(pixel_values, torch.Tensor) or not isinstance(
             grid_thw,
@@ -463,7 +466,8 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         if pixel_values.numel() == 0 or grid_thw.numel() == 0:
             return None
         if grid_thw.device.type != "cpu":
-            self._record_visual_graph_fallback("grid_not_cpu")
+            if record_fallback:
+                self._record_visual_graph_fallback("grid_not_cpu")
             return None
 
         grid_thw = grid_thw.to(dtype=torch.long)
@@ -473,11 +477,13 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
 
         actual_tokens, actual_sequences, actual_max_sequence_tokens = grid_stats
         if int(pixel_values.shape[0]) != actual_tokens:
-            self._record_visual_graph_fallback("pixel_grid_mismatch")
+            if record_fallback:
+                self._record_visual_graph_fallback("pixel_grid_mismatch")
             return None
         merge = int(self.model.spatial_merge_size) ** 2
         if actual_tokens % merge != 0:
-            self._record_visual_graph_fallback("unaligned_token_count")
+            if record_fallback:
+                self._record_visual_graph_fallback("unaligned_token_count")
             return None
 
         device = next(self.model.visual.parameters()).device
@@ -515,7 +521,8 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
                         attention_impl=attention_impl,
                     )
 
-        self._record_visual_graph_fallback("no_fitting_budget")
+        if record_fallback:
+            self._record_visual_graph_fallback("no_fitting_budget")
         return None
 
     def _build_budgeted_cu_seqlens(
@@ -626,6 +633,7 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         return total
 
     def _record_visual_graph_fallback(self, reason: str) -> None:
+        self.cuda_graph_stats.fallbacks += 1
         self.cuda_graph_fallback_reasons[reason] = (
             self.cuda_graph_fallback_reasons.get(reason, 0) + 1
         )

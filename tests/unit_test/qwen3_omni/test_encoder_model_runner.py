@@ -69,6 +69,51 @@ class _GraphDispatchRunner(EncoderModelRunner):
         return "graph"
 
 
+class VisionFlash3Attention:
+    pass
+
+
+class _GraphPolicyVisual(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(1, dtype=torch.float32))
+        self.config = SimpleNamespace(hidden_size=8, num_heads=2)
+        self.blocks = [
+            SimpleNamespace(
+                attn=SimpleNamespace(qkv_backend=VisionFlash3Attention()),
+            )
+        ]
+
+
+class _GraphPolicyImageModel:
+    def __init__(self, *, spatial_merge_size: int = 1) -> None:
+        self.visual = _GraphPolicyVisual().eval()
+        self.spatial_merge_size = spatial_merge_size
+        self.out_hidden_size = 8
+        self.deepstack_layers = 0
+        self.visual_dtype_bytes = 4
+
+    def __call__(self, **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        return {}
+
+
+class _GraphPolicyImageRunner(Qwen3OmniImageEncoderModelRunner):
+    def _visual_cuda_graph_supported(self) -> bool:
+        return True
+
+
+def _assert_single_graph_fallback(
+    runner: Qwen3OmniImageEncoderModelRunner,
+    reason: str,
+) -> None:
+    assert runner.cuda_graph_fallback_reasons == {reason: 1}
+    assert runner.cuda_graph_stats.fallbacks == 1
+    assert runner.cuda_graph_stats.fallbacks == sum(
+        runner.cuda_graph_fallback_reasons.values()
+    )
+
+
 def test_encoder_model_runner_dispatches_cuda_graph_from_forward() -> None:
     assert _GraphDispatchRunner(use_graph=True).forward({}) == "graph"
     assert _GraphDispatchRunner(use_graph=False).forward({}) == "eager"
@@ -319,6 +364,155 @@ def test_qwen_image_encoder_uses_finite_video_graph_budgets() -> None:
     assert int(second_cu[-1].item()) == 64
     assert int((first_cu[1:] - first_cu[:-1]).max().item()) == 16
     assert int((second_cu[1:] - second_cu[:-1]).max().item()) == 16
+
+
+def test_qwen_image_encoder_factory_exposes_cuda_graph_controls(monkeypatch) -> None:
+    from sglang_omni.models.qwen3_omni import stages as qwen_stages
+
+    runner_kwargs: dict[str, Any] = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            runner_kwargs.update(kwargs)
+
+        def execute(self, payload: Any) -> Any:
+            return payload
+
+        def execute_batch(self, payloads: list[Any]) -> list[Any]:
+            return payloads
+
+        def estimate_payload_cost(self, payload: Any) -> int:
+            del payload
+            return 0
+
+    monkeypatch.setattr(
+        qwen_stages,
+        "Qwen3OmniImageEncoder",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniImageEncoderModelRunner", FakeRunner)
+
+    qwen_stages.create_image_encoder_executor(
+        "dummy",
+        enable_cuda_graph=False,
+        cuda_graph_token_budgets=(4,),
+        cuda_graph_sequence_budgets=(1,),
+        cuda_graph_max_sequence_token_budgets=(4,),
+        cuda_graph_max_graphs=1,
+        cuda_graph_max_buffer_bytes=123,
+    )
+
+    assert runner_kwargs["enable_cuda_graph"] is False
+    assert runner_kwargs["cuda_graph_token_budgets"] == (4,)
+    assert runner_kwargs["cuda_graph_sequence_budgets"] == (1,)
+    assert runner_kwargs["cuda_graph_max_sequence_token_budgets"] == (4,)
+    assert runner_kwargs["cuda_graph_max_graphs"] == 1
+    assert runner_kwargs["cuda_graph_max_buffer_bytes"] == 123
+
+
+def test_qwen_image_encoder_graph_fallback_stats_cover_planning_failures(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    cases = [
+        (
+            "no_fitting_budget",
+            _GraphPolicyImageModel(),
+            torch.randn(6, 12),
+            torch.tensor([[1, 2, 3]], dtype=torch.long),
+        ),
+        (
+            "grid_not_cpu",
+            _GraphPolicyImageModel(),
+            torch.randn(4, 12),
+            torch.empty((1, 3), dtype=torch.long, device="meta"),
+        ),
+        (
+            "pixel_grid_mismatch",
+            _GraphPolicyImageModel(),
+            torch.randn(3, 12),
+            torch.tensor([[1, 2, 2]], dtype=torch.long),
+        ),
+        (
+            "unaligned_token_count",
+            _GraphPolicyImageModel(spatial_merge_size=2),
+            torch.randn(2, 12),
+            torch.tensor([[1, 1, 2]], dtype=torch.long),
+        ),
+    ]
+
+    for reason, model, pixel_values, grid_thw in cases:
+        runner = _GraphPolicyImageRunner(
+            model=model,
+            cuda_graph_token_budgets=(4,),
+            cuda_graph_sequence_budgets=(1,),
+            cuda_graph_max_sequence_token_budgets=(4,),
+        )
+
+        runner.forward(
+            {
+                "model_inputs": {
+                    "pixel_values": pixel_values,
+                    "image_grid_thw": grid_thw,
+                },
+                "metas": [],
+            }
+        )
+
+        _assert_single_graph_fallback(runner, reason)
+
+
+def test_qwen_image_encoder_graph_limit_fallback_stats_match_reason_counts(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    max_graph_runner = _GraphPolicyImageRunner(
+        model=_GraphPolicyImageModel(),
+        cuda_graph_token_budgets=(4, 8),
+        cuda_graph_sequence_budgets=(1,),
+        cuda_graph_max_sequence_token_budgets=(4, 8),
+        cuda_graph_max_graphs=1,
+    )
+    existing_budget = max_graph_runner._select_visual_graph_budget(
+        torch.randn(4, 12),
+        torch.tensor([[1, 2, 2]], dtype=torch.long),
+    )
+    assert existing_budget is not None
+    max_graph_runner.cuda_graphs[existing_budget] = object()  # type: ignore[assignment]
+
+    max_graph_runner.forward(
+        {
+            "model_inputs": {
+                "pixel_values": torch.randn(8, 12),
+                "image_grid_thw": torch.tensor([[1, 4, 2]], dtype=torch.long),
+            },
+            "metas": [],
+        }
+    )
+
+    _assert_single_graph_fallback(max_graph_runner, "max_graphs")
+
+    max_buffer_runner = _GraphPolicyImageRunner(
+        model=_GraphPolicyImageModel(),
+        cuda_graph_token_budgets=(4,),
+        cuda_graph_sequence_budgets=(1,),
+        cuda_graph_max_sequence_token_budgets=(4,),
+        cuda_graph_max_buffer_bytes=1,
+    )
+
+    max_buffer_runner.forward(
+        {
+            "model_inputs": {
+                "pixel_values": torch.randn(4, 12),
+                "image_grid_thw": torch.tensor([[1, 2, 2]], dtype=torch.long),
+            },
+            "metas": [],
+        }
+    )
+
+    _assert_single_graph_fallback(max_buffer_runner, "max_buffer_bytes")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")

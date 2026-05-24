@@ -44,7 +44,7 @@ def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="image_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_image_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory_args={"device": "cuda", "dtype": None, "enable_cuda_graph": True},
         gpu=gpu,
         next="mm_aggregate",
         project_payload={

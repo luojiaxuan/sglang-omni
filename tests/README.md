@@ -6,7 +6,6 @@ tests/
 ├── utils.py
 ├── data/
 ├── docs/
-│   ├── qwen3_omni/
 │   └── s2pro/
 ├── test_model/
 │   ├── conftest.py
@@ -243,6 +242,12 @@ that happened to contain an older version of the test.
   - current `StageConfig` schema wiring
   - SGLang-backed generation and vocoder GPU placement contracts
   - terminal stage behavior.
+
+- `unit_test/profiler/`: Request-level profiler unit tests:
+  - `RequestEvent` schema and JSONL emit/append behavior
+  - concurrent emit safety under multiple threads
+  - lifecycle (start / stop / run_id mismatch / stage substitution)
+  - timeline reconstruction, stage breakdown, hop breakdown, malformed-line tolerance.
 
 - `unit_test/fixtures/`: Shared fakes. Single-test
   helpers should stay local until a second test needs them.
