@@ -28,8 +28,11 @@ from sglang_omni.pipeline.runtime_config import (
     build_relay_config,
     prepare_pipeline_runtime,
 )
-from sglang_omni.pipeline.stage_group import StageGroup
-from sglang_omni.pipeline.stage_process import StageProcessSpec, StageWorkerProcessSpec
+from sglang_omni.pipeline.stage_workers import (
+    StageGroup,
+    StageProcessSpec,
+    StageWorkerProcessSpec,
+)
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)

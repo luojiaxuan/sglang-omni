@@ -12,7 +12,7 @@ from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni.pipeline.stage_process import StageProcessSpec, _construct_stage
+from sglang_omni.pipeline.stage_workers import StageProcessSpec, _construct_stage
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     EventLog,

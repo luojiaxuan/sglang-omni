@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni.pipeline import stage_process
-from sglang_omni.pipeline.stage_group import _patched_spawn_env
-from sglang_omni.pipeline.stage_process import (
+from sglang_omni.pipeline import stage_workers
+from sglang_omni.pipeline.stage_workers import (
     StageProcessSpec,
     StageWorkerProcessSpec,
+    _patched_spawn_env,
     get_stage_process_env,
 )
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
@@ -65,7 +65,7 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         relay_config={"gpu_id": 1},
     )
 
-    stage_process._prepare_cuda_environment(spec, _RecordingLog())
+    stage_workers._prepare_cuda_environment(spec, _RecordingLog())
 
     assert spec.gpu_id == 0
     assert spec.factory_args["gpu_id"] == 0
@@ -133,13 +133,13 @@ def test_gpu_scheduler_construction_uses_startup_lock(monkeypatch) -> None:
         seen_gpu_ids.append(gpu_id)
         yield Path("/tmp/test.lock")
 
-    monkeypatch.setattr(stage_process, "gpu_startup_lock", _fake_lock)
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
     spec = StageProcessSpec(
         stage_name="thinker",
         factory=fake_factory_path("make_scheduler"),
     )
 
-    scheduler = stage_process._construct_scheduler(spec, 0, _RecordingLog())
+    scheduler = stage_workers._construct_scheduler(spec, 0, _RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)
     assert seen_gpu_ids == [0]
@@ -192,12 +192,12 @@ def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     def _unexpected_lock(gpu_id: int):
         raise AssertionError(f"unexpected GPU lock for {gpu_id}")
 
-    monkeypatch.setattr(stage_process, "gpu_startup_lock", _unexpected_lock)
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _unexpected_lock)
     spec = StageProcessSpec(
         stage_name="decode",
         factory=fake_factory_path("make_scheduler"),
     )
 
-    scheduler = stage_process._construct_scheduler(spec, None, _RecordingLog())
+    scheduler = stage_workers._construct_scheduler(spec, None, _RecordingLog())
 
     assert isinstance(scheduler, FakeScheduler)
