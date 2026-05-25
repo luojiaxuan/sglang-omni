@@ -135,7 +135,7 @@ class EncoderModelRunner:
                     "dedup_same_batch",
                     request_id=payload.request_id,
                     cache_key=cache_key,
-                    input_bytes=nested_tensor_bytes(self.request_model_inputs(request)),
+                    input_value=self.request_model_inputs(request),
                     detail=f"leader={active_cache_leaders[cache_key]}",
                 )
                 continue
@@ -407,15 +407,15 @@ class EncoderModelRunner:
                 "miss",
                 request_id=request_id,
                 cache_key=cache_key,
-                input_bytes=nested_tensor_bytes(self.request_model_inputs(request)),
+                input_value=self.request_model_inputs(request),
             )
             return None
         self.trace_cache_event(
             "hit",
             request_id=request_id,
             cache_key=cache_key,
-            input_bytes=nested_tensor_bytes(self.request_model_inputs(request)),
-            output_bytes=nested_tensor_bytes(cached),
+            input_value=self.request_model_inputs(request),
+            output_value=cached,
         )
         return cached
 
@@ -430,8 +430,8 @@ class EncoderModelRunner:
             "store",
             request_id=request_id,
             cache_key=cache_key,
-            input_bytes=nested_tensor_bytes(self.request_model_inputs(request)),
-            output_bytes=nested_tensor_bytes(result),
+            input_value=self.request_model_inputs(request),
+            output_value=result,
         )
 
     def trace_cache_event(
@@ -440,8 +440,8 @@ class EncoderModelRunner:
         *,
         request_id: str,
         cache_key: str | None,
-        input_bytes: int | None = None,
-        output_bytes: int | None = None,
+        input_value: Any = None,
+        output_value: Any = None,
         detail: str | None = None,
     ) -> None:
         if not _encoder_cache_trace_enabled():
@@ -452,10 +452,10 @@ class EncoderModelRunner:
             f"req={request_id}",
             f"key={_short_cache_key(cache_key)}",
         ]
-        if input_bytes is not None:
-            parts.append(f"input_bytes={input_bytes}")
-        if output_bytes is not None:
-            parts.append(f"output_bytes={output_bytes}")
+        if input_value is not None:
+            parts.append(f"input_bytes={nested_tensor_bytes(input_value)}")
+        if output_value is not None:
+            parts.append(f"output_bytes={nested_tensor_bytes(output_value)}")
         if detail:
             parts.append(detail)
         logger.info("encoder_cache %s", " ".join(parts))
