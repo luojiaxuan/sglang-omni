@@ -388,7 +388,7 @@ def test_qwen_image_encoder_factory_exposes_cuda_graph_controls(monkeypatch) -> 
     monkeypatch.setattr(
         qwen_stages,
         "Qwen3OmniImageEncoder",
-        lambda **kwargs: SimpleNamespace(**kwargs),
+        SimpleNamespace,
     )
     monkeypatch.setattr(qwen_stages, "Qwen3OmniImageEncoderModelRunner", FakeRunner)
 

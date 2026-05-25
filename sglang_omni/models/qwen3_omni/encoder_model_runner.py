@@ -134,6 +134,7 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         self.cuda_graph_max_buffer_bytes = int(cuda_graph_max_buffer_bytes)
         self.cuda_graph_fallback_reasons: dict[str, int] = {}
         self.native_visual_graph_budgets: set[QwenVisionCudaGraphBudget] = set()
+        self._visual_attention_impl_cached: str | None = None
 
     def is_batchable(self, request: Any) -> bool:
         if self.request_skip_result(request) is not None:
@@ -1026,17 +1027,22 @@ class Qwen3OmniImageEncoderModelRunner(Qwen3OmniEncoderModelRunner):
         }
 
     def _visual_attention_impl(self) -> str:
+        if self._visual_attention_impl_cached is not None:
+            return self._visual_attention_impl_cached
         visual = self.model.visual
         for block in visual.blocks:
             attn = getattr(block, "attn", None)
             qkv_backend = getattr(attn, "qkv_backend", None)
             if qkv_backend is not None:
-                return type(qkv_backend).__name__
+                self._visual_attention_impl_cached = type(qkv_backend).__name__
+                return self._visual_attention_impl_cached
             config = getattr(attn, "config", None)
             implementation = getattr(config, "_attn_implementation", None)
             if implementation is not None:
-                return str(implementation)
-        return "unknown"
+                self._visual_attention_impl_cached = str(implementation)
+                return self._visual_attention_impl_cached
+        self._visual_attention_impl_cached = "unknown"
+        return self._visual_attention_impl_cached
 
 
 class Qwen3OmniAudioEncoderModelRunner(Qwen3OmniEncoderModelRunner):
