@@ -644,7 +644,7 @@ Derived (computed from stages, not set manually): `terminal_stages`, `gpu_placem
 
 ```
 pipeline/
-├── stage_workers.py    # StageLaunchConfig, subprocess entrypoint, StageGroup
+├── stage_workers.py    # StageLaunchConfig, StageWorkerProcessSpec, entrypoint, StageGroup
 └── mp_runner.py        # MultiProcessRunner — orchestrates all groups
 ```
 
@@ -671,33 +671,33 @@ graph TB
     Main -->|ZMQ| P3
 ```
 
-> **Note (Chenyang):** `stage_group.py` and `stage_process.py` are tightly coupled — `StageGroup` is the only consumer of `StageLaunchConfig`, the subprocess entrypoint is ~40 lines, and the spec is a small dataclass. None of the three justifies its own file. Merging into a single `stage_workers.py` keeps everything about "how a stage's processes get defined, spawned, and managed" in one place, and leaves `mp_runner.py` focused on cross-stage orchestration. Two files, cleaner ownership.
+> **Note (Chenyang):** `stage_group.py` and `stage_process.py` are tightly coupled — `StageGroup` owns the worker process specs, the subprocess entrypoint is small, and the launch records are small dataclasses. None of the pieces justifies its own file. Merging into a single `stage_workers.py` keeps everything about "how stages' processes get defined, spawned, and managed" in one place, and leaves `mp_runner.py` focused on cross-stage orchestration. Two files, cleaner ownership.
 
-> Resolved: `StageLaunchConfig`, `StageGroup`, and the subprocess entrypoint now live together in `stage_workers.py`.
+> Resolved: `StageLaunchConfig`, `StageWorkerProcessSpec`, `StageGroup`, and the subprocess entrypoint now live together in `stage_workers.py`.
 
 ### `StageLaunchConfig`
 
-A fully-resolved, picklable dataclass built once in the main process. Subprocesses never re-compile the pipeline config — they just construct a `Stage` from the spec and run it.
+A fully-resolved, picklable per-stage launch record built once in the main process. Child processes receive a `StageWorkerProcessSpec` containing one or more `StageLaunchConfig` records and never re-compile the pipeline config.
 
 > **Note (Chenyang):** "Spec" is too vague a class name. Rename to `StageLaunchConfig`.
 
-The main process resolves all dotted strings, injects `model_path` / `gpu_id` into factory args, allocates ZMQ endpoints, and computes stream targets and relay config. The spec captures everything the child process needs.
+The main process resolves all dotted strings, injects `model_path` / `gpu_id` into factory args, allocates ZMQ endpoints, and computes stream targets and relay config. Each launch config captures everything needed to construct one logical stage instance; `StageWorkerProcessSpec` is the OS-process payload that groups the launch configs sharing a process.
 
-The subprocess entrypoint (`stage_process_main`) is ~40 lines: import factory, call it, build routing callable from `route_fn` or `next_stages`, build input handler from `wait_for` / `merge_fn`, construct `Stage`, run.
+The subprocess entrypoint (`stage_process_main`) imports each stage factory, calls it, builds routing callables from `route_fn` or `next_stages`, builds input handlers from `wait_for` / `merge_fn`, constructs all `Stage` instances assigned to that process, and runs them on one event loop.
 
 > **Note (Chenyang):** Promoting `tp_size` to a top-level field treats TP as special, but it's just one parallelism axis. Qwen3-Omni's Thinker is MoE and could want EP; throughput-oriented stages might want DP across replicas. If we add those later, we'll end up with `tp_size` / `ep_size` / `dp_size` proliferating at the top level. Cleaner to group them under a single `parallelism: ParallelismConfig` field now — `ParallelismConfig(tp=N)` reads as clearly as `tp_size=N` and leaves room to add `ep`, `dp` without further schema churn. If the intent is TP-only for the foreseeable future, at least document that explicitly so readers don't assume other strategies were deliberately excluded. (maybe we should add this as we get more parallelism and not now, or the class will only have tp attribute, increasing visual burden)
 
 ### `StageGroup`
 
-Manages the lifecycle (spawn, `wait_ready`, shutdown, health monitoring) of all OS processes backing one logical stage. For `tp_size == 1` (default), one process. For `tp_size > 1`, spawns one process per TP rank with appropriate `tp_rank` / `gpu_id`.
+Manages the lifecycle (spawn, `wait_ready`, shutdown, health monitoring) of one topology group. A group can be a colocated set of non-TP stages packed into one `StageWorkerProcessSpec`, or a TP stage spread across one worker process per rank. TP stages must own their worker processes exclusively, so each TP rank process carries exactly one `StageLaunchConfig` with the appropriate `tp_rank` / `gpu_id`.
 
 ### `MultiProcessRunner`
 
-Orchestrates startup across all `StageGroup`s. `_build_stage_groups(config)` turns a `PipelineConfig` into `list[StageGroup]` by iterating over stages, resolving factory args, allocating endpoints, and building one `StageLaunchConfig` per TP rank per stage. The Coordinator runs in the main process and only talks to rank 0 of each group.
+Orchestrates startup across all `StageGroup`s. `_build_stage_groups(config)` turns a `PipelineConfig` into `list[StageGroup]` by iterating over stages, resolving factory args, allocating endpoints, building one `StageLaunchConfig` per non-TP stage or TP rank, and packing those records into `StageWorkerProcessSpec` objects according to the process topology. The Coordinator runs in the main process; it registers every externally owned stage endpoint and only talks to rank 0 inside a TP group.
 
 ### Tensor Parallelism Support
 
-TP within a stage is orthogonal to pipeline parallelism between stages. The `StageGroup` spawns `tp_size` processes per AR stage. Each process runs a full `OmniScheduler` + `ModelWorker` with a different `tp_rank` and `gpu_id`. NCCL collectives inside the model forward keep TP ranks in lockstep. The Coordinator is TP-unaware — it only talks to rank 0 of each group.
+TP within a stage is orthogonal to pipeline parallelism between stages. For a TP stage, its `StageGroup` spawns `tp_size` processes. Each process runs a full `OmniScheduler` + `ModelWorker` with a different `tp_rank` and `gpu_id`. NCCL collectives inside the model forward keep TP ranks in lockstep. The Coordinator is TP-unaware and only talks to rank 0 inside the TP group.
 
 Within a TP group, rank 0 receives from the control plane and broadcasts to peer ranks. All ranks make identical scheduling decisions. Only rank 0 sends results downstream. Each stage gets its own NCCL port (`_NcclPortAllocator` in `mp_runner.py`).
 

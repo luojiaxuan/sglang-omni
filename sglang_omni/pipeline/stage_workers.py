@@ -26,7 +26,11 @@ from sglang_omni.utils.imports import import_string
 
 @dataclass
 class StageLaunchConfig:
-    """Everything a stage subprocess needs — no re-compilation required.
+    """Resolved launch metadata for one logical stage instance.
+
+    ``StageWorkerProcessSpec`` is the OS-process payload. A worker process may
+    carry multiple launch configs for colocated non-TP stages, while TP ranks
+    each get their own launch config and process.
 
     All string references (factory, merge_fn) are dotted import
     paths resolved by the child via :func:`import_string`.
