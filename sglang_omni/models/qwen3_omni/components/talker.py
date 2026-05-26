@@ -4,6 +4,7 @@ SGLang-native Talker model for Qwen3-Omni compatiable with hf formatting.
 
 from __future__ import annotations
 
+import copy
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -21,6 +22,9 @@ from sglang_omni.models.qwen3_omni.components.thinker_model import (
 from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTalkerTextConfig,
+)
+from sglang_omni.models.qwen3_omni.quantization import (
+    convert_fp8_weight_scale_inv_for_sglang,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import tensor_model_parallel_all_reduce
@@ -40,8 +44,24 @@ from sglang_omni.vendor.sglang.utils import make_layers
 
 def _bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
-        if "weight_loader" not in param.__dict__:
+        if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
+
+
+def _quant_config_for_code_predictor_dense_mlp(
+    quant_config: Optional[QuantizationConfig],
+) -> Optional[QuantizationConfig]:
+    """Keep dense code-predictor MLP projections quantized under SGLang 0.5.8."""
+    ignored_layers = getattr(quant_config, "ignored_layers", None)
+    if not ignored_layers or "mlp.gate" not in ignored_layers:
+        return quant_config
+
+    # FIXME (Ratish): when upgrading past SGLang 0.5.8. Newer SGLang uses
+    # dotted-boundary ignored-layer matching, so this local workaround should be
+    # removed once this repo depends on that behavior.
+    cloned = copy.copy(quant_config)
+    cloned.ignored_layers = [layer for layer in ignored_layers if layer != "mlp.gate"]
+    return cloned
 
 
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -486,6 +506,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         # 5 dense decoder layers
         alt_stream = torch.cuda.Stream()
         self.model.layers = nn.ModuleList()
+        dense_mlp_quant_config = _quant_config_for_code_predictor_dense_mlp(
+            quant_config
+        )
         for idx in range(cp_config.num_hidden_layers):
             # Create a decoder layer similar to Thinker but with dense MLP
             layer = nn.Module()
@@ -509,7 +532,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             layer.mlp = Qwen3OmniMoeTalkerDenseMLP(
                 cp_config.hidden_size,
                 cp_config.intermediate_size,
-                quant_config=quant_config,
+                quant_config=dense_mlp_quant_config,
                 prefix=add_prefix(f"model.layers.{idx}.mlp", prefix),
             )
             layer.input_layernorm = RMSNorm(
@@ -872,6 +895,10 @@ class Qwen3OmniTalker(nn.Module):
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
 
+    @property
+    def activation_dtype(self) -> torch.dtype:
+        return self.model.codec_embedding.weight.dtype
+
     @staticmethod
     def _sample_code_predictor_token(logits: torch.Tensor) -> torch.Tensor:
         # Match HF generate(do_sample=False, temperature=0.0) behavior for the
@@ -883,53 +910,93 @@ class Qwen3OmniTalker(nn.Module):
 
     def prepare_decode_buffers(self, requests: list) -> None:
         batch_size = len(requests)
+        if batch_size == 0:
+            return
+
+        device = self._repetition_mask.device
+        rep_vocab = self._repetition_mask.shape[1]
+        sup_vocab = self._suppress_mask.shape[1]
+
         self._repetition_mask[:batch_size] = False
-        self._repetition_penalties[:batch_size].fill_(1.0)
         self._suppress_mask[:batch_size] = False
-        self._sampling_temperatures[:batch_size].fill_(1.0)
-        self._sampling_top_ps[:batch_size].fill_(1.0)
-        self._sampling_top_ks[:batch_size].fill_(1)
-        self._sampling_min_ps[:batch_size].zero_()
-        self._sampling_seeds[:batch_size].zero_()
+
+        rep_penalties: list[float] = []
+        temperatures: list[float] = []
+        top_ps: list[float] = []
+        top_ks: list[int] = []
+        min_ps: list[float] = []
+        sampling_seeds: list[int] = []
+        rep_rows: list[int] = []
+        rep_toks: list[int] = []
+        sup_rows: list[int] = []
+        sup_toks: list[int] = []
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
-            sampling_params = req.sampling_params
+            sp = req.sampling_params
 
-            penalty = float(sampling_params.repetition_penalty)
-            self._repetition_penalties[row_idx, 0] = penalty
-            self._sampling_temperatures[row_idx, 0] = float(sampling_params.temperature)
-            self._sampling_top_ps[row_idx] = float(sampling_params.top_p)
-            self._sampling_top_ks[row_idx] = int(sampling_params.top_k)
-            self._sampling_min_ps[row_idx] = float(sampling_params.min_p)
-            req_seed = sampling_params.sampling_seed
-            if req_seed is not None:
-                self._sampling_seeds[row_idx] = int(req_seed)
+            penalty = float(sp.repetition_penalty)
+            rep_penalties.append(penalty)
+            temperatures.append(float(sp.temperature))
+            top_ps.append(float(sp.top_p))
+            top_ks.append(int(sp.top_k))
+            min_ps.append(float(sp.min_p))
+            seed = sp.sampling_seed
+            sampling_seeds.append(int(seed) if seed is not None else 0)
+
             if penalty != 1.0 and req.output_ids:
-                token_ids = torch.as_tensor(
-                    list({int(token_id) for token_id in req.output_ids}),
-                    dtype=torch.long,
-                    device=self._repetition_mask.device,
-                )
-                valid = token_ids[
-                    (token_ids >= 0) & (token_ids < self._repetition_mask.shape[1])
-                ]
-                if valid.numel() > 0:
-                    self._repetition_mask[row_idx, valid] = True
+                unique = {
+                    t
+                    for t in (int(tok) for tok in req.output_ids)
+                    if 0 <= t < rep_vocab
+                }
+                if unique:
+                    rep_rows.extend([row_idx] * len(unique))
+                    rep_toks.extend(unique)
 
             suppress_tokens = data.suppress_tokens or req._codec_suppress_tokens
             if suppress_tokens:
-                token_ids = torch.as_tensor(
-                    [int(token_id) for token_id in suppress_tokens],
-                    dtype=torch.long,
-                    device=self._suppress_mask.device,
-                )
-                valid = token_ids[
-                    (token_ids >= 0) & (token_ids < self._suppress_mask.shape[1])
+                valid_sup = [
+                    t
+                    for t in (int(tok) for tok in suppress_tokens)
+                    if 0 <= t < sup_vocab
                 ]
-                if valid.numel() > 0:
-                    self._suppress_mask[row_idx, valid] = True
+                if valid_sup:
+                    sup_rows.extend([row_idx] * len(valid_sup))
+                    sup_toks.extend(valid_sup)
+
+        rep_pen_dtype = self._repetition_penalties.dtype
+        self._repetition_penalties[:batch_size, 0] = torch.tensor(
+            rep_penalties, dtype=rep_pen_dtype, device=device
+        )
+        self._sampling_temperatures[:batch_size, 0] = torch.tensor(
+            temperatures, dtype=self._sampling_temperatures.dtype, device=device
+        )
+        self._sampling_top_ps[:batch_size] = torch.tensor(
+            top_ps, dtype=self._sampling_top_ps.dtype, device=device
+        )
+        self._sampling_top_ks[:batch_size] = torch.tensor(
+            top_ks, dtype=self._sampling_top_ks.dtype, device=device
+        )
+        self._sampling_min_ps[:batch_size] = torch.tensor(
+            min_ps, dtype=self._sampling_min_ps.dtype, device=device
+        )
+        self._sampling_seeds[:batch_size] = torch.tensor(
+            sampling_seeds, dtype=self._sampling_seeds.dtype, device=device
+        )
+
+        if rep_rows:
+            self._repetition_mask[
+                torch.tensor(rep_rows, dtype=torch.long, device=device),
+                torch.tensor(rep_toks, dtype=torch.long, device=device),
+            ] = True
+
+        if sup_rows:
+            self._suppress_mask[
+                torch.tensor(sup_rows, dtype=torch.long, device=device),
+                torch.tensor(sup_toks, dtype=torch.long, device=device),
+            ] = True
 
     def prepare_input_embeds(
         self,
@@ -1389,8 +1456,12 @@ class Qwen3OmniTalker(nn.Module):
             handled = False
             for param_name, weight_name, shard_id in stacked_params:
                 if weight_name in name and "mlp.experts" not in name:
-                    param = params_dict.get(name.replace(weight_name, param_name))
+                    mapped = name.replace(weight_name, param_name)
+                    param = params_dict.get(mapped)
                     if param is not None:
+                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                            mapped, loaded_weight
+                        )
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
@@ -1403,6 +1474,9 @@ class Qwen3OmniTalker(nn.Module):
                     mapped = name.replace(weight_name, param_name)
                     param = params_dict.get(mapped)
                     if param is not None:
+                        loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                            mapped, loaded_weight
+                        )
                         param.weight_loader(
                             param,
                             loaded_weight,
@@ -1418,4 +1492,7 @@ class Qwen3OmniTalker(nn.Module):
             # 3. Direct parameter loading
             param = params_dict.get(name)
             if param is not None:
+                loaded_weight = convert_fp8_weight_scale_inv_for_sglang(
+                    name, loaded_weight
+                )
                 param.weight_loader(param, loaded_weight)

@@ -22,6 +22,7 @@ def create_thinker_scheduler(
     from sglang_omni.models.qwen3_omni.request_builders import (
         make_thinker_scheduler_adapters,
         make_thinker_stream_output_builder,
+        should_generate_audio_output,
     )
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -30,7 +31,8 @@ def create_thinker_scheduler(
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
     want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
-    if want_cuda_graph and capture_hidden:
+    defer_cuda_graph_capture = want_cuda_graph and capture_hidden
+    if defer_cuda_graph_capture:
         server_args.enable_return_hidden_states = True
         server_args.disable_cuda_graph = True
 
@@ -52,17 +54,25 @@ def create_thinker_scheduler(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
 
-    if want_cuda_graph:
+    if defer_cuda_graph_capture:
         server_args.disable_cuda_graph = False
         model_worker.model_runner.init_device_graphs()
+
+    def _should_generate_qwen_audio_output(request: Any) -> bool:
+        return should_generate_audio_output(request.data.stage_payload)
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
         model=model_worker.model_runner.model if capture_hidden_layers else None,
+        should_emit_hidden=_should_generate_qwen_audio_output,
     )
 
-    model_runner = ThinkerModelRunner(model_worker, output_proc)
+    model_runner = ThinkerModelRunner(
+        model_worker,
+        output_proc,
+        should_capture_hidden=_should_generate_qwen_audio_output,
+    )
 
     tokenizer = get_tokenizer(
         model_config.model_path,

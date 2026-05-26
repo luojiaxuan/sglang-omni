@@ -12,6 +12,13 @@ from sglang_omni.config import PipelineConfig, PlacementConfig, StageConfig
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 
+# SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
+# stages can first hit some dense FP8 shapes after readiness; disable all-M
+# precompile so that miss does not become a long post-ready compile session.
+# FIXME (Ratish): Replace this with a bounded/pre-ready SGLang DeepGEMM compile
+# policy once that exists outside import-time environment globals.
+_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
+
 
 def _preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
@@ -24,6 +31,7 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
             "video_fps": "video_fps",
         },
         next=["image_encoder", "audio_encoder", "mm_aggregate"],
+        route_fn=f"{_PKG}.request_builders.resolve_preprocessing_next_stages",
         project_payload={
             "image_encoder": (
                 f"{_PKG}.request_builders.project_preprocessing_to_image_encoder"
@@ -88,6 +96,7 @@ def _aggregate_stage(*, process: str, speech_enabled: bool = False) -> StageConf
         process=process,
         factory=f"{_PKG}.stages.create_aggregate_executor",
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
+        wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.merge.merge_for_thinker",
         next="thinker",
     )
@@ -106,6 +115,16 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         runtime_arg_map={"max_seq_len": "thinker_max_seq_len"},
         next="decode",
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],
+        route_fn=(
+            f"{_PKG}.request_builders.resolve_thinker_next_stages"
+            if speech_enabled
+            else None
+        ),
+        stream_done_to_fn=(
+            f"{_PKG}.request_builders.resolve_thinker_stream_done_targets"
+            if speech_enabled
+            else None
+        ),
     )
 
 
@@ -229,6 +248,9 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     """6-stage text-only pipeline."""
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -243,6 +265,9 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     """8-stage speech pipeline (text + audio output)."""
 
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
+    env_defaults: dict[str, str] = Field(
+        default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
+    )
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -250,6 +275,7 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
+    terminal_stages_fn: str | None = f"{_PKG}.request_builders.resolve_terminal_stages"
     placement: PlacementConfig = Field(
         default_factory=lambda: PlacementConfig(
             require_memory_fraction_for_colocation=False
