@@ -237,6 +237,32 @@ body {
   text-transform: uppercase;
   color: var(--text-dim);
   font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.insert-toast {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: var(--accent);
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  pointer-events: none;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.insert-toast.show {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 textarea,
@@ -561,18 +587,25 @@ input:focus {
 .token-chip:hover {
   background: var(--panel-3);
   border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 0 var(--accent-soft);
 }
 
 .token-chip:active { transform: translateY(1px); }
 
 .token-chip.flash {
-  background: var(--accent);
-  border-color: var(--accent);
-  box-shadow: 0 0 12px var(--accent-glow);
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 24px var(--accent-glow), 0 0 0 2px var(--accent-glow) inset !important;
+  transform: scale(1.04);
+  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
 }
 
 .token-chip.flash .token-name,
-.token-chip.flash .token-desc { color: var(--bg); }
+.token-chip.flash .token-desc {
+  color: var(--bg) !important;
+  font-weight: 600;
+}
 
 .token-chip .token-name {
   font-family: "IBM Plex Mono", monospace;

@@ -89,6 +89,8 @@ const speaking = $("#speaking");
 const muteButton = $("#mute-button");
 const refAudioName = $("#ref-audio-name");
 const refAudioClear = $("#ref-audio-clear");
+const insertToast = $("#insert-toast");
+let insertToastTimer = null;
 const themeToggle = $("#theme-toggle");
 const envBadge = $("#env-badge");
 const envText = envBadge.querySelector(".env-text");
@@ -289,12 +291,25 @@ function renderTokenGrid(category) {
     chip.append(nameSpan, descSpan);
     chip.addEventListener("click", () => {
       insertTokenAtCursor(literal);
-      // Brief visual flash so the user sees the click registered.
+      // Two visible confirmations so the click never goes unnoticed:
+      //   1. the chip itself flashes green and scales up briefly
+      //   2. a transient toast appears next to the textarea label
       chip.classList.add("flash");
-      setTimeout(() => chip.classList.remove("flash"), 260);
+      setTimeout(() => chip.classList.remove("flash"), 420);
+      showInsertToast(literal);
     });
     grid.appendChild(chip);
   }
+}
+
+function showInsertToast(literal) {
+  insertToast.textContent = `✓ inserted ${literal}`;
+  insertToast.classList.add("show");
+  if (insertToastTimer) clearTimeout(insertToastTimer);
+  insertToastTimer = setTimeout(() => {
+    insertToast.classList.remove("show");
+    insertToastTimer = null;
+  }, 1400);
 }
 
 function insertTokenAtCursor(token) {

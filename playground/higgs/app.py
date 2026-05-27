@@ -116,7 +116,17 @@ def create_app(api_base: str) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def index() -> HTMLResponse:
         html = (FRONTEND_DIR / "index.html").read_text()
-        return HTMLResponse(html)
+        # Cache-bust frontend assets by stamping each /static/<asset> URL with
+        # the file's mtime — otherwise browsers happily serve a stale app.js
+        # after we ship a UI fix.
+        for asset in ("app.js", "styles.css"):
+            path = FRONTEND_DIR / asset
+            if path.exists():
+                v = int(path.stat().st_mtime)
+                html = html.replace(f"/static/{asset}", f"/static/{asset}?v={v}")
+        return HTMLResponse(
+            html, headers={"Cache-Control": "no-cache, must-revalidate"}
+        )
 
     @app.get("/healthz")
     async def healthz() -> dict:
