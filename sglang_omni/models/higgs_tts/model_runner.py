@@ -29,17 +29,10 @@ logger = logging.getLogger(__name__)
 class HiggsTTSModelRunner(ModelRunner):
     """ModelRunner for :class:`HiggsTTSModel`."""
 
-    def __init__(
-        self,
-        tp_worker: Any,
-        output_processor: Any,
-        outbox: Any | None = None,
-        *,
-        vocoder_target: str = "vocoder",
-    ) -> None:
+    def __init__(self, tp_worker: Any, output_processor: Any) -> None:
         super().__init__(tp_worker, output_processor)
-        self._outbox = outbox
-        self._vocoder_target = vocoder_target
+        self._outbox: Any | None = None
+        self._vocoder_target = "vocoder"
 
     def set_stream_outbox(self, outbox: Any) -> None:
         self._outbox = outbox
@@ -287,13 +280,14 @@ class HiggsTTSModelRunner(ModelRunner):
         )
         if not is_streaming:
             return
+        # codes_N is already CPU here; clone breaks aliasing with the producer's staging buffer.
         self._outbox.put(
             OutgoingMessage(
                 request_id=sched_req.request_id,
                 type="stream",
                 target=self._vocoder_target,
-                data=codes_N.detach().cpu().clone(),
-                metadata={"stream": is_streaming, "modality": "audio_codes"},
+                data=codes_N.clone(),
+                metadata={"modality": "audio_codes"},
             )
         )
 
