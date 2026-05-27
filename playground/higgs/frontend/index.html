@@ -75,6 +75,10 @@
           <span class="accordion-title">Voice cloning</span>
           <span class="accordion-hint">optional · upload or URL</span>
         </summary>
+        <p class="hint" style="padding: 0 14px; margin: 10px 0 0;">
+          If both a file and a URL are given, the <strong>uploaded file
+          takes precedence</strong>.
+        </p>
         <div class="field">
           <label for="ref-audio">Reference audio file</label>
           <div class="file-row">
@@ -160,9 +164,6 @@
           <span class="status-prefix">›</span>
           <span class="status-text">Ready</span>
         </div>
-        <div id="speaking" class="speaking" aria-label="Live audio activity" aria-hidden="true">
-          <span></span><span></span><span></span><span></span><span></span>
-        </div>
         <button
           id="mute-button"
           class="icon-button volume-button"
@@ -185,11 +186,15 @@
 
       <div class="field">
         <label>Final audio</label>
-        <audio id="final-audio" controls></audio>
+        <div class="audio-row">
+          <audio
+            id="final-audio"
+            controls
+            controlslist="nodownload noplaybackrate noremoteplayback"
+          ></audio>
+          <div class="audio-actions" id="final-audio-actions"></div>
+        </div>
       </div>
-
-      <!-- Hidden audio element used for live streaming playback. -->
-      <audio id="live-audio" hidden autoplay></audio>
 
       <div class="history-section">
         <div class="history-header">

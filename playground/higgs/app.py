@@ -91,6 +91,8 @@ def _build_payload(
     if stream:
         payload["stream"] = True
 
+    # Precedence: if the user supplies both an uploaded file and a URL,
+    # the uploaded file wins. Documented in the UI as well.
     reference_source = ref_audio_path or ref_audio_url
     if reference_source:
         reference: dict = {"audio_path": reference_source}

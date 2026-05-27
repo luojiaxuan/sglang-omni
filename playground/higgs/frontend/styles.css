@@ -746,48 +746,6 @@ input:focus {
 
 @keyframes blink { 50% { opacity: 0.3; } }
 
-/* --- speaking indicator (equalizer) ------------------------ */
-
-.speaking {
-  display: none;
-  align-items: flex-end;
-  gap: 3px;
-  height: 36px;
-  width: 56px;
-  padding: 0 9px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-}
-
-.speaking.active {
-  display: inline-flex;
-  border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 1px var(--accent-glow) inset;
-}
-
-.speaking span {
-  display: inline-block;
-  width: 3px;
-  background: var(--accent);
-  border-radius: 1px;
-  animation: speakingBar 0.9s ease-in-out infinite;
-  transform-origin: bottom;
-  filter: drop-shadow(0 0 2px var(--accent-glow));
-}
-
-.speaking span:nth-child(1) { animation-delay: 0.0s;  height: 40%; }
-.speaking span:nth-child(2) { animation-delay: 0.12s; height: 70%; }
-.speaking span:nth-child(3) { animation-delay: 0.24s; height: 50%; }
-.speaking span:nth-child(4) { animation-delay: 0.36s; height: 85%; }
-.speaking span:nth-child(5) { animation-delay: 0.48s; height: 55%; }
-
-@keyframes speakingBar {
-  0%, 100% { transform: scaleY(0.35); }
-  50%      { transform: scaleY(1.0); }
-}
-
 /* --- audio player ------------------------------------------ */
 
 audio {
@@ -795,6 +753,56 @@ audio {
   height: 36px;
   border-radius: 3px;
 }
+
+.audio-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audio-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.audio-action {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 5px 8px;
+  min-width: 36px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.audio-action:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.audio-action.active {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.audio-action.download {
+  margin-left: 6px;
+  padding: 4px 6px;
+}
+
+.audio-action svg { display: block; }
 
 /* Style the native HTML5 player background in dark mode (best-effort
  * — most browsers ignore most of this, but the surrounding container

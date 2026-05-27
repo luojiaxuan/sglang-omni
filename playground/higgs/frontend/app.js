@@ -84,8 +84,7 @@ const streamToggle = $("#stream-toggle");
 const statusEl = $("#status");
 const statusText = statusEl.querySelector(".status-text");
 const finalAudio = $("#final-audio");
-const liveAudio = $("#live-audio");
-const speaking = $("#speaking");
+const finalAudioActions = $("#final-audio-actions");
 const muteButton = $("#mute-button");
 const refAudioName = $("#ref-audio-name");
 const refAudioClear = $("#ref-audio-clear");
@@ -109,7 +108,6 @@ let audioCtx = null;
 let muteGain = null;
 let nextStartTime = 0;
 let scheduledSources = [];
-let speakingTimer = null;
 let muted = false;
 
 function ensureAudioCtx() {
@@ -131,11 +129,6 @@ function stopScheduledPlayback() {
   }
   scheduledSources = [];
   nextStartTime = audioCtx ? audioCtx.currentTime : 0;
-  if (speakingTimer) {
-    clearTimeout(speakingTimer);
-    speakingTimer = null;
-  }
-  setSpeaking(false);
 }
 
 async function scheduleWavChunk(wavBytes) {
@@ -161,29 +154,77 @@ async function scheduleWavChunk(wavBytes) {
   source.start(startAt);
   nextStartTime = startAt + audioBuffer.duration;
   scheduledSources.push(source);
-
-  // Keep the equalizer indicator on for as long as something is queued.
-  setSpeaking(true);
-  if (speakingTimer) clearTimeout(speakingTimer);
-  const msUntilEnd = (nextStartTime - audioCtx.currentTime) * 1000;
-  speakingTimer = setTimeout(() => {
-    setSpeaking(false);
-    speakingTimer = null;
-  }, msUntilEnd + 80);
 }
 
 muteButton.addEventListener("click", () => {
   muted = !muted;
   if (muteGain) muteGain.gain.value = muted ? 0 : 1;
-  liveAudio.muted = muted; // harmless; element is unused for playback now
   muteButton.setAttribute("aria-pressed", muted ? "true" : "false");
   muteButton.title = muted ? "Unmute live playback" : "Mute live playback";
 });
 
-function setSpeaking(active) {
-  speaking.classList.toggle("active", active);
-  speaking.setAttribute("aria-hidden", active ? "false" : "true");
+// --- per-clip audio actions: 0.5× / 1× / 1.5× + download --
+// Exposes the same things the browser's three-dot menu used to hide,
+// as visible icons next to the player.
+const PLAYBACK_RATES = [0.5, 1, 1.5];
+
+const DOWNLOAD_ICON_SVG = `
+<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+  <polyline points="7 10 12 15 17 10"/>
+  <line x1="12" y1="15" x2="12" y2="3"/>
+</svg>`.trim();
+
+function wireAudioActions(audioEl, actionsEl, downloadName) {
+  actionsEl.replaceChildren();
+  const speedButtons = [];
+
+  for (const rate of PLAYBACK_RATES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "audio-action speed" + (rate === 1 ? " active" : "");
+    btn.textContent = `${rate}×`;
+    btn.title = `Play at ${rate}× speed`;
+    btn.setAttribute("aria-label", `Set playback speed to ${rate}×`);
+    btn.addEventListener("click", () => {
+      audioEl.playbackRate = rate;
+      for (const other of speedButtons) other.classList.remove("active");
+      btn.classList.add("active");
+    });
+    speedButtons.push(btn);
+    actionsEl.appendChild(btn);
+  }
+  audioEl.playbackRate = 1;
+
+  const dl = document.createElement("button");
+  dl.type = "button";
+  dl.className = "audio-action download";
+  dl.title = "Download WAV";
+  dl.setAttribute("aria-label", "Download WAV");
+  dl.innerHTML = DOWNLOAD_ICON_SVG;
+  dl.addEventListener("click", () => {
+    if (!audioEl.src) return;
+    const a = document.createElement("a");
+    a.href = audioEl.src;
+    a.download = downloadName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+  actionsEl.appendChild(dl);
 }
+
+function timestampedFilename(prefix = "higgs") {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    `${prefix}-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.wav`
+  );
+}
+
+wireAudioActions(finalAudio, finalAudioActions, () => timestampedFilename("higgs-final"));
 
 // --- theme toggle (light / dark, persisted) -----------
 const THEME_KEY = "higgs-playground-theme";
@@ -386,10 +427,24 @@ function appendHistory({ text, audioUrl, meta }) {
   li.appendChild(textDiv);
 
   if (audioUrl) {
+    const row = document.createElement("div");
+    row.className = "audio-row";
+
     const audio = document.createElement("audio");
     audio.controls = true;
+    audio.setAttribute(
+      "controlslist",
+      "nodownload noplaybackrate noremoteplayback",
+    );
     audio.src = audioUrl;
-    li.appendChild(audio);
+
+    const actions = document.createElement("div");
+    actions.className = "audio-actions";
+
+    row.append(audio, actions);
+    li.appendChild(row);
+
+    wireAudioActions(audio, actions, () => timestampedFilename("higgs"));
   }
 
   if (meta) {
