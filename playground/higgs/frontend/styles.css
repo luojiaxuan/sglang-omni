@@ -108,6 +108,31 @@ body {
   gap: 12px;
 }
 
+.brand-org {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* SGL-omni umbrella wordmark. Background was stripped to transparency so the
+   orange mark sits naturally on both the dark and light topbar. */
+.brand-logo {
+  height: 26px;
+  width: auto;
+  display: block;
+  opacity: 0.95;
+  transition: opacity 0.2s ease;
+}
+
+.brand-org:hover .brand-logo {
+  opacity: 1;
+}
+
+.brand-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border-strong);
+}
+
 .brand-mark {
   color: var(--accent);
   filter: drop-shadow(0 0 6px var(--accent-glow));
