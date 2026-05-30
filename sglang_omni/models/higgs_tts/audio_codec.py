@@ -186,6 +186,50 @@ class HiggsAudioCodec:
         return codes_BNT.squeeze(0).transpose(0, 1).to(torch.long).cpu()
 
     @torch.no_grad()
+    def encode_batch(self, waveforms: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Batch-encode ``[1, 1, L_i]`` float32 waveforms → ``[T_i, N]`` int64 code tensors.
+
+        Only same-length items are batched into a single forward pass.
+        The non-causal acoustic encoder corrupts shorter items when padded to
+        a longer ``L_max``, so mixed-length inputs are encoded per-bucket.
+        Clips shorter than ``SAMPLE_RATE`` samples are zero-padded before
+        bucketing, matching the behaviour of :meth:`encode_reference`.
+        """
+        if not waveforms:
+            return []
+        if len(waveforms) == 1:
+            return [self.encode_reference(waveforms[0])]
+
+        padded: list[torch.Tensor] = []
+        for w in waveforms:
+            wav = w.to(torch.float32)
+            if wav.shape[-1] < self.SAMPLE_RATE:
+                wav = F.pad(wav, (0, self.SAMPLE_RATE - wav.shape[-1]))
+            padded.append(wav)
+
+        buckets: dict[int, list[int]] = {}
+        for i, w in enumerate(padded):
+            buckets.setdefault(w.shape[-1], []).append(i)
+
+        results: list[torch.Tensor | None] = [None] * len(waveforms)
+        for indices in buckets.values():
+            if len(indices) == 1:
+                results[indices[0]] = self.encode_reference(padded[indices[0]])
+            else:
+                batch = torch.cat([padded[i] for i in indices])  # [B, 1, L]
+                batch = batch.to(device=self.device, dtype=self._dtype)
+                codes_BNT = self.model.encode(batch).audio_codes  # [B, N, T]
+                for j, idx in enumerate(indices):
+                    results[idx] = codes_BNT[j].transpose(0, 1).to(torch.long).cpu()
+
+        out: list[torch.Tensor] = []
+        for i, result in enumerate(results):
+            if result is None:
+                raise RuntimeError(f"encode_batch did not produce codes for item {i}")
+            out.append(result)
+        return out
+
+    @torch.no_grad()
     def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
         """``[T, num_codebooks]`` → mono waveform ``[L]``."""
         if codes_TN.ndim != 2:
