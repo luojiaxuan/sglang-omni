@@ -46,6 +46,38 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Async decode (default on)
+
+The `tts_engine` stage runs **one-step-lookahead async decode by default** for
+Higgs TTS: each AR step's host-side token collect overlaps the next GPU forward.
+Batches below `--async-decode-min-batch-size` (default 2) take the synchronous
+fast path, so concurrency 1 is unaffected.
+
+Quality is unchanged. On the full SeedTTS set (EN=1088, ZH=2020, H200) the
+async-on corpus WER and speaker similarity match the synchronous path within
+run-to-run noise: EN 1.37 vs 1.21% excl-outlier WER / SIM 66.1 vs 66.2; ZH 1.16
+vs 1.15% WER / SIM 72.2 vs 72.4. Token-level parity is covered by
+`tests/unit_test/higgs_tts/test_async_decode_runner.py`.
+
+A separate controlled throughput sweep (fixed 256 output tokens, 48 prompts,
+H200) measured async-on at roughly +10–15% qps / −11 to −13% latency at
+concurrency 4/8/16 and neutral at concurrency 1; treat those as indicative
+rather than a full-set benchmark.
+
+Toggle it with the tri-state `--async-decode` flag:
+
+```bash
+# Disable async decode (synchronous AR loop)
+sgl-omni serve --model-path <higgs-model> --port 8000 --async-decode off
+
+# Force on / use the config default (on for Higgs) — equivalent here
+sgl-omni serve --model-path <higgs-model> --port 8000 --async-decode on
+sgl-omni serve --model-path <higgs-model> --port 8000 --async-decode default
+
+# Raise the min batch size below which decode bypasses the lookahead (default 2)
+sgl-omni serve --model-path <higgs-model> --port 8000 --async-decode-min-batch-size 4
+```
+
 ## Synthesizing Speech
 
 ### Zero-shot

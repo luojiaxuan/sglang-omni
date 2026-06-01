@@ -696,12 +696,13 @@ def _apply_stage_factory_args_override(
 def apply_async_decode_cli_overrides(
     pipeline_config: PipelineConfig,
     *,
-    enable_async_decode: bool,
+    async_decode: str,
     async_decode_min_batch_size: int | None,
 ) -> PipelineConfig:
+    mode = _normalize_stage_toggle_mode("async_decode", async_decode)
     updates: dict[str, object] = {}
-    if enable_async_decode:
-        updates["enable_async_decode"] = True
+    if mode != "default":
+        updates["enable_async_decode"] = mode == "on"
     if async_decode_min_batch_size is not None:
         if int(async_decode_min_batch_size) < 1:
             raise typer.BadParameter("--async-decode-min-batch-size must be >= 1")
@@ -714,7 +715,7 @@ def apply_async_decode_cli_overrides(
         updates=updates,
         reason="async decode override",
         supported_factory=_HIGGS_ASYNC_DECODE_FACTORY,
-        flag_name="--enable-async-decode/--async-decode-min-batch-size",
+        flag_name="--async-decode/--async-decode-min-batch-size",
     )
     return pipeline_config
 
@@ -958,18 +959,19 @@ def serve(
             help="Mount the OpenAI Realtime WebSocket endpoint at /v1/realtime.",
         ),
     ] = False,
-    enable_async_decode: Annotated[
-        bool,
+    async_decode: Annotated[
+        str,
         typer.Option(
-            "--enable-async-decode",
-            "--enable_async_decode",
+            "--async-decode",
+            "--async_decode",
             help=(
-                "Enable one-step-lookahead async decode for the tts_engine stage "
-                "(overlaps per-step host collect with the next GPU forward). "
-                "Currently supported by Higgs TTS."
+                "One-step-lookahead async decode for the tts_engine stage: "
+                "default|on|off. When on, per-step host collect overlaps the "
+                "next GPU forward. 'default' uses the pipeline config default "
+                "(on for Higgs TTS). Currently supported by Higgs TTS."
             ),
         ),
-    ] = False,
+    ] = "default",
     async_decode_min_batch_size: Annotated[
         int | None,
         typer.Option(
@@ -1052,7 +1054,7 @@ def serve(
     )
     merged_config = apply_async_decode_cli_overrides(
         merged_config,
-        enable_async_decode=enable_async_decode,
+        async_decode=async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
     )
     merged_config = apply_partial_start_cli_overrides(
