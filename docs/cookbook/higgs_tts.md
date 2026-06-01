@@ -46,17 +46,6 @@ sgl-omni serve \
   --port 8000
 ```
 
-### Async decode (default on)
-
-The `tts_engine` stage runs one-step-lookahead async decode by default for Higgs
-TTS. Batches below `--async-decode-min-batch-size` (default 2) take the
-synchronous fast path. Toggle it with `--async-decode default|on|off`:
-
-```bash
-# Disable async decode
-sgl-omni serve --model-path <higgs-model> --port 8000 --async-decode off
-```
-
 ## Synthesizing Speech
 
 ### Zero-shot
