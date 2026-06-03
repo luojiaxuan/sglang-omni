@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import threading
+import time
+from types import SimpleNamespace
 
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -61,6 +65,86 @@ def test_admin_messages_round_trip() -> None:
     parsed = parse_message(result.to_dict())
     assert isinstance(parsed, AdminResultMessage)
     assert parsed.result.data["model_path"] == "m"
+
+
+def test_omni_scheduler_admin_enqueues_to_scheduler_thread() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._running = True
+    scheduler._admin_queue = queue.Queue()
+    scheduler._scheduler_thread_id = None
+
+    ready = threading.Event()
+    done = threading.Event()
+    calls: list[tuple[int, str, dict]] = []
+
+    def run_admin_action(action: str, payload: dict) -> dict:
+        calls.append((threading.get_ident(), action, payload))
+        done.set()
+        return {"success": True, "data": {"thread": "scheduler"}}
+
+    scheduler._run_admin_action = run_admin_action
+
+    def scheduler_thread() -> None:
+        scheduler._scheduler_thread_id = threading.get_ident()
+        ready.set()
+        while not done.is_set():
+            OmniScheduler._process_admin_requests(scheduler)
+            time.sleep(0.001)
+
+    thread = threading.Thread(target=scheduler_thread)
+    thread.start()
+    assert ready.wait(timeout=1.0)
+    caller_thread_id = threading.get_ident()
+
+    result = OmniScheduler.admin(
+        scheduler,
+        "model_info",
+        {"detail": True, "_admin_timeout_s": 1.0},
+    )
+
+    done.set()
+    thread.join(timeout=1.0)
+    assert result == {"success": True, "data": {"thread": "scheduler"}}
+    assert len(calls) == 1
+    scheduler_thread_id, action, payload = calls[0]
+    assert action == "model_info"
+    assert payload == {"detail": True}
+    assert scheduler_thread_id != caller_thread_id
+
+
+def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    update_calls: list[dict] = []
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=lambda payload: update_calls.append(payload)
+        or (True, "ok")
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._engine_paused = False
+    scheduler._last_pause_mode = None
+    scheduler._async_pending = None
+    scheduler.result_queue = None
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: ["req-1"]
+
+    result = OmniScheduler._admin_update_weights_from_disk(
+        scheduler,
+        {
+            "model_path": "/tmp/new-model",
+            "flush_cache": False,
+            "abort_all_requests": False,
+        },
+    )
+
+    assert result["success"] is False
+    assert "active requests are present" in result["message"]
+    assert result["data"]["active_request_count"] == 1
+    assert scheduler._engine_paused is False
+    assert update_calls == []
 
 
 def test_coordinator_admin_waits_for_all_stage_results() -> None:

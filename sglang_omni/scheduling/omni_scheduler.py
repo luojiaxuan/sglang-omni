@@ -203,6 +203,9 @@ class OmniScheduler:
         self.forward_sleep_time = None
         self._engine_paused = False
         self._admin_lock = threading.Lock()
+        self._admin_queue = _queue_mod.Queue()
+        self._scheduler_thread_id: int | None = None
+        self._last_pause_mode: str | None = None
 
         # Chunked prefill
         self.chunked_prefill_size = server_args.chunked_prefill_size
@@ -818,13 +821,17 @@ class OmniScheduler:
             self._dirty_deferred_request_ids.add(request_id)
 
     def start(self) -> None:
+        self._scheduler_thread_id = threading.get_ident()
         self._running = True
-        if getattr(self, "enable_async_decode", False):
-            self._event_loop_async_decode()
-        elif self.enable_overlap:
-            self._event_loop_overlap()
-        else:
-            self._event_loop_normal()
+        try:
+            if getattr(self, "enable_async_decode", False):
+                self._event_loop_async_decode()
+            elif self.enable_overlap:
+                self._event_loop_overlap()
+            else:
+                self._event_loop_normal()
+        finally:
+            self._scheduler_thread_id = None
 
     def event_loop(self) -> None:
         self.start()
@@ -864,6 +871,57 @@ class OmniScheduler:
         self._drain_inbox_for_request(request_id)
 
     def admin(
+        self, action: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        payload = dict(payload or {})
+        if self._should_enqueue_admin():
+            return self._enqueue_admin(action, payload)
+        return self._run_admin_action(action, payload)
+
+    def _should_enqueue_admin(self) -> bool:
+        scheduler_thread_id = getattr(self, "_scheduler_thread_id", None)
+        return (
+            bool(getattr(self, "_running", False))
+            and scheduler_thread_id is not None
+            and threading.get_ident() != scheduler_thread_id
+        )
+
+    def _enqueue_admin(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout_s = float(payload.get("_admin_timeout_s", 300.0))
+        queued_payload = dict(payload)
+        queued_payload.pop("_admin_timeout_s", None)
+        response_queue = _queue_mod.Queue(maxsize=1)
+        self._admin_queue.put((action, queued_payload, response_queue))
+        try:
+            return response_queue.get(timeout=timeout_s)
+        except _queue_mod.Empty:
+            return {
+                "success": False,
+                "message": f"admin operation timed out after {timeout_s:.1f}s",
+                "error": "admin operation timed out",
+            }
+
+    def _process_admin_requests(self) -> int:
+        processed = 0
+        while True:
+            try:
+                action, payload, response_queue = self._admin_queue.get_nowait()
+            except _queue_mod.Empty:
+                break
+            try:
+                response = self._run_admin_action(action, payload)
+            except Exception as exc:
+                logger.exception("OmniScheduler admin operation failed: %s", action)
+                response = {
+                    "success": False,
+                    "message": str(exc),
+                    "error": str(exc),
+                }
+            response_queue.put(response)
+            processed += 1
+        return processed
+
+    def _run_admin_action(
         self, action: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         payload = dict(payload or {})
@@ -918,7 +976,9 @@ class OmniScheduler:
 
         with self._admin_lock:
             self._engine_paused = True
+            self._last_pause_mode = mode
             self._resolve_pending_async()
+            self._resolve_pending_overlap_results()
             num_paused = 0
             if mode == "abort":
                 num_paused = self._abort_all_requests()
@@ -939,6 +999,7 @@ class OmniScheduler:
             if bool(payload.get("torch_empty_cache", True)):
                 self._empty_torch_cache()
             self._engine_paused = False
+            self._last_pause_mode = None
         return {
             "success": True,
             "message": "generation continued",
@@ -958,9 +1019,34 @@ class OmniScheduler:
             previous_pause_state = self._engine_paused
             self._engine_paused = True
             self._resolve_pending_async()
+            self._resolve_pending_overlap_results()
             num_paused = 0
-            if bool(payload.get("abort_all_requests", False)):
+            abort_all_requests = bool(payload.get("abort_all_requests", False))
+            if abort_all_requests:
                 num_paused = self._abort_all_requests()
+            else:
+                active_request_ids = self._active_request_ids()
+                if active_request_ids and not self._can_update_active_requests(
+                    previous_pause_state
+                ):
+                    if not bool(payload.get("keep_pause", False)):
+                        self._engine_paused = previous_pause_state
+                    return {
+                        "success": False,
+                        "message": (
+                            "active requests are present; set "
+                            "abort_all_requests=true or pause_generation with "
+                            "mode=retract before updating weights"
+                        ),
+                        "error": "active requests present during weight update",
+                        "data": {
+                            "active_request_count": len(active_request_ids),
+                            "active_request_ids": active_request_ids[:16],
+                            "abort_all_requests": abort_all_requests,
+                            "pause_mode": getattr(self, "_last_pause_mode", None),
+                            "engine_paused": self._engine_paused,
+                        },
+                    }
 
             success, message = self.model_worker.update_weights_from_disk(payload)
             flush_success: bool | None = None
@@ -1077,6 +1163,16 @@ class OmniScheduler:
                     request_ids.add(rid)
         return sorted(request_ids)
 
+    def _can_update_active_requests(
+        self, previously_paused: bool | None = None
+    ) -> bool:
+        engine_paused = (
+            self._engine_paused if previously_paused is None else previously_paused
+        )
+        return bool(
+            engine_paused and getattr(self, "_last_pause_mode", None) == "retract"
+        )
+
     def _retract_running_requests(self) -> int:
         batch = self.running_batch
         if batch is None or batch.is_empty():
@@ -1105,6 +1201,14 @@ class OmniScheduler:
         except Exception:
             logger.exception("flush_cache after weight update failed")
             return False
+
+    def _resolve_pending_overlap_results(self) -> None:
+        result_queue = getattr(self, "result_queue", None)
+        if result_queue is None:
+            return
+        while result_queue:
+            batch, result = result_queue.popleft()
+            self.process_batch_result(batch, result)
 
     @staticmethod
     def _empty_torch_cache() -> None:
@@ -1160,10 +1264,12 @@ class OmniScheduler:
         # (which is mostly Python-side dispatch into many small CUDA kernels)
         # slows ~600x, dropping audio QPS from >10 to <0.5.
         while self._running:
+            self._process_admin_requests()
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                self._process_admin_requests()
                 time.sleep(0.001)
                 continue
 
@@ -1190,10 +1296,12 @@ class OmniScheduler:
             self.process_batch_result(tmp_batch, tmp_result)
 
         while self._running:
+            self._process_admin_requests()
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                self._process_admin_requests()
                 time.sleep(0.001)
                 continue
 
@@ -1309,10 +1417,12 @@ class OmniScheduler:
         first and run synchronously (the in-flight step is never stranded).
         """
         while self._running:
+            self._process_admin_requests()
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
+                self._process_admin_requests()
                 self._resolve_pending_async()
                 time.sleep(0.001)
                 continue

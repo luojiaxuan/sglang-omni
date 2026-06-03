@@ -143,7 +143,22 @@ class AdminClient:
         timeout_s: float = 30.0,
     ) -> dict[str, Any]:
         self.calls.append(("model_info", {}, stages, timeout_s))
-        return {"success": True, "message": "ok", "results": []}
+        return {
+            "success": True,
+            "message": "ok",
+            "results": [
+                {
+                    "stage": "decode",
+                    "success": True,
+                    "message": "ok",
+                    "data": {
+                        "model_path": "/tmp/current-model",
+                        "load_format": "safetensors",
+                        "weight_version": "v1",
+                    },
+                }
+            ],
+        }
 
     async def pause_generation(
         self,
@@ -246,6 +261,10 @@ def test_admin_routes_forward_to_client() -> None:
     checksum = client.post("/weights_checker", json={"action": "checksum"})
 
     assert info.status_code == 200
+    assert info.json()["weight_version"] == "v1"
+    assert info.json()["model_path"] == "/tmp/current-model"
+    assert info.json()["load_format"] == "safetensors"
+    assert info.json()["stages"][0]["stage"] == "decode"
     assert pause.status_code == 200
     assert update.status_code == 200
     assert checksum.status_code == 200

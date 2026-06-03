@@ -168,12 +168,12 @@ def _register_admin(app: FastAPI) -> None:
     @app.get("/model_info")
     async def model_info_get() -> JSONResponse:
         client: Client = app.state.client
-        return _admin_response(await client.model_info())
+        return _model_info_response(await client.model_info())
 
     @app.post("/model_info")
     async def model_info_post(req: AdminRequestBase) -> JSONResponse:
         client: Client = app.state.client
-        return _admin_response(
+        return _model_info_response(
             await client.model_info(
                 stages=req.stages,
                 timeout_s=req.timeout_s or 30.0,
@@ -274,6 +274,76 @@ def _admin_response(result: dict[str, Any]) -> JSONResponse:
     if not result.get("success", False):
         raise HTTPException(status_code=400, detail=result)
     return JSONResponse(content=result)
+
+
+def _model_info_response(result: dict[str, Any]) -> JSONResponse:
+    if not result.get("success", False):
+        raise HTTPException(status_code=400, detail=result)
+
+    stage_infos = _extract_model_info_stage_data(result)
+    weight_version = _common_model_info_value(
+        result,
+        stage_infos,
+        "weight_version",
+        mixed_status_code=409,
+    )
+    payload = dict(result)
+    payload.update(
+        {
+            "weight_version": weight_version,
+            "model_path": _common_model_info_value(result, stage_infos, "model_path"),
+            "load_format": _common_model_info_value(result, stage_infos, "load_format"),
+            "stages": result.get("results", []),
+        }
+    )
+    return JSONResponse(content=payload)
+
+
+def _extract_model_info_stage_data(result: dict[str, Any]) -> list[dict[str, Any]]:
+    infos: list[dict[str, Any]] = []
+    for item in result.get("results", []) or []:
+        if not isinstance(item, dict):
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict):
+            continue
+        if data.get("skipped") or data.get("unsupported"):
+            continue
+        stage_info = dict(data)
+        stage_info.setdefault("stage", item.get("stage"))
+        stage_info.setdefault("success", item.get("success"))
+        infos.append(stage_info)
+    return infos
+
+
+def _common_model_info_value(
+    result: dict[str, Any],
+    stage_infos: list[dict[str, Any]],
+    key: str,
+    *,
+    mixed_status_code: int | None = None,
+) -> Any:
+    values = [info[key] for info in stage_infos if info.get(key) is not None]
+    if not values:
+        return None
+
+    unique: dict[str, Any] = {}
+    for value in values:
+        unique.setdefault(json.dumps(value, sort_keys=True, default=str), value)
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    if mixed_status_code is not None:
+        raise HTTPException(
+            status_code=mixed_status_code,
+            detail={
+                "success": False,
+                "message": f"mixed stage {key}",
+                "mixed_state": {key: list(unique.values())},
+                "stages": stage_infos,
+                "admin": result,
+            },
+        )
+    return None
 
 
 def _register_chat_completions(app: FastAPI) -> None:

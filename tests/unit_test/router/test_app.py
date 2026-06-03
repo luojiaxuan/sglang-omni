@@ -393,6 +393,73 @@ def test_admin_routes_broadcast_to_live_workers_and_preserve_query() -> None:
     assert [item[2] for item in seen] == [b"", b""]
 
 
+def test_model_info_broadcast_exposes_sglang_compatible_weight_version() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/model_info":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "weight_version": "v7",
+                    "model_path": "/tmp/model-v7",
+                    "load_format": "safetensors",
+                    "stages": [
+                        {
+                            "stage": "decode",
+                            "success": True,
+                            "data": {
+                                "weight_version": "v7",
+                                "model_path": "/tmp/model-v7",
+                                "load_format": "safetensors",
+                            },
+                        }
+                    ],
+                },
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/model_info")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["weight_version"] == "v7"
+    assert body["model_path"] == "/tmp/model-v7"
+    assert body["load_format"] == "safetensors"
+    assert len(body["workers"]) == 2
+
+
+def test_model_info_broadcast_rejects_mixed_worker_weight_versions() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/model_info":
+            version = "v1" if _request_netloc(request) == "worker-a:8101" else "v2"
+            return httpx.Response(
+                200,
+                json={"success": True, "weight_version": version},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/model_info")
+
+    body = response.json()["detail"]
+    assert response.status_code == 409
+    assert body["success"] is False
+    assert set(body["mixed_state"]["weight_version"]) == {"v1", "v2"}
+
+
 def test_admin_update_temporarily_disables_workers_and_restores_state() -> None:
     app_holder: dict[str, Any] = {}
     disabled_snapshots: list[tuple[bool, bool]] = []

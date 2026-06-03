@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import unquote
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
@@ -443,6 +443,9 @@ async def _broadcast_admin_request_locked(
                 worker.set_disabled(previous_disabled[worker.worker_id])
 
     success = all(item["success"] for item in results)
+    if path == "/model_info":
+        return _model_info_broadcast_response(results, success=success)
+
     payload = {
         "success": success,
         "message": "ok" if success else "one or more workers failed admin request",
@@ -451,6 +454,101 @@ async def _broadcast_admin_request_locked(
         "results": results,
     }
     return JSONResponse(payload, status_code=200 if success else 502)
+
+
+def _model_info_broadcast_response(
+    results: list[dict[str, Any]],
+    *,
+    success: bool,
+) -> JSONResponse:
+    if not success:
+        payload = {
+            "success": False,
+            "message": "one or more workers failed model_info request",
+            "path": "/model_info",
+            "worker_count": len(results),
+            "workers": results,
+            "results": results,
+        }
+        return JSONResponse(payload, status_code=502)
+
+    worker_infos = _extract_worker_model_infos(results)
+    weight_version = _common_worker_model_info_value(
+        worker_infos,
+        "weight_version",
+        mixed_status_code=409,
+        results=results,
+    )
+    payload = {
+        "success": True,
+        "message": "ok",
+        "path": "/model_info",
+        "worker_count": len(results),
+        "weight_version": weight_version,
+        "model_path": _common_worker_model_info_value(worker_infos, "model_path"),
+        "load_format": _common_worker_model_info_value(worker_infos, "load_format"),
+        "workers": results,
+        "results": results,
+    }
+    return JSONResponse(payload)
+
+
+def _extract_worker_model_infos(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    infos: list[dict[str, Any]] = []
+    for result in results:
+        body = result.get("body")
+        if not isinstance(body, dict):
+            continue
+        worker = result.get("worker")
+        top_level = {
+            key: body.get(key)
+            for key in ("weight_version", "model_path", "load_format")
+            if body.get(key) is not None
+        }
+        if top_level:
+            top_level["worker"] = worker
+            infos.append(top_level)
+        for stage in body.get("stages") or body.get("results") or []:
+            if not isinstance(stage, dict):
+                continue
+            data = stage.get("data")
+            if not isinstance(data, dict):
+                continue
+            if data.get("skipped") or data.get("unsupported"):
+                continue
+            info = dict(data)
+            info.setdefault("worker", worker)
+            info.setdefault("stage", stage.get("stage"))
+            infos.append(info)
+    return infos
+
+
+def _common_worker_model_info_value(
+    worker_infos: list[dict[str, Any]],
+    key: str,
+    *,
+    mixed_status_code: int | None = None,
+    results: list[dict[str, Any]] | None = None,
+) -> Any:
+    values = [info[key] for info in worker_infos if info.get(key) is not None]
+    if not values:
+        return None
+    unique: dict[str, Any] = {}
+    for value in values:
+        unique.setdefault(json.dumps(value, sort_keys=True, default=str), value)
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    if mixed_status_code is not None:
+        payload = {
+            "success": False,
+            "message": f"mixed worker {key}",
+            "path": "/model_info",
+            "mixed_state": {key: list(unique.values())},
+            "workers": results or [],
+            "results": results or [],
+        }
+        raise HTTPException(status_code=mixed_status_code, detail=payload)
+    return None
 
 
 async def _send_admin_to_worker(

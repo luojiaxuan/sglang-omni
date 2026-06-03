@@ -240,15 +240,30 @@ class ModelWorker:
         update = getattr(self.model_runner, "update_weights_from_disk", None)
         if update is None:
             return False, "model runner does not support update_weights_from_disk"
+        load_format = payload.get("load_format") or getattr(
+            self.server_args, "load_format", None
+        )
         success, message = update(
             model_path,
-            payload.get("load_format"),
+            load_format,
             recapture_cuda_graph=bool(payload.get("recapture_cuda_graph", False)),
         )
-        weight_version = payload.get("weight_version")
-        if success and weight_version is not None:
-            setattr(self.server_args, "weight_version", weight_version)
-            setattr(self.model_runner.server_args, "weight_version", weight_version)
+        if success:
+            runner_args = getattr(self.model_runner, "server_args", None)
+            setattr(self.server_args, "model_path", model_path)
+            setattr(self.server_args, "load_format", load_format)
+            if runner_args is not None:
+                setattr(runner_args, "model_path", model_path)
+                setattr(runner_args, "load_format", load_format)
+            model_config = getattr(self.model_runner, "model_config", None)
+            if model_config is not None:
+                setattr(model_config, "model_path", model_path)
+
+            weight_version = payload.get("weight_version")
+            if weight_version is not None:
+                setattr(self.server_args, "weight_version", weight_version)
+                if runner_args is not None:
+                    setattr(runner_args, "weight_version", weight_version)
         return bool(success), str(message)
 
     def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
