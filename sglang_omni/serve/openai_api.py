@@ -47,6 +47,7 @@ from sglang_omni.client.audio import (
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.protocol import (
+    AdminRequestBase,
     ChatCompletionAudio,
     ChatCompletionChoice,
     ChatCompletionRequest,
@@ -54,11 +55,17 @@ from sglang_omni.serve.protocol import (
     ChatCompletionStreamChoice,
     ChatCompletionStreamDelta,
     ChatCompletionStreamResponse,
+    ContinueGenerationRequest,
     CreateSpeechRequest,
     ModelCard,
     ModelList,
+    PauseGenerationRequest,
     TranscriptionResponse,
+    UpdateWeightFromDiskRequest,
+    UpdateWeightsFromDistributedRequest,
+    UpdateWeightsFromTensorRequest,
     UsageResponse,
+    WeightsCheckerRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +120,7 @@ def create_app(
     register_favicon(app)
     _register_health(app)
     _register_models(app)
+    _register_admin(app)
     _register_chat_completions(app)
     _register_speech(app)
     _register_transcriptions(app)
@@ -154,6 +162,118 @@ def _register_models(app: FastAPI) -> None:
             ]
         )
         return JSONResponse(content=model_list.model_dump())
+
+
+def _register_admin(app: FastAPI) -> None:
+    @app.get("/model_info")
+    async def model_info_get() -> JSONResponse:
+        client: Client = app.state.client
+        return _admin_response(await client.model_info())
+
+    @app.post("/model_info")
+    async def model_info_post(req: AdminRequestBase) -> JSONResponse:
+        client: Client = app.state.client
+        return _admin_response(
+            await client.model_info(
+                stages=req.stages,
+                timeout_s=req.timeout_s or 30.0,
+            )
+        )
+
+    @app.post("/pause_generation")
+    async def pause_generation(req: PauseGenerationRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = _request_payload(req)
+        return _admin_response(
+            await client.pause_generation(
+                payload,
+                stages=req.stages,
+                timeout_s=req.timeout_s or 60.0,
+            )
+        )
+
+    @app.post("/continue_generation")
+    async def continue_generation(req: ContinueGenerationRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = _request_payload(req)
+        return _admin_response(
+            await client.continue_generation(
+                payload,
+                stages=req.stages,
+                timeout_s=req.timeout_s or 60.0,
+            )
+        )
+
+    @app.post("/update_weights_from_disk")
+    async def update_weights_from_disk(
+        req: UpdateWeightFromDiskRequest,
+    ) -> JSONResponse:
+        client: Client = app.state.client
+        payload = _request_payload(req)
+        return _admin_response(
+            await client.update_weights_from_disk(
+                payload,
+                stages=req.stages,
+                timeout_s=req.timeout_s or 120.0,
+            )
+        )
+
+    @app.post("/update_weights_from_tensor")
+    async def update_weights_from_tensor(
+        req: UpdateWeightsFromTensorRequest,
+    ) -> JSONResponse:
+        client: Client = app.state.client
+        payload = _request_payload(req)
+        return _admin_response(
+            await client.admin(
+                "update_weights_from_tensor",
+                payload,
+                stages=req.stages,
+                timeout_s=req.timeout_s or 120.0,
+            )
+        )
+
+    @app.post("/update_weights_from_distributed")
+    async def update_weights_from_distributed(
+        req: UpdateWeightsFromDistributedRequest,
+    ) -> JSONResponse:
+        client: Client = app.state.client
+        payload = _request_payload(req)
+        return _admin_response(
+            await client.admin(
+                "update_weights_from_distributed",
+                payload,
+                stages=req.stages,
+                timeout_s=req.timeout_s or 120.0,
+            )
+        )
+
+    @app.get("/weights_checker")
+    async def weights_checker_get(action: str = "checksum") -> JSONResponse:
+        client: Client = app.state.client
+        return _admin_response(await client.weights_checker({"action": action}))
+
+    @app.post("/weights_checker")
+    async def weights_checker_post(req: WeightsCheckerRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = _request_payload(req)
+        return _admin_response(
+            await client.weights_checker(
+                payload,
+                stages=req.stages,
+                timeout_s=req.timeout_s or 120.0,
+            )
+        )
+
+
+def _request_payload(req: AdminRequestBase) -> dict[str, Any]:
+    return req.model_dump(exclude={"stages", "timeout_s"}, exclude_none=True)
+
+
+def _admin_response(result: dict[str, Any]) -> JSONResponse:
+    if not result.get("success", False):
+        raise HTTPException(status_code=400, detail=result)
+    return JSONResponse(content=result)
 
 
 def _register_chat_completions(app: FastAPI) -> None:

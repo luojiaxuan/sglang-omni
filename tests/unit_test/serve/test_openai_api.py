@@ -129,6 +129,74 @@ class SuccessfulTranscriptionClient:
         return CompletionResult(request_id="transcription-1", text="hello world")
 
 
+class AdminClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any], list[str] | None, float]] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def model_info(
+        self,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("model_info", {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def pause_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("pause_generation", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def continue_generation(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("continue_generation", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def update_weights_from_disk(
+        self,
+        payload: dict[str, Any],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("update_weights_from_disk", payload, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def admin(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        self.calls.append((action, payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+    async def weights_checker(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 120.0,
+    ) -> dict[str, Any]:
+        self.calls.append(("weights_checker", payload or {}, stages, timeout_s))
+        return {"success": True, "message": "ok", "results": []}
+
+
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
 def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     client = TestClient(create_app(_fault_client(model_name), model_name=model_name))
@@ -155,6 +223,54 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     )
     assert speech_resp.status_code == 500
     assert "cuda out of memory" in speech_resp.json()["detail"]
+
+
+def test_admin_routes_forward_to_client() -> None:
+    admin = AdminClient()
+    client = TestClient(create_app(admin, model_name="qwen3-omni"))
+
+    info = client.get("/model_info")
+    pause = client.post(
+        "/pause_generation",
+        json={"mode": "in_place", "stages": ["decode"], "timeout_s": 5},
+    )
+    update = client.post(
+        "/update_weights_from_disk",
+        json={
+            "model_path": "/tmp/new-model",
+            "load_format": "safetensors",
+            "weight_version": "v2",
+            "abort_all_requests": True,
+        },
+    )
+    checksum = client.post("/weights_checker", json={"action": "checksum"})
+
+    assert info.status_code == 200
+    assert pause.status_code == 200
+    assert update.status_code == 200
+    assert checksum.status_code == 200
+    assert admin.calls == [
+        ("model_info", {}, None, 30.0),
+        ("pause_generation", {"mode": "in_place"}, ["decode"], 5),
+        (
+            "update_weights_from_disk",
+            {
+                "model_path": "/tmp/new-model",
+                "load_format": "safetensors",
+                "abort_all_requests": True,
+                "weight_version": "v2",
+                "is_async": False,
+                "torch_empty_cache": False,
+                "keep_pause": False,
+                "recapture_cuda_graph": False,
+                "token_step": 0,
+                "flush_cache": True,
+            },
+            None,
+            120.0,
+        ),
+        ("weights_checker", {"action": "checksum"}, None, 120.0),
+    ]
 
 
 def test_chat_stream_failure_closes_without_done_sentinel() -> None:

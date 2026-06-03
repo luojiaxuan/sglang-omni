@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 import httpx
 import pytest
@@ -362,6 +363,63 @@ def test_models_merge_queries_only_healthy_workers_and_deduplicates() -> None:
     assert response.json()["data"] == [
         {"id": "qwen3-omni", "object": "model", "created": 0}
     ]
+
+
+def test_admin_routes_broadcast_to_live_workers_and_preserve_query() -> None:
+    seen: list[tuple[str, bytes, bytes]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/weights_checker":
+            seen.append((_request_netloc(request), request.url.query, request.content))
+            return httpx.Response(
+                200,
+                json={"success": True, "worker": _request_netloc(request)},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+
+    with TestClient(app) as client:
+        response = client.get("/weights_checker?action=checksum")
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert {item[0] for item in seen} == {"worker-a:8101", "worker-b:8102"}
+    assert [item[1] for item in seen] == [b"action=checksum", b"action=checksum"]
+    assert [item[2] for item in seen] == [b"", b""]
+
+
+def test_admin_update_temporarily_disables_workers_and_restores_state() -> None:
+    app_holder: dict[str, Any] = {}
+    disabled_snapshots: list[tuple[bool, bool]] = []
+    seen_bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "worker"}, request=request)
+        if request.url.path == "/pause_generation":
+            workers = app_holder["app"].state.workers
+            disabled_snapshots.append(tuple(worker.disabled for worker in workers))
+            seen_bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"success": True}, request=request)
+        raise AssertionError(f"unexpected request path: {request.url.path}")
+
+    async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(_router_config(), client=async_client)
+    app_holder["app"] = app
+
+    with TestClient(app) as client:
+        app.state.workers[1].set_disabled(True)
+        response = client.post("/pause_generation", json={"mode": "in_place"})
+
+    assert response.status_code == 200
+    assert disabled_snapshots == [(True, True), (True, True)]
+    assert seen_bodies == [{"mode": "in_place"}, {"mode": "in_place"}]
+    assert [worker.disabled for worker in app.state.workers] == [False, True]
 
 
 def test_models_merge_queries_workers_concurrently_with_control_timeout() -> None:

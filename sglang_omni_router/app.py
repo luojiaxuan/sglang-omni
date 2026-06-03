@@ -30,6 +30,13 @@ from sglang_omni_router.worker import (
 
 logger = logging.getLogger(__name__)
 
+_ADMIN_UPDATE_PATHS = {
+    "/pause_generation",
+    "/update_weights_from_disk",
+    "/update_weights_from_tensor",
+    "/update_weights_from_distributed",
+}
+
 
 def create_app(
     config: RouterConfig,
@@ -77,6 +84,7 @@ def create_app(
         app.state.health_http_client = health_client
         app.state.health_checker = health_checker
         app.state.proxy = proxy
+        app.state.admin_update_lock = asyncio.Lock()
         await health_checker.start()
         try:
             yield
@@ -274,6 +282,50 @@ def register_routes(
             timeout_secs=config.health_check_timeout_secs,
         )
 
+    @app.get("/model_info")
+    async def model_info(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/model_info")
+
+    @app.post("/model_info")
+    async def model_info_post(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/model_info")
+
+    @app.post("/pause_generation")
+    async def pause_generation(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/pause_generation")
+
+    @app.post("/continue_generation")
+    async def continue_generation(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/continue_generation")
+
+    @app.post("/update_weights_from_disk")
+    async def update_weights_from_disk(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(
+            app,
+            request,
+            "/update_weights_from_disk",
+        )
+
+    @app.post("/update_weights_from_tensor")
+    async def update_weights_from_tensor(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(
+            app,
+            request,
+            "/update_weights_from_tensor",
+        )
+
+    @app.post("/update_weights_from_distributed")
+    async def update_weights_from_distributed(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(
+            app,
+            request,
+            "/update_weights_from_distributed",
+        )
+
+    @app.api_route("/weights_checker", methods=["GET", "POST"])
+    async def weights_checker(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/weights_checker")
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Response:
         return await proxy.forward_model_request(request, "/v1/chat/completions")
@@ -327,6 +379,123 @@ def _worker_pool_status_response(
         _pool_summary(workers, status=status),
         status_code=status_code,
     )
+
+
+async def _broadcast_admin_request(
+    app: FastAPI,
+    request: Request,
+    path: str,
+) -> JSONResponse:
+    workers: list[Worker] = app.state.workers
+    target_workers = [worker for worker in workers if not worker.is_dead]
+    if not target_workers:
+        return _error_response(503, "no live upstream workers")
+
+    if path in _ADMIN_UPDATE_PATHS:
+        async with app.state.admin_update_lock:
+            return await _broadcast_admin_request_locked(
+                app,
+                request,
+                path,
+                target_workers,
+                disable_targets=True,
+            )
+    return await _broadcast_admin_request_locked(
+        app,
+        request,
+        path,
+        target_workers,
+        disable_targets=False,
+    )
+
+
+async def _broadcast_admin_request_locked(
+    app: FastAPI,
+    request: Request,
+    path: str,
+    workers: list[Worker],
+    *,
+    disable_targets: bool,
+) -> JSONResponse:
+    body = await request.body()
+    headers = filter_request_headers(request)
+    previous_disabled = {worker.worker_id: worker.disabled for worker in workers}
+    if disable_targets:
+        for worker in workers:
+            worker.set_disabled(True)
+    try:
+        results = await asyncio.gather(
+            *[
+                _send_admin_to_worker(
+                    app.state.http_client,
+                    worker,
+                    request,
+                    path,
+                    body,
+                    headers,
+                )
+                for worker in workers
+            ]
+        )
+    finally:
+        if disable_targets:
+            for worker in workers:
+                worker.set_disabled(previous_disabled[worker.worker_id])
+
+    success = all(item["success"] for item in results)
+    payload = {
+        "success": success,
+        "message": "ok" if success else "one or more workers failed admin request",
+        "path": path,
+        "worker_count": len(results),
+        "results": results,
+    }
+    return JSONResponse(payload, status_code=200 if success else 502)
+
+
+async def _send_admin_to_worker(
+    client: httpx.AsyncClient,
+    worker: Worker,
+    request: Request,
+    path: str,
+    body: bytes,
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    upstream_url = f"{worker.url}{path}"
+    if request.url.query:
+        upstream_url = f"{upstream_url}?{request.url.query}"
+    try:
+        response = await client.request(
+            request.method,
+            upstream_url,
+            content=body,
+            headers=headers,
+        )
+    except httpx.HTTPError as exc:
+        return {
+            "worker": worker.url,
+            "success": False,
+            "error": type(exc).__name__,
+        }
+
+    body_payload = _decode_response_payload(response)
+    body_success = (
+        body_payload.get("success", True) if isinstance(body_payload, dict) else True
+    )
+    success = 200 <= response.status_code < 300 and body_success is not False
+    return {
+        "worker": worker.url,
+        "success": success,
+        "status_code": response.status_code,
+        "body": body_payload,
+    }
+
+
+def _decode_response_payload(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except Exception:
+        return response.text
 
 
 def _find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
