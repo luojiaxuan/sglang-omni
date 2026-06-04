@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGLang-Omni 每日 PR 学习日报 · 2026-06-04</title>
+<style>
+  :root{
+    --bg:#0f1117; --card:#181b24; --card2:#1f2330; --ink:#e7e9ee; --muted:#9aa3b2;
+    --accent:#6ea8fe; --accent2:#5be6c2; --warn:#ffcf6e; --line:#2a2f3d;
+    --code-bg:#0c0e14; --green:#56d364; --red:#ff7b72; --purple:#d2a8ff;
+  }
+  *{box-sizing:border-box;}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.75; font-size:16px;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:38px 26px 80px;}
+  header.top{
+    border:1px solid var(--line); border-radius:18px; padding:30px 32px;
+    background:linear-gradient(135deg,#1a2030 0%,#171a24 60%,#161922 100%);
+  }
+  header.top h1{margin:0 0 6px; font-size:28px; letter-spacing:.3px;}
+  header.top .sub{color:var(--muted); font-size:15px;}
+  .pill{display:inline-block; padding:3px 11px; border-radius:999px; font-size:12.5px;
+    background:#243047; color:var(--accent); border:1px solid #2f3f5e; margin:3px 5px 3px 0;}
+  .pill.green{background:#15301f; color:var(--green); border-color:#1f5132;}
+  .pill.warn{background:#322a14; color:var(--warn); border-color:#5a4a1f;}
+  .pill.purple{background:#271d3a; color:var(--purple); border-color:#43306b;}
+  .stats{display:flex; flex-wrap:wrap; gap:14px; margin-top:22px;}
+  .stat{flex:1 1 150px; background:var(--card2); border:1px solid var(--line);
+    border-radius:14px; padding:14px 16px;}
+  .stat .n{font-size:26px; font-weight:700; color:var(--accent2);}
+  .stat .l{font-size:13px; color:var(--muted);}
+  h2.section{margin:46px 0 8px; font-size:21px; border-left:4px solid var(--accent);
+    padding-left:12px;}
+  .toc{background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:16px 22px; margin-top:18px;}
+  .toc ol{margin:6px 0; padding-left:22px;}
+  .toc a{color:var(--accent); text-decoration:none;}
+  .toc a:hover{text-decoration:underline;}
+
+  details.card{
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    margin:22px 0; overflow:hidden; box-shadow:0 1px 0 #0c0e14;
+  }
+  details.card>summary{
+    cursor:pointer; list-style:none; padding:20px 24px;
+    background:linear-gradient(180deg,#1d2230,#191c26);
+    display:block;
+  }
+  details.card>summary::-webkit-details-marker{display:none;}
+  .ptag{font-size:12px; color:var(--muted); letter-spacing:.5px; text-transform:uppercase;}
+  .ptitle{font-size:19px; font-weight:680; margin:4px 0 8px; color:#fff;}
+  .meta{font-size:13.5px; color:var(--muted);}
+  .meta a{color:var(--accent); text-decoration:none;}
+  .body{padding:6px 26px 26px;}
+  .body h4{
+    margin:26px 0 8px; font-size:16.5px; color:var(--accent2);
+    border-bottom:1px dashed var(--line); padding-bottom:6px;
+  }
+  .body h5{margin:18px 0 6px; font-size:14.5px; color:var(--warn);}
+  .lead{color:#cfd5e1;}
+  blockquote{margin:14px 0; padding:10px 16px; border-left:3px solid var(--accent);
+    background:#161b27; border-radius:0 10px 10px 0; color:#c7cdda;}
+  .concept{
+    background:var(--card2); border:1px solid var(--line); border-radius:12px;
+    padding:4px 18px 14px; margin:14px 0;
+  }
+  .concept .name{color:var(--purple); font-weight:680; font-size:15.5px; margin-top:12px;}
+  .three b{color:var(--accent2);}
+  code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    background:#222838; color:#e6c07b; padding:1.5px 6px; border-radius:5px; font-size:13.5px;}
+  pre{background:var(--code-bg); border:1px solid #20252f; border-radius:12px;
+    padding:16px 18px; overflow-x:auto; font-size:13px; line-height:1.6;}
+  pre code{background:none; color:#c9d1d9; padding:0;}
+  .k{color:#ff7b72;} .s{color:#a5d6ff;} .c{color:#8b949e; font-style:italic;}
+  .f{color:#d2a8ff;} .n{color:#79c0ff;} .o{color:#ff7b72;}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13.5px;}
+  th,td{border:1px solid var(--line); padding:7px 10px; text-align:left;}
+  th{background:#1d2330; color:var(--accent2);}
+  td.r,th.r{text-align:right;}
+  .takeaway{background:#13261c; border:1px solid #1f5132; border-radius:12px;
+    padding:6px 18px 14px; margin:16px 0;}
+  .takeaway h4{color:var(--green); border:none;}
+  ul.tight li{margin:4px 0;}
+  .footer{margin-top:50px; color:var(--muted); font-size:13px; text-align:center;
+    border-top:1px solid var(--line); padding-top:20px;}
+  .small{font-size:13px; color:var(--muted);}
+  @media print{
+    body{background:#fff; color:#1c2230; font-size:12px; line-height:1.55;}
+    .wrap{max-width:none; padding:0 6px;}
+    header.top{background:#eef2fb; border-color:#cdd6e6;}
+    header.top h1,.ptitle{color:#0d1b3a;}
+    header.top .sub,.meta,.small,.ptag,.footer{color:#4a5568 !important;}
+    .stat .l{color:#4a5568;} .stat .n{color:#0a6a59;}
+    details.card{break-inside:avoid; border-color:#d3d9e4; box-shadow:none; background:#fff;}
+    details.card>summary{background:#eaf0fb;}
+    .body,.lead,.three,.concept p,.takeaway li,ul li,td,p{color:#1c2230;}
+    .stat,.toc{background:#f4f6fb;}
+    .concept{background:#f6f8fc; border-color:#dce2ee;}
+    .body h4{background:#eef3fb; color:#0a6a59;}
+    pre{background:#f6f8fa; border-color:#dde3ec;}
+    pre code{color:#1f2328;} code{background:#eef1f6; color:#9a4a00;}
+    blockquote{background:#f3f6fc; color:#33405c;}
+    .takeaway{background:#eefaf1; border-color:#bfe6c9;}
+    .takeaway h4{background:none; color:#0a7a3f;}
+    .concept .name{color:#6b3fb3;} .body h5{color:#9a6b00;}
+    th{background:#e8eefb; color:#0a6a59;}
+    .k{color:#cf222e;} .s{color:#0a3069;} .c{color:#6e7781;} .f{color:#8250df;} .n{color:#0550ae;} .o{color:#cf222e;}
+    a{color:#0550ae;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="ptag">SGLang-Omni · Daily PR Digest</div>
+  <h1>SGLang-Omni 每日 PR 学习日报</h1>
+  <div class="sub">日期：2026-06-04 &nbsp;·&nbsp; 时间窗口：过去 24 小时合并（merged）的 PR &nbsp;·&nbsp; 仓库：
+    <a href="https://github.com/sgl-project/sglang-omni" style="color:var(--accent)">sgl-project/sglang-omni</a>
+  </div>
+  <div style="margin-top:14px;">
+    <span class="pill green">15 个 PR 已合并</span>
+    <span class="pill">3 个深度讲解（代码向）</span>
+    <span class="pill purple">主题：TTS 流式 / 音频编码 / ASR 基准</span>
+    <span class="pill warn">12 个文档 &amp; 工程类</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n">15</div><div class="l">过去 24h 合并 PR 总数</div></div>
+    <div class="stat"><div class="n">3</div><div class="l">多模态 / 多阶段核心代码 PR</div></div>
+    <div class="stat"><div class="n">~1800</div><div class="l">核心代码新增行数（合计）</div></div>
+    <div class="stat"><div class="n">Audio</div><div class="l">本日绝对主线模态</div></div>
+  </div>
+</header>
+
+<h2 class="section">📌 当日概览</h2>
+<p class="lead">
+今天 SGLang-Omni 主仓在过去 24 小时内合并了 <b>15 个 PR</b>。绝大多数是文档刷新（Higgs TTS / MOSS-TTS cookbook、logo、docker 发布说明等），
+真正动到<strong>推理链路核心代码</strong>的有三个，且全部围绕<strong>音频模态（Audio）</strong>——这正是 SGLang-Omni
+作为「Omni / 多模态多阶段流水线框架」当前的发力重点：
+</p>
+<ul class="tight">
+  <li><b>#655</b> — 给 Higgs TTS 加上<strong>原始 PCM 音频流式</strong>能力，并引入「首块更小」的 TTFC（首字节延迟）调优旋钮。<em>（信息量最大）</em></li>
+  <li><b>#686</b> — 用 <strong>PyAV</strong> 替换 pydub，给 TTS 输出加上 opus / mp3 / aac 编码，附带采样率自动重采样。</li>
+  <li><b>#647</b> — 修正 <strong>Qwen3-ASR</strong> CI 速度门槛（concurrency 32→2），并新增可复现的 <strong>ASR 并发扩展基准</strong>脚本。</li>
+</ul>
+<p class="lead">本日报遵循「<b>讲深 &gt; 讲广</b>」：上面三个吃透，其余 12 个在文末列成清单。每个深度卡片都按
+「概览 → 解决什么问题 → 具体改动 → 知识点（小白向三段式）→ 延伸思考」展开。卡片默认展开，点标题可折叠。</p>
+
+<div class="toc">
+  <b>目录</b>
+  <ol>
+    <li><a href="#pr655">#655 · 为 Higgs TTS 增加原始 PCM 流式 + 首块调优旋钮</a></li>
+    <li><a href="#pr686">#686 · 基于 PyAV 的 mp3 / aac / opus 音频编码</a></li>
+    <li><a href="#pr647">#647 · 对齐 Qwen3-ASR CI 门槛 + 新增并发扩展基准</a></li>
+    <li><a href="#others">其余 12 个 PR（文档 / 工程清单）</a></li>
+    <li><a href="#glossary">附录 · 名词速查表</a></li>
+  </ol>
+</div>
+
+<!-- ============================ PR 655 ============================ -->
+<details class="card" id="pr655" open>
+  <summary>
+    <div class="ptag">PR #655 · 深度讲解 ①</div>
+    <div class="ptitle">Add PCM audio streaming controls for Higgs TTS</div>
+    <div class="meta">
+      作者 <b>@Hayden727</b> ·
+      状态 <span class="pill green" style="padding:1px 8px">merged</span> ·
+      合并于 2026-06-03 14:31 UTC ·
+      +953 / −69 ·  15 文件 ·
+      <a href="https://github.com/sgl-project/sglang-omni/pull/655">查看 PR</a> · 修复 #654
+    </div>
+  </summary>
+  <div class="body">
+
+  <h4>1. 一句话概览</h4>
+  <p class="lead">给 <code>/v1/audio/speech</code> 接口增加一条「<strong>原始 PCM 字节流</strong>」的输出通道（而不是只能走 SSE 包装），
+  并新增一个 <code>initial_codec_chunk_frames</code> 旋钮，让 Higgs 的声码器（vocoder）<strong>把第一块音频切得很小</strong>，
+  从而把「首声延迟」（TTFC）从 ~0.83s 降到 ~0.21s。</p>
+
+  <h4>2. 它解决了什么问题</h4>
+  <p>背景：Higgs TTS 是一个语音合成模型，用户发一段文字，服务端边生成边把音频<strong>流式</strong>推回来。在这个 PR 之前：</p>
+  <ul class="tight">
+    <li><b>痛点 A：传输格式被 SSE 绑死。</b> 之前 <code>stream=true</code> 只能走 <strong>SSE</strong>（Server-Sent Events），
+      也就是把音频块做 base64 编码塞进 <code>data: ...</code> 文本事件里。这对浏览器友好，但对「只想拿到裸音频字节直接喂给播放器/扬声器」的客户端来说，
+      要多一层 base64 解码、体积也膨胀 ~33%。</li>
+    <li><b>痛点 B：响应头把采样率写死成 24kHz。</b> 之前裸 PCM 的元数据（采样率、声道、位深）是假设出来的，模型若换采样率就会播放错误（变速变调）。</li>
+    <li><b>痛点 C：首声太慢。</b> 声码器默认要攒够「一整个稳态块」（steady chunk）的码本帧才解码出第一段波形，导致用户按下播放后要等近 1 秒才听到声音——对实时语音助手是硬伤。</li>
+  </ul>
+  <blockquote>通俗类比：以前你点外卖（语音），只能让骑手把整袋饭装进一个标准保温箱（SSE+固定块）送来，且箱子上贴的「保温温度」标签是印死的。
+  这个 PR 让你能选「不用保温箱、直接把饭递给我」（裸 PCM），标签按实物现写（动态响应头），还能让厨房「先炒一小口让你尝」（首块切小，TTFC 骤降）。</blockquote>
+
+  <h4>3. 具体做了什么改动</h4>
+  <p>涉及 15 个文件，核心是 5 个：协议层、API 层、Higgs 声码器调度器、一个新的共享小工具，以及请求构造器。</p>
+
+  <h5>3.1 协议层：新增 <code>stream_format</code> 与校验（<code>serve/protocol.py</code>）</h5>
+  <p>在请求体模型 <code>CreateSpeechRequest</code> 上加了两个字段，并用 Pydantic 的 <code>model_validator</code> 做「组合参数互斥校验」：</p>
+<pre><code><span class="k">class</span> <span class="f">CreateSpeechRequest</span>(BaseModel):
+    ...
+    stream: <span class="n">bool</span> = <span class="k">False</span>
+    stream_format: Literal[<span class="s">"sse"</span>, <span class="s">"audio"</span>] = <span class="s">"sse"</span>   <span class="c"># ← 新：传输形态</span>
+    initial_codec_chunk_frames: <span class="n">int</span> | <span class="k">None</span> = Field(default=<span class="k">None</span>, ge=<span class="n">0</span>)  <span class="c"># ← 新：首块大小</span>
+
+    <span class="o">@model_validator</span>(mode=<span class="s">"after"</span>)            <span class="c"># 对象构造完后整体校验</span>
+    <span class="k">def</span> <span class="f">validate_stream_format</span>(self):
+        <span class="k">if</span> self.stream_format == <span class="s">"audio"</span>:
+            <span class="k">if</span> <span class="k">not</span> self.stream:
+                <span class="k">raise</span> ValueError(<span class="s">'stream_format="audio" requires stream=true'</span>)
+            <span class="k">if</span> self.response_format.lower() != <span class="s">"pcm"</span>:
+                <span class="k">raise</span> ValueError(<span class="s">'stream_format="audio" requires response_format="pcm"'</span>)
+        <span class="k">return</span> self</code></pre>
+  <p class="small">逐行解读：<code>Literal["sse","audio"]</code> 把字段限定为两个合法字符串，传别的值 Pydantic 直接报 422。
+  <code>ge=0</code> 表示「greater-or-equal 0」，负数会被拒。<code>@model_validator(mode="after")</code> 是在所有字段都填好后再跑的一段校验逻辑——
+  这里强制：要走裸音频流，就必须 <code>stream=true</code> 且 <code>response_format=pcm</code>，否则报错。这叫<strong>「让非法状态不可表示」</strong>，把错误挡在入口而不是埋到下游。</p>
+
+  <h5>3.2 API 层：从首块动态推导响应头（<code>serve/openai_api.py</code>）</h5>
+  <p>新增 <code>_speech_audio_response()</code>。它的精妙之处是：<strong>先消费流的第一块拿到真实采样率，再据此写响应头，然后把第一块和后续块一起吐出去</strong>。
+  这样既不丢第一块，又能让响应头反映真实参数：</p>
+<pre><code><span class="k">async def</span> <span class="f">_speech_audio_response</span>(client, gen_req, request_id, speed):
+    <span class="s">"""先读首块推导出 header，再开始真正的 PCM 流。"""</span>
+    chunk_stream = client.generate(gen_req, request_id=request_id)
+    first_audio_bytes, stream_sample_rate = <span class="k">None</span>, <span class="k">None</span>
+
+    <span class="c"># ① 先把流往前推，直到拿到第一段有效音频</span>
+    <span class="k">async for</span> chunk <span class="k">in</span> chunk_stream:
+        <span class="k">if</span> chunk.audio_data <span class="k">is</span> <span class="k">None</span>: <span class="k">continue</span>
+        first_audio_bytes, emitted_samples, stream_sample_rate = \
+            _speech_pcm_chunk_bytes(chunk, emitted_samples=emitted_samples, speed=speed)
+        <span class="k">if</span> first_audio_bytes <span class="k">is</span> <span class="k">not</span> <span class="k">None</span>: <span class="k">break</span>
+
+    <span class="k">async def</span> <span class="f">_body</span>():            <span class="c"># ② 真正喂给 HTTP 响应体的生成器</span>
+        <span class="k">yield</span> first_audio_bytes  <span class="c"># 先把刚才"偷看"的首块还回去，不能丢</span>
+        <span class="k">async for</span> chunk <span class="k">in</span> chunk_stream:
+            audio_bytes, emitted_samples, sample_rate = _speech_pcm_chunk_bytes(...)
+            <span class="k">if</span> sample_rate != stream_sample_rate:   <span class="c"># ③ 中途变采样率→直接报错</span>
+                <span class="k">raise</span> RuntimeError(<span class="s">"Raw PCM stream sample rate changed ..."</span>)
+            <span class="k">yield</span> audio_bytes
+
+    <span class="k">return</span> StreamingResponse(_body(), media_type=<span class="s">"audio/pcm"</span>,
+        headers={<span class="s">"X-Sample-Rate"</span>: <span class="n">str</span>(stream_sample_rate),
+                 <span class="s">"X-Channels"</span>: <span class="s">"1"</span>, <span class="s">"X-Bit-Depth"</span>: <span class="s">"16"</span>})</code></pre>
+  <p class="small">关键技巧叫「<strong>peek-then-replay（先偷看再回放）</strong>」：HTTP 响应头必须在响应体第一个字节之前发出，可采样率只有看了第一块音频才知道。
+  于是代码先 <code>break</code> 出来拿到首块和采样率、写好 header，再在 <code>_body()</code> 里先 <code>yield first_audio_bytes</code> 把偷看的那块补回去，保证不丢音频。
+  ③ 处「中途采样率变了就报错」是一种<strong>防御式契约</strong>：裸 PCM 没有容器头来描述格式变化，所以全程必须恒定采样率，否则播放端会错乱。</p>
+
+  <h5>3.3 新增共享工具 <code>models/tts_streaming.py</code></h5>
+  <p>一个 37 行的小模块，定义了参数名常量和一个「解析+夹紧」函数，被 API 层和声码器层共享，避免魔法字符串散落各处：</p>
+<pre><code>INITIAL_CODEC_CHUNK_FRAMES_PARAM = <span class="s">"initial_codec_chunk_frames"</span>
+
+<span class="k">def</span> <span class="f">resolve_initial_codec_chunk_frames</span>(params, *, steady_chunk_frames: <span class="n">int</span>) -> <span class="n">int</span>:
+    <span class="s">"""返回请求级的首块码本帧数，并夹紧到不超过稳态块大小。"""</span>
+    <span class="k">if</span> params <span class="k">is</span> <span class="k">None</span>: <span class="k">return</span> <span class="n">0</span>
+    value = params.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
+    <span class="k">if</span> value <span class="k">is</span> <span class="k">None</span>: <span class="k">return</span> <span class="n">0</span>
+    frames = <span class="n">int</span>(value)
+    <span class="k">if</span> frames &lt; <span class="n">0</span>: <span class="k">raise</span> ValueError(...)
+    <span class="k">return</span> <span class="n">min</span>(frames, <span class="n">int</span>(steady_chunk_frames))   <span class="c"># 夹紧：首块不能比稳态块还大</span></code></pre>
+  <p class="small">「<strong>夹紧（clamp）</strong>」是关键守卫：如果用户要求的首块比正常稳态块还大，就没有「首块更小」的意义了，所以上限取稳态块大小。
+  返回 0 表示「不启用首块特殊处理，走默认」。</p>
+
+  <h5>3.4 声码器调度器：真正让首块变小（<code>higgs_tts/vocoder_scheduler.py</code>）</h5>
+  <p>这是性能收益的来源。声码器是「把模型生成的离散<strong>码本帧（codec frames）</strong>解码成 PCM 波形」的部件。原本它每次要攒够 <code>stream_stride</code> 行才解一次；
+  现在对<strong>尚未发出过任何音频</strong>的请求，允许第一次只解 <code>initial_codec_chunk_frames</code> 帧：</p>
+<pre><code>steady_codec_frames = <span class="n">max</span>(<span class="n">1</span>, self._stream_stride - num_codebooks + <span class="n">1</span>)
+use_initial_chunk = (
+    state.initial_codec_chunk_frames &gt; <span class="n">0</span>
+    <span class="k">and</span> state.initial_codec_chunk_frames &lt; steady_codec_frames
+    <span class="k">and</span> <span class="k">not</span> state.has_emitted        <span class="c"># 只对"还没发过音频"的首块生效</span>
+)
+first_decode_rows = <span class="n">max</span>(num_codebooks,
+                       state.initial_codec_chunk_frames + num_codebooks - <span class="n">1</span>)
+next_decode_rows = state.next_decode_rows <span class="k">or</span> (
+    first_decode_rows <span class="k">if</span> use_initial_chunk <span class="k">and</span> <span class="k">not</span> is_final
+    <span class="k">else</span> <span class="n">max</span>(num_codebooks, self._stream_stride))   <span class="c"># 非首块→回到稳态步长</span>
+...
+<span class="k">if</span> use_initial_chunk <span class="k">and</span> <span class="k">not</span> is_final:
+    emit_until_raw = <span class="n">min</span>(raw_total, state.initial_codec_chunk_frames)  <span class="c"># 首块只发这么多</span></code></pre>
+  <p class="small">逻辑对比——<strong>改动前：</strong>无论第几块，都要等满 <code>stream_stride</code> 帧才解码、才发声 → 首声慢。
+  <strong>改动后：</strong>第一块只要攒够 <code>initial_codec_chunk_frames</code>（实验里设为 1）就立刻解码发声，<strong>之后立即回到稳态步长</strong>（见 <code>_next_decode_rows_after_emit</code>），
+  保证只有「开头」被切小，后续吞吐不受影响。<code>num_codebooks</code> / 延迟模式（delay pattern）相关的 <code>+num_codebooks-1</code> 是 Higgs 多码本声学 token 的对齐补偿，后面知识点会讲。</p>
+
+  <h5>3.5 实验数据（作者在 H200 上的 A/B 消融）</h5>
+  <table>
+    <tr><th>语种</th><th>模式</th><th class="r">TTFC 均值</th><th class="r">吞吐</th><th class="r">首块字节</th></tr>
+    <tr><td>EN</td><td>SSE 默认</td><td class="r">0.831s</td><td class="r">13.02 qps</td><td class="r">121,758</td></tr>
+    <tr><td>EN</td><td>裸 PCM 默认</td><td class="r">0.823s</td><td class="r">12.99 qps</td><td class="r">115,759</td></tr>
+    <tr><td>EN</td><td>SSE + initial=1</td><td class="r">0.219s</td><td class="r">12.04 qps</td><td class="r">1,920</td></tr>
+    <tr><td>EN</td><td>裸 PCM + initial=1</td><td class="r"><b>0.209s</b></td><td class="r">12.23 qps</td><td class="r">1,920</td></tr>
+  </table>
+  <p class="small"><b>作者诚实的结论（很值得学）：</b>「裸 PCM 传输本身」几乎不改善 TTFC（0.831→0.823，仅 −1%）；
+  真正把 TTFC 砍掉 ~74% 的是 <code>initial_codec_chunk_frames=1</code>，它把首块从 12 万字节缩到 1,920 字节。
+  代价是：块数变多、整体吞吐略降、平均延迟略升——典型的<strong>「用吞吐换首响」</strong>权衡。作者特意在 PR 里更正了早期「PCM 提升性能」的误读，这是很好的工程严谨性。</p>
+
+  <h4>4. 涉及的知识点（小白向三段式）</h4>
+
+  <div class="concept three">
+    <div class="name">TTS / 声码器（Vocoder）</div>
+    <p><b>它是什么：</b>TTS（Text-To-Speech）把文字变成语音。现代神经 TTS 通常两步：先由语言模型生成一串离散的「声学 token / 码本帧」，
+    再由<strong>声码器</strong>把这些 token 解码成真正能听的 PCM 波形。<br>
+    <b>为什么需要它：</b>直接让模型回归出几万个浮点采样点又慢又难训；先生成压缩的离散 token、再用专门的声码器还原，又快又稳。<br>
+    <b>本 PR 里：</b><code>HiggsStreamingVocoderScheduler</code> 就是这个「token→波形」的解码部件，PR 改的就是它「攒多少帧解一次」的节奏。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">PCM 与「裸流 vs SSE」</div>
+    <p><b>它是什么：</b>PCM（脉冲编码调制）是最原始的数字音频——一串 16 位整数采样点，没有任何文件头/容器。
+    SSE（Server-Sent Events）是一种基于 HTTP 的服务器单向推送文本协议，每条形如 <code>data: ....\n\n</code>。<br>
+    <b>为什么需要区分：</b>SSE 适合浏览器、能携带元数据，但要把二进制音频 base64 成文本（膨胀 33%、需解码）；裸 PCM 直接是字节，省 CPU、省带宽、播放端零解析。<br>
+    <b>本 PR 里：</b><code>stream_format="audio"</code> 选裸 PCM 通道，用 HTTP 响应头（<code>X-Sample-Rate</code> 等）替代 SSE 里的元数据字段。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">TTFC（Time To First Chunk，首块延迟）</div>
+    <p><b>它是什么：</b>从客户端发出请求到收到<strong>第一段</strong>可播放音频的时间。<br>
+    <b>为什么需要它：</b>对实时语音（语音助手、同传），用户对「开口快不快」极敏感；总时长可以稍长，但「按下后多久出声」决定体验。它和「总延迟 / 吞吐」是不同维度。<br>
+    <b>本 PR 里：</b><code>initial_codec_chunk_frames=1</code> 专门优化 TTFC，把首声从 0.83s 压到 0.21s——本质是「先挤一小口声音出来安抚用户，剩下的边播边算」。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">码本帧 / 多码本 &amp; 延迟模式（delay pattern）</div>
+    <p><b>它是什么：</b>Higgs 这类音频 codec 用<strong>多个码本（codebooks）</strong>并行表示同一帧音频（类似 RVQ，残差矢量量化）。为了让自回归模型更好生成，常用「延迟模式」——
+    第 k 个码本比第 0 个码本晚 k 步出现，形成阶梯。<br>
+    <b>为什么需要它：</b>多码本能用更少 token 表达高保真音频；延迟模式让模型在预测当前码本时能看到已生成的低层码本，质量更好。<br>
+    <b>本 PR 里：</b>代码中反复出现的 <code>num_codebooks</code>、<code>+ num_codebooks - 1</code>、<code>reverse_delay_pattern</code> 就是在做<strong>解码前的对齐补偿</strong>——把阶梯状的码本「对齐回同一帧」才能正确还原波形。理解到「这是多码本对齐的偏移量」即可。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">异步生成器 &amp; StreamingResponse（背压式流式）</div>
+    <p><b>它是什么：</b>Python 的 <code>async def</code> + <code>yield</code> 组成「异步生成器」，每次 <code>yield</code> 吐一块数据；FastAPI 的 <code>StreamingResponse</code> 把它接成 HTTP chunked 响应。<br>
+    <b>为什么需要它：</b>音频是边生成边发，不能等全部算完再返回（否则首响极慢、内存爆）。生成器天然实现「算一块、发一块、再算下一块」的<strong>背压（backpressure）</strong>。<br>
+    <b>本 PR 里：</b><code>_body()</code> 就是这样一个异步生成器，配合「先 break 偷看首块、再在 body 里 yield 回去」的技巧，兼顾了「响应头要早发」和「音频不能丢」。</p>
+  </div>
+
+  <div class="takeaway">
+  <h4>5. 我能学到什么 / 延伸思考</h4>
+  <ul class="tight">
+    <li><b>可复用工程思想：</b>(1)「<strong>让非法状态不可表示</strong>」——用 <code>model_validator</code> 在入口拒绝非法参数组合；
+      (2)「<strong>peek-then-replay</strong>」——需要先看数据才能定头部时的通用套路；
+      (3)「<strong>把旋钮做成请求级参数 + 服务端夹紧</strong>」——既灵活又安全；
+      (4)「<strong>诚实的基准</strong>」——区分「PCM 传输」与「首块切小」两个变量，不把功劳乱归因，是真正的工程素养。</li>
+    <li><b>前置知识建议补：</b>① 数字音频基础（采样率/位深/声道/PCM）；② RVQ / 多码本音频编解码（如 EnCodec、SoundStream）；
+      ② 自回归 TTS 的 delay pattern（参考 MusicGen / Parler-TTS）；③ HTTP chunked transfer 与 SSE 的差异；④ FastAPI 的流式响应与 asyncio 生成器。</li>
+  </ul>
+  </div>
+
+  </div>
+</details>
+
+<!-- ============================ PR 686 ============================ -->
+<details class="card" id="pr686" open>
+  <summary>
+    <div class="ptag">PR #686 · 深度讲解 ②</div>
+    <div class="ptitle">Add support for pyAV-based mp3, aac, opus audio encoding</div>
+    <div class="meta">
+      作者 <b>@haojin2</b> ·
+      状态 <span class="pill green" style="padding:1px 8px">merged</span> ·
+      合并于 2026-06-04 05:03 UTC ·
+      +289 / −20 · 6 文件 ·
+      <a href="https://github.com/sgl-project/sglang-omni/pull/686">查看 PR</a> · 替代 #667
+    </div>
+  </summary>
+  <div class="body">
+
+  <h4>1. 一句话概览</h4>
+  <p class="lead">把 TTS 输出的有损压缩编码（mp3 / aac / opus）从依赖 <code>pydub</code>（要外部 ffmpeg 命令）改成用 <strong>PyAV</strong>（FFmpeg 的 Python 原生绑定）实现，
+  并在采样率不被目标编码器支持时<strong>自动重采样</strong>到最接近的合法采样率。</p>
+
+  <h4>2. 它解决了什么问题</h4>
+  <ul class="tight">
+    <li><b>痛点 A：pydub 依赖外部 ffmpeg 可执行文件。</b> <code>pydub</code> 本质是去 shell 里调用系统装的 <code>ffmpeg</code> 命令。
+      容器里没装 ffmpeg、或路径不对，编码就失败——部署脆弱、报错隐晦。</li>
+    <li><b>痛点 B：采样率不合法直接崩。</b> Opus 只接受 {8k,12k,16k,24k,48k}，AAC/MP3 也各有合法集合。模型若以 44.1kHz 出音，直接喂给 Opus 编码器会报错。</li>
+    <li><b>痛点 C：FLAC 和有损格式的代码纠缠在一起。</b> 之前 FLAC（soundfile）和 mp3/aac/opus（pydub）混在一个分支里，逻辑乱、回退路径不清晰。</li>
+  </ul>
+  <blockquote>类比：以前你要烤面包（编码音频），得先确认厨房里装了一台特定型号的外置烤箱（系统 ffmpeg），没有就罢工。
+  现在改用内置烤箱（PyAV，编译进 Python 包里），自带温控；面团尺寸不对（采样率非法）时还会自动帮你揉成合适大小（重采样）。</blockquote>
+
+  <h4>3. 具体做了什么改动</h4>
+  <p>核心文件 <code>sglang_omni/client/audio.py</code>。新增一张「编码配置表」+ 一个线性重采样函数 + 一个 PyAV 编码函数，并重排了 <code>encode_audio</code> 的分支。</p>
+
+  <h5>3.1 编码配置表：声明式描述每种格式</h5>
+<pre><code>PYAV_ENCODE_CONFIGS = {
+    <span class="s">"opus"</span>: {<span class="s">"container"</span>: <span class="s">"ogg"</span>,  <span class="s">"codecs"</span>: (<span class="s">"libopus"</span>, <span class="s">"opus"</span>),
+              <span class="s">"valid_rates"</span>: {<span class="n">8000</span>, <span class="n">12000</span>, <span class="n">16000</span>, <span class="n">24000</span>, <span class="n">48000</span>}},
+    <span class="s">"aac"</span>:  {<span class="s">"container"</span>: <span class="s">"adts"</span>, <span class="s">"codecs"</span>: (<span class="s">"aac"</span>,),
+              <span class="s">"valid_rates"</span>: {<span class="n">8000</span>, <span class="n">16000</span>, <span class="n">24000</span>, <span class="n">44100</span>, <span class="n">48000</span>, ...}},
+    <span class="s">"mp3"</span>:  {<span class="s">"container"</span>: <span class="s">"mp3"</span>,  <span class="s">"codecs"</span>: (<span class="s">"libmp3lame"</span>, <span class="s">"mp3"</span>),
+              <span class="s">"valid_rates"</span>: {<span class="n">8000</span>, <span class="n">16000</span>, <span class="n">24000</span>, <span class="n">44100</span>, <span class="n">48000</span>, ...}},
+}</code></pre>
+  <p class="small">这是<strong>「配置即数据」</strong>的设计：每种格式用什么容器（ogg/adts/mp3）、优先用哪个编码器（libopus 失败就退回内置 opus）、支持哪些采样率，都写成数据，
+  而不是写死成一堆 if-else。新增格式只要加一行表项。<code>codecs</code> 写成元组是「优先级回退列表」——先试更好的 <code>libopus/libmp3lame</code>，不可用再退到 FFmpeg 内置实现。</p>
+
+  <h5>3.2 线性重采样：采样率不合法时自动救场</h5>
+<pre><code><span class="k">def</span> <span class="f">_resample_linear</span>(audio, orig_sr, target_sr):
+    <span class="k">if</span> orig_sr == target_sr: <span class="k">return</span> audio
+    duration = audio.shape[<span class="n">0</span>] / <span class="n">float</span>(orig_sr)          <span class="c"># 原音频时长(秒)</span>
+    new_len = <span class="n">max</span>(<span class="n">int</span>(<span class="n">round</span>(duration * target_sr)), <span class="n">1</span>)   <span class="c"># 新采样点个数</span>
+    old_idx = np.arange(audio.shape[<span class="n">0</span>])
+    new_idx = np.linspace(<span class="n">0.0</span>, audio.shape[<span class="n">0</span>] - <span class="n">1</span>, num=new_len)
+    <span class="k">return</span> np.interp(new_idx, old_idx, audio)             <span class="c"># 线性插值重采样</span></code></pre>
+  <p class="small">逐行：先按「时长 = 采样点数 / 采样率」算出音频持续多久；目标采样率下应有多少个点（<code>new_len</code>）；
+  然后用 <code>np.interp</code> 在新位置上对旧样点做<strong>线性插值</strong>。这是最简单的重采样（不是最高音质，但零依赖、够用），目的只是把采样率「掰」到编码器能接受的值。</p>
+
+  <h5>3.3 PyAV 编码核心</h5>
+<pre><code><span class="k">def</span> <span class="f">_encode_with_pyav</span>(audio, sample_rate, container_format, codecs, valid_rates):
+    <span class="k">import</span> av
+    <span class="k">if</span> sample_rate <span class="k">not</span> <span class="k">in</span> valid_rates:                <span class="c"># ① 非法采样率→找最近合法值</span>
+        nearest = <span class="n">min</span>(valid_rates, key=<span class="k">lambda</span> r: <span class="n">abs</span>(r - sample_rate))
+        audio = _resample_linear(audio, sample_rate, nearest); sample_rate = nearest
+    buf = io.BytesIO(); container = av.open(buf, mode=<span class="s">"w"</span>, format=container_format)
+    stream = <span class="k">None</span>
+    <span class="k">for</span> codec <span class="k">in</span> codecs:                            <span class="c"># ② 编码器优先级回退</span>
+        <span class="k">try</span>: stream = container.add_stream(codec, rate=sample_rate); <span class="k">break</span>
+        <span class="k">except</span> av.CodecError: <span class="k">continue</span>
+    stream.layout = <span class="s">"mono"</span>
+    frame = av.AudioFrame.from_ndarray(audio.reshape(<span class="n">1</span>, -<span class="n">1</span>),
+                                       format=<span class="s">"fltp"</span>, layout=<span class="s">"mono"</span>)  <span class="c"># ③ float平面格式</span>
+    frame.sample_rate = sample_rate
+    <span class="k">for</span> packet <span class="k">in</span> stream.encode(frame): container.mux(packet)  <span class="c"># ④ 编码并封装</span>
+    <span class="k">for</span> packet <span class="k">in</span> stream.encode(<span class="k">None</span>):  container.mux(packet)  <span class="c"># ⑤ flush 残余</span>
+    container.close(); <span class="k">return</span> buf.getvalue()</code></pre>
+  <p class="small">① 用 <code>min(..., key=abs差)</code> 找「最近的合法采样率」；③ FFmpeg 这些编码器要 <strong>fltp（float planar，浮点平面）</strong>格式的输入帧，所以 reshape 成 <code>(1, N)</code>；
+  ④ <code>stream.encode(frame)</code> 把一帧 PCM 压成若干 packet，<code>container.mux</code> 把 packet 写进容器；⑤ 最后 <code>encode(None)</code> 是 FFmpeg 的惯例——传 None 触发编码器把内部缓冲里剩余的数据全部「冲刷（flush）」出来，否则结尾会丢音频。</p>
+
+  <h5>3.4 分支重排 + 多级回退</h5>
+  <p>新的 <code>encode_audio</code> 逻辑：mp3/aac/opus 优先 PyAV，<strong>失败则回退 pydub，再失败回退 WAV</strong>；FLAC 单独走 soundfile（失败回退 WAV）。
+  这是一条<strong>「优雅降级（graceful degradation）」</strong>链：永远尽量给用户一个能播的东西，而不是直接 500。</p>
+
+  <h4>4. 涉及的知识点（小白向三段式）</h4>
+
+  <div class="concept three">
+    <div class="name">音频容器 vs 编解码器（container vs codec）</div>
+    <p><b>它是什么：</b><strong>codec</strong>（如 opus/aac/mp3）负责「怎么压缩声音」；<strong>container</strong>（如 ogg/adts/mp4）是装这些压缩数据的「盒子」，附带时间戳、元数据。<br>
+    <b>为什么需要区分：</b>同一个 codec 可装进不同 container（如 AAC 可在 adts 或 mp4 里）。播放器先拆盒子（demux）再解码。<br>
+    <b>本 PR 里：</b>配置表把二者解耦：opus→ogg 盒子、aac→adts 盒子、mp3→mp3 盒子，编码时 <code>av.open(format=container)</code> + <code>add_stream(codec)</code> 分别指定。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">PyAV vs pydub（绑定 vs 子进程）</div>
+    <p><b>它是什么：</b><code>pydub</code> 通过启动外部 <code>ffmpeg</code> 进程来干活；<code>PyAV</code> 是 FFmpeg 的 <strong>C 库 Python 绑定（Cython）</strong>，把 libav* 直接编进 wheel 里。<br>
+    <b>为什么更好：</b>不依赖系统 PATH 里有没有 ffmpeg、不用为每次编码 fork 子进程（更快）、错误能以 Python 异常精确捕获，部署可复现性强。<br>
+    <b>本 PR 里：</b>正是为了去掉「外部 ffmpeg 可执行文件」这个隐性运行时依赖，让容器化部署更稳。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">采样率 &amp; 重采样（resampling）</div>
+    <p><b>它是什么：</b>采样率 = 每秒采多少个声音点（24000Hz = 每秒 2.4 万点）。重采样 = 把一段音频从一个采样率换算到另一个。<br>
+    <b>为什么需要它：</b>不同编码器只支持特定采样率集合；模型出音的采样率未必在其中，硬编码会崩。<br>
+    <b>本 PR 里：</b>非法采样率时用 <code>np.interp</code> 线性插值「掰」到最近合法值，保证编码不失败（音质换稳健）。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">优雅降级 / Fallback 链</div>
+    <p><b>它是什么：</b>主路径失败时，自动退到次优但仍可用的路径，而不是直接报错。<br>
+    <b>为什么需要它：</b>音频服务面向多样客户端，宁可给个 WAV 也别返回 500。<br>
+    <b>本 PR 里：</b>PyAV → pydub → WAV 三级回退，每级都 <code>logger.warning</code> 记录，既稳又可观测。</p>
+  </div>
+
+  <div class="takeaway">
+  <h4>5. 我能学到什么 / 延伸思考</h4>
+  <ul class="tight">
+    <li><b>可复用工程思想：</b>(1)「<strong>配置即数据</strong>」把 if-else 沉淀成一张表，扩展性强；
+      (2)「<strong>去隐性运行时依赖</strong>」用库绑定取代子进程调用，提升部署可复现性；
+      (3)「<strong>多级 fallback + 显式日志</strong>」兼顾稳健与可观测；(4)「优先级回退列表」用元组顺序表达 codec 偏好。</li>
+    <li><b>前置知识建议补：</b>① FFmpeg / libav 体系与 PyAV API（frame/stream/packet/mux）；② 数字信号处理里的重采样与抗混叠（本 PR 用的线性插值是简化版，进阶可看 soxr / librosa.resample）；③ 有损音频编码（Opus/AAC/MP3）的码率与采样率约束。</li>
+  </ul>
+  </div>
+
+  </div>
+</details>
+
+<!-- ============================ PR 647 ============================ -->
+<details class="card" id="pr647" open>
+  <summary>
+    <div class="ptag">PR #647 · 深度讲解 ③</div>
+    <div class="ptitle">[CI] Align Qwen3-ASR stage-1 gate to concurrency=2 and add ASR concurrency-scaling benchmark</div>
+    <div class="meta">
+      作者 <b>@MelodyyyYin</b> ·
+      状态 <span class="pill green" style="padding:1px 8px">merged</span> ·
+      合并于 2026-06-04 04:37 UTC ·
+      +561 / −217 · 4 文件 ·
+      <a href="https://github.com/sgl-project/sglang-omni/pull/647">查看 PR</a> · 修复 #646
+    </div>
+  </summary>
+  <div class="body">
+
+  <h4>1. 一句话概览</h4>
+  <p class="lead">修正 Qwen3-ASR 的 CI「速度门槛」：之前门槛是按 concurrency=32 测的数字，但 CI 实际只跑 concurrency=2，导致阈值松了 2–5 倍、抓不到回归；
+  顺手把 CI 代码和一个<strong>新的「ASR 并发扩展基准」脚本</strong>共用同一条转写/打分路径，并把这条路径抽出来复用。</p>
+
+  <h4>2. 它解决了什么问题</h4>
+  <ul class="tight">
+    <li><b>痛点 A：阈值与实测工况不匹配。</b> CI 的 stage-1 门禁（<code>test-tts-ci.yaml</code> 里 <code>QWEN3_ASR_CI_CONCURRENCY=2</code>）实际以并发 2 运行，
+      但 <code>test_qwen3_asr_ci.py</code> 里的速度基线（吞吐 10.295、延迟 0.193…）还是并发 32 的旧数字。并发 2 实测更快（吞吐 16.3、延迟 0.121），
+      于是阈值<strong>松了 2–5 倍</strong>——性能回归了也亮绿灯，门禁形同虚设。</li>
+    <li><b>痛点 B：缺少可复现的并发扫描工具。</b> issue #646 想要一张「不同并发下 WER / 吞吐 / 延迟 / RTF / 路由均衡」的矩阵来决策，但当时没有脚本能稳定产出。</li>
+    <li><b>痛点 C：CI 测试自己手写了一整套转写+打分逻辑</b>（线程池、百分位、WER 汇总），和基准脚本重复，难维护、容易漂移。</li>
+  </ul>
+  <blockquote>类比：你给跑步机设了「时速低于 20km 报警」，但实际你只让它跑 5km 档位——这个 5km 档随便都超过 20，警报永远不响（门禁失效）。
+  这个 PR 把报警线重设成贴合 5km 档的真实水平，并造了一台「能精确测各档位速度」的仪器（基准脚本），还让跑步机和仪器共用同一个测速探头（共享代码路径）。</blockquote>
+
+  <h4>3. 具体做了什么改动</h4>
+
+  <h5>3.1 重新标定阈值 + 默认并发改为 2（<code>tests/test_model/test_qwen3_asr_ci.py</code>）</h5>
+  <p>把速度阈值改成并发 2 的真实测量值；把代码内默认并发从 32 改成 2，让<strong>本地跑、CI 跑、阈值校准（tune-ci-thresholds）三者对齐到同一工况</strong>。
+  WER（识别准确率）阈值不变——因为 WER 与并发基本无关，并发只影响速度。</p>
+  <p class="small">这里的洞察很关键：<em>在 20 条样本的小工况上，「并发 2 比并发 32 还快」是正常的</em>——样本太少时，高并发主要测的是「突发排队 / 尾延迟」，而非稳态吞吐；ASR 的 fan-out 只有在大工况上才划算。</p>
+
+  <h5>3.2 新增基准脚本 <code>benchmarks/eval/benchmark_qwen3_asr_concurrency.py</code>（+494 行）</h5>
+  <p>对一个<strong>正在运行的 Qwen3-ASR router</strong>，直接拿 SeedTTS 的参考音频去转写，按一组并发值扫描、每档重复 N 次，输出 WER / 墙钟时间 / 吞吐 / 延迟分位 / RTF / <strong>每个 worker 的路由均衡</strong>。
+  核心是一个异步发送函数：</p>
+<pre><code><span class="k">def</span> <span class="f">make_asr_send_fn</span>(model_name, api_url, *, lang=<span class="s">"en"</span>, max_new_tokens=...):
+    <span class="k">async def</span> <span class="f">send_fn</span>(session, sample) -> RequestResult:
+        result = RequestResult(request_id=sample.sample_id)
+        <span class="k">with</span> <span class="n">open</span>(sample.ref_audio, <span class="s">"rb"</span>) <span class="k">as</span> f: audio_bytes = f.read()
+        result.audio_duration_s = get_wav_duration(audio_bytes)
+        form = aiohttp.FormData()
+        form.add_field(<span class="s">"model"</span>, model_name)
+        form.add_field(<span class="s">"language"</span>, lang)
+        form.add_field(<span class="s">"response_format"</span>, <span class="s">"json"</span>)
+        form.add_field(<span class="s">"file"</span>, audio_bytes, filename=..., content_type=<span class="s">"audio/wav"</span>)
+        start = time.perf_counter()
+        <span class="k">async with</span> session.post(api_url, data=form) <span class="k">as</span> resp:
+            payload = <span class="k">await</span> resp.json()
+            result.text = <span class="n">str</span>(payload.get(<span class="s">"text"</span>, <span class="s">""</span>)); result.is_success = <span class="k">True</span>
+        result.latency_s = time.perf_counter() - start
+        <span class="k">if</span> result.is_success <span class="k">and</span> result.audio_duration_s &gt; <span class="n">0</span>:
+            result.rtf = result.latency_s / result.audio_duration_s   <span class="c"># 实时率</span>
+        <span class="k">return</span> result
+    <span class="k">return</span> send_fn</code></pre>
+  <p class="small">这是个「<strong>闭包工厂</strong>」——<code>make_asr_send_fn</code> 把 <code>model_name/api_url/lang</code> 固化进内层 <code>send_fn</code>，交给通用的 <code>BenchmarkRunner</code>（控制并发、warmup、超时）去并发驱动。
+  注意代码注释里的坑：<strong>不要给 Qwen3-ASR 传 temperature=0</strong>，纯贪心会退化（服务端会偷偷把它抬到 0.01）。
+  <code>RTF = 处理耗时 / 音频时长</code>，<1 表示比实时还快。</p>
+
+  <p>还有一段「路由均衡」探测，PR 里用它验证 router 是否把请求均匀分给各 worker：</p>
+<pre><code><span class="k">def</span> <span class="f">_worker_delta</span>(before, after):
+    <span class="c"># 读取 /workers 快照，算每个 worker 在本轮新增了多少 routed/success/failed</span>
+    <span class="k">for</span> key <span class="k">in</span> (<span class="s">"routed_requests"</span>, <span class="s">"successful_requests"</span>, <span class="s">"failed_requests"</span>):
+        deltas = {wid: after[wid] - before[wid] <span class="k">for</span> wid <span class="k">in</span> after}
+        out[<span class="s">f"total_{key}"</span>] = <span class="n">sum</span>(deltas.values())
+        <span class="k">if</span> key == <span class="s">"routed_requests"</span>: out[<span class="s">"per_worker_routed"</span>] = deltas
+    <span class="k">return</span> out</code></pre>
+
+  <h5>3.3 共享路径复用：CI 测试直接 import 基准脚本</h5>
+  <p>这是本 PR 最漂亮的结构改动。重构后，CI 测试删掉了自己那一大坨手写逻辑（约删 −217 行），改成直接复用基准脚本的两个函数：</p>
+<pre><code><span class="c"># test_qwen3_asr_ci.py 改动后</span>
+<span class="k">from</span> benchmarks.eval.benchmark_qwen3_asr_concurrency <span class="k">import</span> (
+    build_asr_eval_results, run_asr_transcription)
+
+outputs, wall_clock_s = asyncio.run(run_asr_transcription(
+    seedtts_en_samples, port=..., concurrency=QWEN3_ASR_CONCURRENCY, warmup=...))
+results = build_asr_eval_results(seedtts_en_samples, outputs, wall_clock_s, <span class="s">"en"</span>, ...)
+corpus_wer = results[<span class="s">"summary"</span>][<span class="s">"corpus_wer"</span>]   <span class="c"># 然后只做 threshold 断言</span></code></pre>
+  <p class="small">「<strong>门禁 = 基准跑一遍 + 加阈值断言</strong>」——这是非常好的设计：CI 测的就是基准脚本本身那条路径，保证「线下基准」和「线上门禁」永远测同一件事，不会漂移。
+  之前 CI 用 <code>concurrent.futures</code> 线程池手写并发，现在统一走基准的 <code>asyncio</code> + <code>aiohttp</code> 异步路径，连并发模型都对齐了。</p>
+
+  <h4>4. 涉及的知识点（小白向三段式）</h4>
+
+  <div class="concept three">
+    <div class="name">ASR（自动语音识别）&amp; WER</div>
+    <p><b>它是什么：</b>ASR 把语音转成文字（TTS 的逆过程）。WER（Word Error Rate，词错率）= (替换+删除+插入) / 参考词数，衡量识别准不准，越低越好。<br>
+    <b>为什么需要它：</b>它是 ASR 质量的标准指标；CI 用 WER 门槛保证模型改动没把识别搞砸。<br>
+    <b>本 PR 里：</b>用 <code>jiwer.process_words</code> 算 WER；并指出 WER 与并发无关，所以重标速度阈值时 WER 门槛保持不变。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">并发 / Fan-out 与 RTF</div>
+    <p><b>它是什么：</b>并发（concurrency / fan-out）= 同时在飞的请求数。RTF（Real-Time Factor，实时率）= 处理耗时 / 音频时长，<1 即快于实时。<br>
+    <b>为什么需要它：</b>提高并发能在大工况上提升吞吐（GPU 吃满），但小工况上反而主要暴露排队尾延迟。RTF 让不同时长的音频可比。<br>
+    <b>本 PR 里：</b>核心洞察——「小 20 样本门禁上并发 2 比 32 快是正常的，fan-out 只有大工况才划算」，所以门禁工况选 2，并用基准脚本扫描各并发量化验证。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">Router &amp; Worker / 路由均衡（DP=2）</div>
+    <p><b>它是什么：</b>SGLang 推理服务常是「一个 router（路由器）+ 多个 worker（推理副本）」。Router 收请求、按负载分发给 worker；DP=2 表示 2 路数据并行副本。<br>
+    <b>为什么需要它：</b>多副本能水平扩吞吐；但若路由不均，部分 worker 闲置、部分过载，整体被拖慢。<br>
+    <b>本 PR 里：</b><code>_worker_delta</code> 通过对比请求前后 <code>/workers</code> 快照，统计每个 worker 的 routed/success/failed 增量，验证路由是否均衡——这是诊断并发性能的重要维度。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">CI 门禁 / 阈值校准（regression gate）</div>
+    <p><b>它是什么：</b>把关键指标（WER、吞吐、延迟、RTF）设阈值，PR 触发 CI 自动跑、超阈值就拦下——防止性能/质量回归悄悄进主干。<br>
+    <b>为什么需要它：</b>推理框架改一行可能让吞吐掉 20%，人工很难每次发现；门禁是自动安全网。但<strong>阈值必须贴合实测工况</strong>，否则太松（漏抓）或太紧（误报）。<br>
+    <b>本 PR 里：</b>把阈值从并发 32 的数字重标到并发 2 的真实测量，并配 <code>tune-ci-thresholds</code> 技能，让基线可被自动、可复现地校准。</p>
+  </div>
+
+  <div class="concept three">
+    <div class="name">asyncio + aiohttp（异步并发 I/O）</div>
+    <p><b>它是什么：</b><code>asyncio</code> 是 Python 的协程并发框架，<code>aiohttp</code> 是其异步 HTTP 客户端。用单线程事件循环驱动成百上千个「等网络」的请求。<br>
+    <b>为什么用它（替代线程池）：</b>压测的瓶颈是「等服务端返回」（I/O 密集），协程比线程更轻、上下文切换更省，能更精确地控制并发度。<br>
+    <b>本 PR 里：</b>基准与 CI 统一用 <code>asyncio.run(run_asr_transcription(...))</code> + <code>aiohttp.FormData</code>，取代旧的 <code>concurrent.futures</code> 线程池，并发模型与基准对齐。</p>
+  </div>
+
+  <div class="takeaway">
+  <h4>5. 我能学到什么 / 延伸思考</h4>
+  <ul class="tight">
+    <li><b>可复用工程思想：</b>(1)「<strong>阈值要贴合实测工况</strong>」——基线数字必须来自 CI 真正运行的那个并发/工况，否则门禁是摆设；
+      (2)「<strong>门禁 = 基准 + 断言</strong>」——让测试复用产品/基准代码路径，消除「测试和真实跑的不是同一套」的漂移；
+      (3)「<strong>闭包工厂 + 通用 Runner</strong>」把「怎么发一条请求」和「怎么并发调度」解耦；(4)「先量化再决策」——用扫描数据支撑「并发选 2 还是 32」的结论。</li>
+    <li><b>前置知识建议补：</b>① WER/CER 与 <code>jiwer</code>；② asyncio 协程、事件循环、<code>aiohttp</code>；③ 压测指标体系（吞吐、p50/p95/p99、RTF、TTFC）；④ 推理服务的 router-worker 架构与负载均衡；⑤ 性能回归门禁与基线校准方法论。</li>
+  </ul>
+  </div>
+
+  </div>
+</details>
+
+<!-- ============================ OTHERS ============================ -->
+<h2 class="section" id="others">🗂️ 其余 12 个 PR（文档 / 工程清单）</h2>
+<p class="lead">这些 PR 不改推理核心代码，多为文档刷新、CI/发布工程，按「讲深 &gt; 讲广」原则不展开，列此备查。</p>
+<table>
+  <tr><th>#</th><th>标题</th><th>作者</th><th>类别</th><th>一句话</th></tr>
+  <tr><td>690</td><td>[Docker] Release Formal Docker</td><td>@zhaochenyang20</td><td><span class="pill">工程</span></td><td>发布正式 Docker 镜像，便于一键部署 Omni 服务。</td></tr>
+  <tr><td>688</td><td>[Docs] higgs-tts: correct language-tier counts (83/17)</td><td>@SilinMeng0510</td><td><span class="pill warn">文档</span></td><td>修正 Higgs-TTS 文档里语言分层数量笔误。</td></tr>
+  <tr><td>685</td><td>[Docs] Update Higgs Audio Cookbook</td><td>@zhaochenyang20</td><td><span class="pill warn">文档</span></td><td>更新 Higgs 音频 cookbook。</td></tr>
+  <tr><td>684</td><td>[Docs] Refresh Higgs TTS cookbook (align with model card)</td><td>@SilinMeng0510</td><td><span class="pill warn">文档</span></td><td>让 cookbook 与模型卡一致。</td></tr>
+  <tr><td>683</td><td>[Docs] Quick Fix Higgs</td><td>@zhaochenyang20</td><td><span class="pill warn">文档</span></td><td>Higgs 文档快速修正。</td></tr>
+  <tr><td>681</td><td>[Refresh] Higgs Performance</td><td>@zhaochenyang20</td><td><span class="pill warn">文档</span></td><td>刷新 Higgs 性能数据表。</td></tr>
+  <tr><td>673</td><td>[Docs] Refresh Higgs TTS cookbook: voices, control-token, step-599 benchmarks</td><td>@SilinMeng0510</td><td><span class="pill warn">文档</span></td><td>补充音色、控制 token 用法与最新基准。</td></tr>
+  <tr><td>670</td><td>Verify SGLang-Omni cookbook docs</td><td>@MelodyyyYin</td><td><span class="pill warn">文档</span></td><td>校验 cookbook 文档可用性。</td></tr>
+  <tr><td>671</td><td>Docs/svg logo</td><td>@0xjeffro</td><td><span class="pill warn">文档</span></td><td>更新 SVG logo 资源。</td></tr>
+  <tr><td>669</td><td>[Doc] Add MOSS-TTS in SGLang-Omni docs</td><td>@gaoyang07</td><td><span class="pill warn">文档</span></td><td>把 MOSS-TTS 模型纳入文档体系。</td></tr>
+  <tr><td>668</td><td>Remove stale S2-Pro docs test</td><td>@xinlij</td><td><span class="pill">工程</span></td><td>删除过时的 S2-Pro 文档测试。</td></tr>
+  <tr><td>652</td><td>[DOC] Add documentation in benchmark/README for newly-added flags</td><td>@haojin2</td><td><span class="pill warn">文档</span></td><td>给 benchmark 新增的命令行 flag 补文档。</td></tr>
+</table>
+
+<!-- ============================ GLOSSARY ============================ -->
+<h2 class="section" id="glossary">📖 附录 · 名词速查表</h2>
+<table>
+  <tr><th>术语</th><th>一句话解释</th></tr>
+  <tr><td>SGLang-Omni</td><td>面向「Omni / 多模态」模型的高性能<strong>多阶段流水线（multi-stage pipeline）</strong>推理框架；本日报中的音频链路就是其一条 pipeline。</td></tr>
+  <tr><td>多阶段流水线 (multi-stage)</td><td>把推理拆成若干 stage（如 文本 LM → 声学 token → 声码器），各 stage 可独立调度/并行，类似工厂流水线。</td></tr>
+  <tr><td>Tokenizer / Detokenizer Manager</td><td>SGLang 中负责把文本↔token、以及把生成 token 还原成文本/音频的管理组件（本日 PR 未直接改动，但属同一架构家族）。</td></tr>
+  <tr><td>Scheduler（调度器）</td><td>决定哪些请求/哪些 token 在何时进入计算的核心组件；#655 改的 <code>VocoderScheduler</code> 是音频侧的流式调度器。</td></tr>
+  <tr><td>TTS / ASR</td><td>文字转语音 / 语音转文字，互为逆过程。本日主线全是音频模态。</td></tr>
+  <tr><td>Vocoder（声码器）</td><td>把离散声学 token 解码成 PCM 波形的部件。</td></tr>
+  <tr><td>PCM / SSE</td><td>原始字节音频 / 基于 HTTP 的文本事件推送协议（base64 包装音频）。</td></tr>
+  <tr><td>TTFC</td><td>首块延迟，实时语音体验的关键指标。</td></tr>
+  <tr><td>WER / RTF</td><td>词错率（识别质量）/ 实时率（速度，&lt;1 即快于实时）。</td></tr>
+  <tr><td>码本 / delay pattern</td><td>多码本并行表示音频 + 阶梯式延迟生成，提升音质、压缩 token 数。</td></tr>
+  <tr><td>PyAV</td><td>FFmpeg 的 Python 原生绑定，替代调用外部 ffmpeg 子进程。</td></tr>
+  <tr><td>Router / Worker / DP</td><td>路由器 + 多推理副本 + 数据并行，水平扩展吞吐的服务拓扑。</td></tr>
+  <tr><td>CI 门禁 / 阈值校准</td><td>用指标阈值自动拦截性能/质量回归；阈值必须贴合实测工况才有效。</td></tr>
+</table>
+
+<div class="footer">
+  SGLang-Omni 每日 PR 学习日报 · 自动生成于 2026-06-04 · 数据来源：GitHub sgl-project/sglang-omni<br>
+  讲解遵循「讲深 &gt; 讲广」原则：3 个核心代码 PR 深度拆解，12 个文档/工程 PR 清单备查。
+</div>
+
+</div>
+</body>
+</html>
