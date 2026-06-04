@@ -1812,10 +1812,8 @@ def test_router_update_weights_from_distributed_returns_501() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_router_admin_update_lock_timeout_returns_503() -> None:
+def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
     """If the lock is held beyond timeout, the request returns 503."""
-    from fastapi import Request as FastAPIRequest
-
     from sglang_omni_router.app import _broadcast_admin_request
 
     async def _run():
@@ -1835,11 +1833,10 @@ def test_router_admin_update_lock_timeout_returns_503() -> None:
         async with app.router.lifespan_context(app):
             lock = app.state.admin_update_lock
             await lock.acquire()
-
-            import sglang_omni_router.app as _app_mod
-
-            original = _app_mod._ADMIN_UPDATE_LOCK_TIMEOUT_S
-            _app_mod._ADMIN_UPDATE_LOCK_TIMEOUT_S = 0.05
+            monkeypatch.setattr(
+                "sglang_omni_router.app._ADMIN_UPDATE_LOCK_TIMEOUT_S",
+                0.05,
+            )
             try:
                 scope = {
                     "type": "http",
@@ -1855,13 +1852,12 @@ def test_router_admin_update_lock_timeout_returns_503() -> None:
                 async def receive():
                     return {"type": "http.request", "body": b"{}", "more_body": False}
 
-                fake_request = FastAPIRequest(scope, receive)
+                fake_request = Request(scope, receive)
                 result = await _broadcast_admin_request(
                     app, fake_request, "/update_weights_from_disk"
                 )
                 return result
             finally:
-                _app_mod._ADMIN_UPDATE_LOCK_TIMEOUT_S = original
                 lock.release()
 
     result = asyncio.run(_run())
