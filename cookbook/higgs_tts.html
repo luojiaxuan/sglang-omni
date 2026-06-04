@@ -412,8 +412,16 @@
             </div>
             <nav aria-label="Page">
                 <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#highlights">Highlights</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-languages">Supported Languages</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wer-cer-under-5-polished-production-quality-82">WER/CER under 5 — polished, production-quality (82)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wer-cer-between-5-and-10-usable-but-less-polished-18">WER/CER between 5 and 10 — usable, but less polished (18)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#evaluation-benchmarks">Evaluation Benchmarks</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multilingual-voice-clone">Multilingual Voice Clone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#emergent-tts">Emergent TTS</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="visible nav section-nav flex-column">
@@ -434,10 +442,6 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#throughput">Throughput</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#evaluation-benchmarks">Evaluation Benchmarks</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#seed-tts">Seed-TTS</a></li>
-</ul>
-</li>
 </ul>
             </nav>
         </div>
@@ -452,20 +456,7 @@
   <section class="tex2jax_ignore mathjax_ignore" id="higgs-tts">
 <h1>Higgs TTS<a class="headerlink" href="#higgs-tts" title="Link to this heading">#</a></h1>
 <p><a class="reference external" href="https://huggingface.co/bosonai/higgs-audio-v3-tts-4b">Higgs Audio v3 TTS</a>
-is a text-to-speech model from Boson AI built on a Qwen3-4B backbone. It generates
-24 kHz speech through 8 discrete codebooks and supports 100 languages, voice cloning from a
-reference clip, and fine-grained inline control over emotion, style, sound effects, and prosody.</p>
-<section id="highlights">
-<h2>Highlights<a class="headerlink" href="#highlights" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><strong>Multilingual</strong> — 100 languages with single-digit WER/CER</p></li>
-<li><p><strong>Voice clone accuracy</strong> — high-fidelity zero-shot speaker cloning from reference clips</p></li>
-<li><p><strong>Inline control</strong> via <code class="docutils literal notranslate"><span class="pre">&lt;|emotion:…|&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;|style:…|&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;|sfx:…|&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;|prosody:…|&gt;</span></code> tags</p></li>
-</ul>
-<p>The <strong>100-language single-digit WER/CER</strong> claim comes from our internal <strong>Higgs-Multilingual</strong> benchmark — an extension of FLEURS-102 covering 111 languages and dialects, of which Higgs Audio v3 TTS reaches single-digit WER/CER on 100.</p>
-</section>
-<section id="architecture">
-<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+is a text-to-speech model from Boson AI. It generates <strong>24 kHz speech</strong> and supports <strong>100 languages</strong>, voice cloning from a reference clip, and fine-grained <strong>inline control</strong> over emotion, style, sound effects, and prosody.</p>
 <p><img alt="Higgs Audio v3 Generation Architecture" src="../_images/higgs-architecture.png" /></p>
 <p>Higgs autoregressive decoder consumes interleaved text and audio tokens. Audio is encoded by the <strong>Higgs Tokenizer</strong> into 8 codebooks at 25 fps, staggered via a <strong>delay pattern</strong>, then mapped to backbone hidden states through a <strong>multi-codebook fused embedding</strong>. Output codes pass through a <strong>multi-codebook fused head</strong>, are de-delayed, and decoded back to waveform. Multi-turn generation interleaves <code class="docutils literal notranslate"><span class="pre">&lt;|text|&gt;…&lt;|audio|&gt;…</span></code> chunks so each new chunk is grounded on reference + prior chunks.</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -478,18 +469,171 @@ reference clip, and fine-grained inline control over emotion, style, sound effec
 <tr class="row-even"><td><p>Backbone</p></td>
 <td><p>~4B autoregressive decoder (36 L, hidden=2560, GQA 32/8)</p></td>
 </tr>
+<tr class="row-odd"><td><p>Multi-codebook embedding / head</p></td>
+<td><p>Fused single-tensor, tied with text embedding</p></td>
+</tr>
+<tr class="row-even"><td><p>Context length</p></td>
+<td><p>8,192 tokens (training sequence length)</p></td>
+</tr>
 <tr class="row-odd"><td><p>Audio tokens</p></td>
 <td><p>8 codebooks × 1026 vocab, delay pattern</p></td>
 </tr>
-<tr class="row-even"><td><p>Multi-codebook embedding / head</p></td>
-<td><p>Fused single-tensor, tied with text embedding</p></td>
+<tr class="row-even"><td><p>Sample rate</p></td>
+<td><p>24 kHz</p></td>
 </tr>
-<tr class="row-odd"><td><p>Context length</p></td>
-<td><p>8,192 tokens (training sequence length)</p></td>
+<tr class="row-odd"><td><p>Frame rate</p></td>
+<td><p>25 fps (40 ms / frame)</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<section id="supported-languages">
+<h2>Supported Languages<a class="headerlink" href="#supported-languages" title="Link to this heading">#</a></h2>
+<p>The model reaches <strong>single-digit WER/CER on 100 languages</strong>, which split into two tiers.</p>
+<section id="wer-cer-under-5-polished-production-quality-82">
+<h3>WER/CER under 5 — polished, production-quality (82)<a class="headerlink" href="#wer-cer-under-5-polished-production-quality-82" title="Link to this heading">#</a></h3>
+<p>🇿🇦 Afrikaans · 🇸🇦🇪🇬 Arabic · 🇦🇲 Armenian · 🇮🇳 Assamese · 🇪🇸 Asturian · 🇦🇿 Azerbaijani · 🇷🇺 Bashkir · 🇪🇸 Basque · 🇧🇾 Belarusian · 🇧🇩🇮🇳 Bengali · 🇧🇦 Bosnian · 🇧🇬 Bulgarian · 🇪🇸 Catalan · 🇵🇭 Cebuano · 🇮🇶 Central Kurdish · 🇨🇳 Chinese · 🇭🇷 Croatian · 🇨🇿 Czech · 🇩🇰 Danish · 🇳🇱🇧🇪 Dutch · 🇷🇺 Eastern Mari · 🇺🇸🇬🇧🇦🇺 English · 🌐 Esperanto · 🇪🇪 Estonian · 🇫🇮 Finnish · 🇫🇷🇨🇦 French · 🇪🇸 Galician · 🇬🇪 Georgian · 🇩🇪🇦🇹 German · 🇬🇷 Greek · 🇮🇳 Gujarati · 🇭🇹 Haitian Creole · 🇳🇬 Hausa · 🇮🇱 Hebrew · 🇮🇳 Hindi · 🇭🇺 Hungarian · 🇮🇩 Indonesian · 🇮🇹 Italian · 🇮🇩 Javanese · 🇮🇳 Kannada · 🇰🇿 Kazakh · 🇷🇼 Kinyarwanda · 🇰🇬 Kyrgyz · 🇱🇻 Latvian · 🇨🇩 Lingala · 🇱🇹 Lithuanian · 🇰🇪 Luo · 🇲🇰 Macedonian · 🇲🇾🇮🇩 Malay · 🇮🇳 Malayalam · 🇲🇹 Maltese · 🇳🇿 Māori · 🇮🇳 Marathi · 🇲🇳 Mongolian · 🇳🇵 Nepali · 🇳🇴 Norwegian · 🇫🇷 Occitan · 🇮🇷🇦🇫 Persian · 🇵🇱 Polish · 🇵🇹🇧🇷 Portuguese · 🇷🇴 Romanian · 🇷🇺 Russian · 🇿🇦 Sepedi · 🇷🇸 Serbian · 🇿🇼 Shona · 🇸🇰 Slovak · 🇸🇮 Slovene · 🇪🇸🇲🇽 Spanish · 🇹🇿🇰🇪 Swahili · 🇸🇪 Swedish · 🇵🇭 Tagalog · 🇹🇯 Tajik · 🇮🇳🇱🇰 Tamil · 🇮🇳 Telugu · 🇹🇷 Turkish · 🇺🇦 Ukrainian · 🇵🇰🇮🇳 Urdu · 🇨🇳 Uyghur · 🇺🇿 Uzbek · 🇻🇳 Vietnamese · 🇿🇦 Xhosa · 🇿🇦 Zulu · 🇰🇷 Korean</p>
+</section>
+<section id="wer-cer-between-5-and-10-usable-but-less-polished-18">
+<h3>WER/CER between 5 and 10 — usable, but less polished (18)<a class="headerlink" href="#wer-cer-between-5-and-10-usable-but-less-polished-18" title="Link to this heading">#</a></h3>
+<p>🇦🇱 Albanian · 🇲🇼🇿🇲 Chichewa/Nyanja · 🇮🇳🇵🇰 Eastern Punjabi · 🇺🇬 Ganda · 🇮🇸 Icelandic · 🇮🇪 Irish · 🇩🇿 Kabyle · 🇨🇻 Kabuverdianu · 🇰🇪 Kamba · 🇻🇦 Latin · 🇱🇺 Luxembourgish · 🇪🇹🇰🇪 Oromo · 🇦🇫🇵🇰 Pashto · 🇵🇰🇮🇳 Sindhi · 🇸🇴 Somali · 🇦🇴 Umbundu · 🇬🇧 Welsh</p>
+</section>
+</section>
+<section id="evaluation-benchmarks">
+<h2>Evaluation Benchmarks<a class="headerlink" href="#evaluation-benchmarks" title="Link to this heading">#</a></h2>
+<section id="multilingual-voice-clone">
+<h3>Multilingual Voice Clone<a class="headerlink" href="#multilingual-voice-clone" title="Link to this heading">#</a></h3>
+<p>We evaluate Higgs Audio v3 TTS on public multilingual TTS suites and our internal 111-language Higgs-Multilingual set, covering both common and lower-resource languages.</p>
+<p>WER / CER (↓, ×100) macro-averaged across each benchmark’s language set. Lower is better; <strong>bold</strong> marks the best per row. All numbers are reproducible end-to-end with original metrics and normalization.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Benchmark</p></th>
+<th class="head text-right"><p>Higgs Audio v2</p></th>
+<th class="head text-right"><p>Higgs Audio v3</p></th>
+<th class="head text-right"><p>Fish Audio S2 Pro</p></th>
+<th class="head text-right"><p>Qwen3-TTS-1.7B</p></th>
+<th class="head text-right"><p>VibeVoice-7B</p></th>
+<th class="head text-right"><p>IndexTTS-2</p></th>
+<th class="head text-right"><p>MiMo-Audio-7B-Instruct</p></th>
+<th class="head text-right"><p>MOSS-TTS-v1.5</p></th>
+<th class="head text-right"><p>OmniVoice</p></th>
+<th class="head text-right"><p>ChatterBox</p></th>
+<th class="head text-right"><p>FireRedTTS-2</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SeedTTS</p></td>
+<td class="text-right"><p>2.10</p></td>
+<td class="text-right"><p><strong>1.11</strong></p></td>
+<td class="text-right"><p>1.31</p></td>
+<td class="text-right"><p>1.30</p></td>
+<td class="text-right"><p>3.59</p></td>
+<td class="text-right"><p>1.63</p></td>
+<td class="text-right"><p>3.70</p></td>
+<td class="text-right"><p>1.73</p></td>
+<td class="text-right"><p>1.21</p></td>
+<td class="text-right"><p>17.00</p></td>
+<td class="text-right"><p>1.72</p></td>
+</tr>
+<tr class="row-odd"><td><p>CV3</p></td>
+<td class="text-right"><p>21.19</p></td>
+<td class="text-right"><p><strong>4.41</strong></p></td>
+<td class="text-right"><p>4.60</p></td>
+<td class="text-right"><p>7.73</p></td>
+<td class="text-right"><p>11.66</p></td>
+<td class="text-right"><p>129.26</p></td>
+<td class="text-right"><p>71.55</p></td>
+<td class="text-right"><p>6.11</p></td>
+<td class="text-right"><p>4.92</p></td>
+<td class="text-right"><p>32.62</p></td>
+<td class="text-right"><p>19.20</p></td>
+</tr>
+<tr class="row-even"><td><p>MiniMax-Multilingual</p></td>
+<td class="text-right"><p>49.86</p></td>
+<td class="text-right"><p><strong>2.74</strong></p></td>
+<td class="text-right"><p>5.15</p></td>
+<td class="text-right"><p>27.41</p></td>
+<td class="text-right"><p>8.21</p></td>
+<td class="text-right"><p>112.91</p></td>
+<td class="text-right"><p>85.67</p></td>
+<td class="text-right"><p>3.78</p></td>
+<td class="text-right"><p>2.98</p></td>
+<td class="text-right"><p>49.30</p></td>
+<td class="text-right"><p>12.52</p></td>
+</tr>
+<tr class="row-odd"><td><p>Higgs-Multilingual</p></td>
+<td class="text-right"><p>52.24</p></td>
+<td class="text-right"><p><strong>3.61</strong></p></td>
+<td class="text-right"><p>8.68</p></td>
+<td class="text-right"><p>97.09</p></td>
+<td class="text-right"><p>13.74</p></td>
+<td class="text-right"><p>57.71</p></td>
+<td class="text-right"><p>59.61</p></td>
+<td class="text-right"><p>21.28</p></td>
+<td class="text-right"><p>3.63</p></td>
+<td class="text-right"><p>57.52</p></td>
+<td class="text-right"><p>33.69</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="emergent-tts">
+<h3>Emergent TTS<a class="headerlink" href="#emergent-tts" title="Link to this heading">#</a></h3>
+<p>Win-rate (↑) per category — judge preference vs the BASELINE row; <strong>bold</strong> marks the highest win-rate per column. For a fair comparison, every model shares the same reference audio per prompt, and we run the benchmark text verbatim — no inline control tags inserted.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Model</p></th>
+<th class="head text-right"><p>Overall ↑</p></th>
+<th class="head text-right"><p>Emotions ↑</p></th>
+<th class="head text-right"><p>Foreign Words ↑</p></th>
+<th class="head text-right"><p>Paralinguistics ↑</p></th>
+<th class="head text-right"><p>Complex Pronunciation ↑</p></th>
+<th class="head text-right"><p>Questions ↑</p></th>
+<th class="head text-right"><p>Syntactic Complexity ↑</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Higgs Audio v3</p></td>
+<td class="text-right"><p><strong>53.65%</strong></p></td>
+<td class="text-right"><p>53.75%</p></td>
+<td class="text-right"><p><strong>48.75%</strong></p></td>
+<td class="text-right"><p><strong>68.57%</strong></p></td>
+<td class="text-right"><p>25.10%</p></td>
+<td class="text-right"><p><strong>61.43%</strong></p></td>
+<td class="text-right"><p><strong>60.71%</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p>Fish Audio S2 Pro</p></td>
+<td class="text-right"><p>43.80%</p></td>
+<td class="text-right"><p>53.04%</p></td>
+<td class="text-right"><p>33.93%</p></td>
+<td class="text-right"><p>53.75%</p></td>
+<td class="text-right"><p>18.16%</p></td>
+<td class="text-right"><p>55.00%</p></td>
+<td class="text-right"><p>45.71%</p></td>
+</tr>
+<tr class="row-even"><td><p>Qwen3-TTS-1.7B</p></td>
+<td class="text-right"><p>38.84%</p></td>
+<td class="text-right"><p>45.54%</p></td>
+<td class="text-right"><p>24.64%</p></td>
+<td class="text-right"><p>44.29%</p></td>
+<td class="text-right"><p><strong>30.00%</strong></p></td>
+<td class="text-right"><p>53.39%</p></td>
+<td class="text-right"><p>34.11%</p></td>
+</tr>
+<tr class="row-odd"><td><p>OmniVoice</p></td>
+<td class="text-right"><p>40.82%</p></td>
+<td class="text-right"><p><strong>61.07%</strong></p></td>
+<td class="text-right"><p>28.75%</p></td>
+<td class="text-right"><p>52.68%</p></td>
+<td class="text-right"><p>13.67%</p></td>
+<td class="text-right"><p>45.00%</p></td>
+<td class="text-right"><p>40.36%</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
 </section>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
@@ -693,9 +837,22 @@ hf<span class="w"> </span>download<span class="w"> </span>bosonai/higgs-audio-v2
 </section>
 <section id="inline-control-tokens">
 <h3>Inline Control Tokens<a class="headerlink" href="#inline-control-tokens" title="Link to this heading">#</a></h3>
+<p>All tags follow <code class="docutils literal notranslate"><span class="pre">&lt;|category:value|&gt;</span></code> syntax and can be inserted mid-utterance.</p>
+<ul class="simple">
+<li><p><strong>Emotion</strong> — <code class="docutils literal notranslate"><span class="pre">elation</span></code>, <code class="docutils literal notranslate"><span class="pre">amusement</span></code>, <code class="docutils literal notranslate"><span class="pre">enthusiasm</span></code>, <code class="docutils literal notranslate"><span class="pre">determination</span></code>, <code class="docutils literal notranslate"><span class="pre">pride</span></code>, <code class="docutils literal notranslate"><span class="pre">contentment</span></code>, <code class="docutils literal notranslate"><span class="pre">affection</span></code>, <code class="docutils literal notranslate"><span class="pre">relief</span></code>, <code class="docutils literal notranslate"><span class="pre">contemplation</span></code>, <code class="docutils literal notranslate"><span class="pre">confusion</span></code>, <code class="docutils literal notranslate"><span class="pre">surprise</span></code>, <code class="docutils literal notranslate"><span class="pre">awe</span></code>, <code class="docutils literal notranslate"><span class="pre">longing</span></code>, <code class="docutils literal notranslate"><span class="pre">arousal</span></code>, <code class="docutils literal notranslate"><span class="pre">anger</span></code>, <code class="docutils literal notranslate"><span class="pre">fear</span></code>, <code class="docutils literal notranslate"><span class="pre">disgust</span></code>, <code class="docutils literal notranslate"><span class="pre">bitterness</span></code>, <code class="docutils literal notranslate"><span class="pre">sadness</span></code>, <code class="docutils literal notranslate"><span class="pre">shame</span></code>, <code class="docutils literal notranslate"><span class="pre">helplessness</span></code></p></li>
+<li><p><strong>Style</strong> — <code class="docutils literal notranslate"><span class="pre">singing</span></code>, <code class="docutils literal notranslate"><span class="pre">shouting</span></code>, <code class="docutils literal notranslate"><span class="pre">whispering</span></code></p></li>
+<li><p><strong>Sound effects</strong> — <code class="docutils literal notranslate"><span class="pre">cough</span></code>, <code class="docutils literal notranslate"><span class="pre">laughter</span></code>, <code class="docutils literal notranslate"><span class="pre">crying</span></code>, <code class="docutils literal notranslate"><span class="pre">screaming</span></code>, <code class="docutils literal notranslate"><span class="pre">burping</span></code>, <code class="docutils literal notranslate"><span class="pre">humming</span></code>, <code class="docutils literal notranslate"><span class="pre">sigh</span></code>, <code class="docutils literal notranslate"><span class="pre">sniff</span></code>, <code class="docutils literal notranslate"><span class="pre">sneeze</span></code></p></li>
+<li><p><strong>Prosody</strong></p>
+<ul>
+<li><p>Speed — <code class="docutils literal notranslate"><span class="pre">speed_very_slow</span></code> (≈0.65×), <code class="docutils literal notranslate"><span class="pre">speed_slow</span></code> (≈0.85×), <code class="docutils literal notranslate"><span class="pre">speed_fast</span></code> (≈1.2×), <code class="docutils literal notranslate"><span class="pre">speed_very_fast</span></code> (≈1.4×)</p></li>
+<li><p>Pauses — <code class="docutils literal notranslate"><span class="pre">pause</span></code> (≈400–700 ms), <code class="docutils literal notranslate"><span class="pre">long_pause</span></code> (≈700–1500 ms)</p></li>
+<li><p>Pitch — <code class="docutils literal notranslate"><span class="pre">pitch_low</span></code> (≈−3 st), <code class="docutils literal notranslate"><span class="pre">pitch_high</span></code> (≈+2.5 st)</p></li>
+<li><p>Delivery — <code class="docutils literal notranslate"><span class="pre">expressive_high</span></code>, <code class="docutils literal notranslate"><span class="pre">expressive_low</span></code></p></li>
+</ul>
+</li>
+</ul>
 <p>Embed control tokens directly in the <code class="docutils literal notranslate"><span class="pre">input</span></code> field. Tokens from different
-categories can be combined.</p>
-<p>Each request is a single <strong>turn</strong>, and two rules make control tokens reliable:</p>
+categories can be combined. Each request is a single <strong>turn</strong>, and two rules make control tokens reliable:</p>
 <ol class="arabic simple">
 <li><p><strong>Lead the turn with the delivery tokens.</strong> Emotion (<code class="docutils literal notranslate"><span class="pre">&lt;|emotion:…|&gt;</span></code>), Style
 (<code class="docutils literal notranslate"><span class="pre">&lt;|style:…|&gt;</span></code>), and the prosody <em>speed</em> (<code class="docutils literal notranslate"><span class="pre">&lt;|prosody:speed_…|&gt;</span></code>), <em>pitch</em>
@@ -707,8 +864,7 @@ break should fall, and each <code class="docutils literal notranslate"><span cla
 <li><p><strong>Pair every sound effect with its onomatopoeia.</strong> A <code class="docutils literal notranslate"><span class="pre">&lt;|sfx:…|&gt;</span></code> token lands
 best when the matching written sound follows it immediately
 (e.g. <code class="docutils literal notranslate"><span class="pre">&lt;|sfx:laughter|&gt;Haha</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;|sfx:sigh|&gt;Uh</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;|sfx:sneeze|&gt;Achoo</span></code>) — the
-onomatopoeia gives the model the acoustic cue to realize the effect. See the
-<a class="reference internal" href="#sound-effects"><span class="std std-ref">Sound Effects</span></a> table for suggested pairings.</p></li>
+onomatopoeia gives the model the acoustic cue to realize the effect.</p></li>
 </ol>
 <p><strong>Demo</strong></p>
 <ol class="arabic simple">
@@ -1146,11 +1302,11 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
 </section>
 <section id="throughput">
 <h3>Throughput<a class="headerlink" href="#throughput" title="Link to this heading">#</a></h3>
-<p>[TODO (yichi, Huapeng): This should be updated in the last minute.]</p>
-<p>Throughput on seed-tts en (N=50 per concurrency, sequential thread pool, A100 40GB, bf16):</p>
+<p>Throughput on Seed-TTS EN (full set, <strong>N=1088</strong> per run). Client <code class="docutils literal notranslate"><span class="pre">--max-concurrency</span></code> sweep against a Higgs server (<code class="docutils literal notranslate"><span class="pre">max_running_requests=16</span></code>, bf16, CUDA Graph on). Each row is the <strong>mean of 3 runs</strong>. Hardware: <strong>1× H100</strong>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head text-right"><p>Concurrency</p></th>
+<th class="head text-right"><p>Throughput (req/s)</p></th>
 <th class="head text-right"><p>Mean latency</p></th>
 <th class="head text-right"><p>RTF (per-req)</p></th>
 <th class="head text-right"><p>audio_s/s</p></th>
@@ -1158,54 +1314,38 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
 </thead>
 <tbody>
 <tr class="row-even"><td class="text-right"><p>1</p></td>
-<td class="text-right"><p>[—]</p></td>
-<td class="text-right"><p>[—]</p></td>
-<td class="text-right"><p>[—]</p></td>
+<td class="text-right"><p>1.62</p></td>
+<td class="text-right"><p>617 ms</p></td>
+<td class="text-right"><p>0.147</p></td>
+<td class="text-right"><p>6.89</p></td>
 </tr>
-<tr class="row-odd"><td class="text-right"><p>16</p></td>
-<td class="text-right"><p>[—]</p></td>
-<td class="text-right"><p>[—]</p></td>
-<td class="text-right"><p>[—]</p></td>
+<tr class="row-odd"><td class="text-right"><p>2</p></td>
+<td class="text-right"><p>2.70</p></td>
+<td class="text-right"><p>742 ms</p></td>
+<td class="text-right"><p>0.180</p></td>
+<td class="text-right"><p>11.37</p></td>
 </tr>
-<tr class="row-even"><td class="text-right"><p>32</p></td>
-<td class="text-right"><p>[—]</p></td>
-<td class="text-right"><p>[—]</p></td>
-<td class="text-right"><p>[—]</p></td>
+<tr class="row-even"><td class="text-right"><p>4</p></td>
+<td class="text-right"><p>5.45</p></td>
+<td class="text-right"><p>733 ms</p></td>
+<td class="text-right"><p>0.177</p></td>
+<td class="text-right"><p>22.84</p></td>
 </tr>
-</tbody>
-</table>
-</div>
-</section>
-</section>
-<section id="evaluation-benchmarks">
-<h2>Evaluation Benchmarks<a class="headerlink" href="#evaluation-benchmarks" title="Link to this heading">#</a></h2>
-<p>We report <strong>WER / CER</strong> (↓, %) and <strong>WavLM speaker similarity</strong> (↑, ×100) on the Seed-TTS zero-shot voice-cloning benchmark.</p>
-<section id="seed-tts">
-<h3>Seed-TTS<a class="headerlink" href="#seed-tts" title="Link to this heading">#</a></h3>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Lang</p></th>
-<th class="head"><p>WER ↓</p></th>
-<th class="head"><p>SIM ↑</p></th>
+<tr class="row-odd"><td class="text-right"><p>8</p></td>
+<td class="text-right"><p>8.91</p></td>
+<td class="text-right"><p>898 ms</p></td>
+<td class="text-right"><p>0.217</p></td>
+<td class="text-right"><p>37.38</p></td>
 </tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>en</p></td>
-<td><p>[0.80]</p></td>
-<td><p>[73.00]</p></td>
-</tr>
-<tr class="row-odd"><td><p>zh</p></td>
-<td><p>[1.46]</p></td>
-<td><p>[67.26]</p></td>
-</tr>
-<tr class="row-even"><td><p><strong>macro</strong></p></td>
-<td><p><strong>[1.13]</strong></p></td>
-<td><p><strong>[70.13]</strong></p></td>
+<tr class="row-even"><td class="text-right"><p>16</p></td>
+<td class="text-right"><p>14.74</p></td>
+<td class="text-right"><p>1079 ms</p></td>
+<td class="text-right"><p>0.262</p></td>
+<td class="text-right"><p>61.84</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Results are generated with SGLang Omni. WER/CER and speaker similarity follow the original text normalization and metric implementation from <a class="reference external" href="https://github.com/BytedanceSpeech/seed-tts-eval">seed-tts-eval</a>.</p>
 </section>
 </section>
 </section>
@@ -1257,8 +1397,16 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#highlights">Highlights</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-languages">Supported Languages</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wer-cer-under-5-polished-production-quality-82">WER/CER under 5 — polished, production-quality (82)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wer-cer-between-5-and-10-usable-but-less-polished-18">WER/CER between 5 and 10 — usable, but less polished (18)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#evaluation-benchmarks">Evaluation Benchmarks</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multilingual-voice-clone">Multilingual Voice Clone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#emergent-tts">Emergent TTS</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="visible nav section-nav flex-column">
@@ -1277,10 +1425,6 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request parameters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#throughput">Throughput</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#evaluation-benchmarks">Evaluation Benchmarks</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#seed-tts">Seed-TTS</a></li>
 </ul>
 </li>
 </ul>
