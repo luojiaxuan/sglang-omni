@@ -423,7 +423,6 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot">Zero-shot</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice Cloning</a></li>
@@ -439,7 +438,7 @@
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request parameters</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#throughput">Throughput</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
 </ul>
 </li>
 </ul>
@@ -504,75 +503,30 @@ is a text-to-speech model from Boson AI. It generates <strong>24 kHz speech</str
 <section id="multilingual-voice-clone">
 <h3>Multilingual Voice Clone<a class="headerlink" href="#multilingual-voice-clone" title="Link to this heading">#</a></h3>
 <p>We evaluate Higgs Audio v3 TTS on public multilingual TTS suites and our internal 111-language Higgs-Multilingual set, covering both common and lower-resource languages.</p>
-<p>WER / CER (↓, ×100) macro-averaged across each benchmark’s language set. Lower is better; <strong>bold</strong> marks the best per row. All numbers are reproducible end-to-end with original metrics and normalization.</p>
+<p>WER / CER (↓, %), macro-averaged across each benchmark’s language set (Higgs Audio v3 TTS; reproducible with original metrics and normalization):</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Benchmark</p></th>
-<th class="head text-right"><p>Higgs Audio v2</p></th>
-<th class="head text-right"><p>Higgs Audio v3</p></th>
-<th class="head text-right"><p>Fish Audio S2 Pro</p></th>
-<th class="head text-right"><p>Qwen3-TTS-1.7B</p></th>
-<th class="head text-right"><p>VibeVoice-7B</p></th>
-<th class="head text-right"><p>IndexTTS-2</p></th>
-<th class="head text-right"><p>MiMo-Audio-7B-Instruct</p></th>
-<th class="head text-right"><p>MOSS-TTS-v1.5</p></th>
-<th class="head text-right"><p>OmniVoice</p></th>
-<th class="head text-right"><p>ChatterBox</p></th>
-<th class="head text-right"><p>FireRedTTS-2</p></th>
+<th class="head text-right"><p>Languages</p></th>
+<th class="head text-right"><p>WER/CER ↓</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>SeedTTS</p></td>
-<td class="text-right"><p>2.10</p></td>
-<td class="text-right"><p><strong>1.11</strong></p></td>
-<td class="text-right"><p>1.31</p></td>
-<td class="text-right"><p>1.30</p></td>
-<td class="text-right"><p>3.59</p></td>
-<td class="text-right"><p>1.63</p></td>
-<td class="text-right"><p>3.70</p></td>
-<td class="text-right"><p>1.73</p></td>
-<td class="text-right"><p>1.21</p></td>
-<td class="text-right"><p>17.00</p></td>
-<td class="text-right"><p>1.72</p></td>
+<tr class="row-even"><td><p>Seed-TTS</p></td>
+<td class="text-right"><p>2</p></td>
+<td class="text-right"><p>1.11</p></td>
 </tr>
 <tr class="row-odd"><td><p>CV3</p></td>
-<td class="text-right"><p>21.19</p></td>
-<td class="text-right"><p><strong>4.41</strong></p></td>
-<td class="text-right"><p>4.60</p></td>
-<td class="text-right"><p>7.73</p></td>
-<td class="text-right"><p>11.66</p></td>
-<td class="text-right"><p>129.26</p></td>
-<td class="text-right"><p>71.55</p></td>
-<td class="text-right"><p>6.11</p></td>
-<td class="text-right"><p>4.92</p></td>
-<td class="text-right"><p>32.62</p></td>
-<td class="text-right"><p>19.20</p></td>
+<td class="text-right"><p>9</p></td>
+<td class="text-right"><p>4.41</p></td>
 </tr>
 <tr class="row-even"><td><p>MiniMax-Multilingual</p></td>
-<td class="text-right"><p>49.86</p></td>
-<td class="text-right"><p><strong>2.74</strong></p></td>
-<td class="text-right"><p>5.15</p></td>
-<td class="text-right"><p>27.41</p></td>
-<td class="text-right"><p>8.21</p></td>
-<td class="text-right"><p>112.91</p></td>
-<td class="text-right"><p>85.67</p></td>
-<td class="text-right"><p>3.78</p></td>
-<td class="text-right"><p>2.98</p></td>
-<td class="text-right"><p>49.30</p></td>
-<td class="text-right"><p>12.52</p></td>
+<td class="text-right"><p>23</p></td>
+<td class="text-right"><p>2.74</p></td>
 </tr>
 <tr class="row-odd"><td><p>Higgs-Multilingual</p></td>
-<td class="text-right"><p>52.24</p></td>
-<td class="text-right"><p><strong>3.61</strong></p></td>
-<td class="text-right"><p>8.68</p></td>
-<td class="text-right"><p>97.09</p></td>
-<td class="text-right"><p>13.74</p></td>
-<td class="text-right"><p>57.71</p></td>
-<td class="text-right"><p>59.61</p></td>
-<td class="text-right"><p>21.28</p></td>
-<td class="text-right"><p>3.63</p></td>
-<td class="text-right"><p>57.52</p></td>
-<td class="text-right"><p>33.69</p></td>
+<td class="text-right"><p>111</p></td>
+<td class="text-right"><p>3.61</p></td>
 </tr>
 </tbody>
 </table>
@@ -580,55 +534,34 @@ is a text-to-speech model from Boson AI. It generates <strong>24 kHz speech</str
 </section>
 <section id="emergent-tts">
 <h3>Emergent TTS<a class="headerlink" href="#emergent-tts" title="Link to this heading">#</a></h3>
-<p>Win-rate (↑) per category — judge preference vs the BASELINE row; <strong>bold</strong> marks the highest win-rate per column. For a fair comparison, every model shares the same reference audio per prompt, and we run the benchmark text verbatim — no inline control tags inserted.</p>
+<p>Win-rate (↑) per category on the Emergent TTS benchmark — judge preference vs a fixed baseline. Benchmark text is run verbatim (no inline control tags).</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>Model</p></th>
-<th class="head text-right"><p>Overall ↑</p></th>
-<th class="head text-right"><p>Emotions ↑</p></th>
-<th class="head text-right"><p>Foreign Words ↑</p></th>
-<th class="head text-right"><p>Paralinguistics ↑</p></th>
-<th class="head text-right"><p>Complex Pronunciation ↑</p></th>
-<th class="head text-right"><p>Questions ↑</p></th>
-<th class="head text-right"><p>Syntactic Complexity ↑</p></th>
+<tr class="row-odd"><th class="head"><p>Category</p></th>
+<th class="head text-right"><p>Win-rate ↑</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Higgs Audio v3</p></td>
-<td class="text-right"><p><strong>53.65%</strong></p></td>
+<tr class="row-even"><td><p>Overall</p></td>
+<td class="text-right"><p>53.65%</p></td>
+</tr>
+<tr class="row-odd"><td><p>Emotions</p></td>
 <td class="text-right"><p>53.75%</p></td>
-<td class="text-right"><p><strong>48.75%</strong></p></td>
-<td class="text-right"><p><strong>68.57%</strong></p></td>
+</tr>
+<tr class="row-even"><td><p>Foreign Words</p></td>
+<td class="text-right"><p>48.75%</p></td>
+</tr>
+<tr class="row-odd"><td><p>Paralinguistics</p></td>
+<td class="text-right"><p>68.57%</p></td>
+</tr>
+<tr class="row-even"><td><p>Complex Pronunciation</p></td>
 <td class="text-right"><p>25.10%</p></td>
-<td class="text-right"><p><strong>61.43%</strong></p></td>
-<td class="text-right"><p><strong>60.71%</strong></p></td>
 </tr>
-<tr class="row-odd"><td><p>Fish Audio S2 Pro</p></td>
-<td class="text-right"><p>43.80%</p></td>
-<td class="text-right"><p>53.04%</p></td>
-<td class="text-right"><p>33.93%</p></td>
-<td class="text-right"><p>53.75%</p></td>
-<td class="text-right"><p>18.16%</p></td>
-<td class="text-right"><p>55.00%</p></td>
-<td class="text-right"><p>45.71%</p></td>
+<tr class="row-odd"><td><p>Questions</p></td>
+<td class="text-right"><p>61.43%</p></td>
 </tr>
-<tr class="row-even"><td><p>Qwen3-TTS-1.7B</p></td>
-<td class="text-right"><p>38.84%</p></td>
-<td class="text-right"><p>45.54%</p></td>
-<td class="text-right"><p>24.64%</p></td>
-<td class="text-right"><p>44.29%</p></td>
-<td class="text-right"><p><strong>30.00%</strong></p></td>
-<td class="text-right"><p>53.39%</p></td>
-<td class="text-right"><p>34.11%</p></td>
-</tr>
-<tr class="row-odd"><td><p>OmniVoice</p></td>
-<td class="text-right"><p>40.82%</p></td>
-<td class="text-right"><p><strong>61.07%</strong></p></td>
-<td class="text-right"><p>28.75%</p></td>
-<td class="text-right"><p>52.68%</p></td>
-<td class="text-right"><p>13.67%</p></td>
-<td class="text-right"><p>45.00%</p></td>
-<td class="text-right"><p>40.36%</p></td>
+<tr class="row-even"><td><p>Syntactic Complexity</p></td>
+<td class="text-right"><p>60.71%</p></td>
 </tr>
 </tbody>
 </table>
@@ -637,18 +570,10 @@ is a text-to-speech model from Boson AI. It generates <strong>24 kHz speech</str
 </section>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then download the model:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Higgs TTS model is private; export your HF token before downloading.</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">HF_TOKEN</span><span class="o">=</span>hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-hf<span class="w"> </span>download<span class="w"> </span>bosonai/higgs-audio-v3-tts-4b
-hf<span class="w"> </span>download<span class="w"> </span>bosonai/higgs-audio-v2-tokenizer
-</pre></div>
-</div>
-</section>
-<section id="server-configuration">
-<h2>Server Configuration<a class="headerlink" href="#server-configuration" title="Link to this heading">#</a></h2>
-<p>The pipeline is <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">audio_encoder</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code>.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then download and serve the model:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>bosonai/higgs-audio-v3-tts-4b
+
+sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>bosonai/higgs-audio-v3-tts-4b<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
@@ -1300,8 +1225,8 @@ onomatopoeia gives the model the acoustic cue to realize the effect.</p></li>
 </table>
 </div>
 </section>
-<section id="throughput">
-<h3>Throughput<a class="headerlink" href="#throughput" title="Link to this heading">#</a></h3>
+<section id="performance">
+<h3>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h3>
 <p>Throughput on Seed-TTS EN (full set, <strong>N=1088</strong> per run). Client <code class="docutils literal notranslate"><span class="pre">--max-concurrency</span></code> sweep against a Higgs server (<code class="docutils literal notranslate"><span class="pre">max_running_requests=16</span></code>, bf16, CUDA Graph on). Each row is the <strong>mean of 3 runs</strong>. Hardware: <strong>1× H100</strong>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -1346,6 +1271,14 @@ onomatopoeia gives the model the acoustic cue to realize the effect.</p></li>
 </tbody>
 </table>
 </div>
+<ul class="simple">
+<li><p><strong>Concurrency</strong> — Maximum number of in-flight client requests (<code class="docutils literal notranslate"><span class="pre">--max-concurrency</span></code>).</p></li>
+<li><p><strong>Throughput (req/s)</strong> — Completed requests divided by total benchmark wall-clock time.</p></li>
+<li><p><strong>Mean latency</strong> — Average end-to-end time per request (send to full response received).</p></li>
+<li><p><strong>RTF (per-req)</strong> — Average ratio of processing time to generated audio duration per request (&lt;1 is faster than real time).</p></li>
+<li><p><strong>audio_s/s</strong> — Total seconds of audio produced divided by total benchmark wall-clock time.</p></li>
+</ul>
+<p>To reproduce the results, follow the instructions in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/benchmarks/eval/benchmark_tts_seedtts.py">this script</a>.</p>
 </section>
 </section>
 </section>
@@ -1408,7 +1341,6 @@ onomatopoeia gives the model the acoustic cue to realize the effect.</p></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot">Zero-shot</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice Cloning</a></li>
@@ -1424,7 +1356,7 @@ onomatopoeia gives the model the acoustic cue to realize the effect.</p></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request parameters</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#throughput">Throughput</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
 </ul>
 </li>
 </ul>

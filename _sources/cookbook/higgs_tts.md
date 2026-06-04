@@ -34,42 +34,36 @@ The model reaches **single-digit WER/CER on 100 languages**, which split into tw
 
 We evaluate Higgs Audio v3 TTS on public multilingual TTS suites and our internal 111-language Higgs-Multilingual set, covering both common and lower-resource languages.
 
-WER / CER (↓, ×100) macro-averaged across each benchmark's language set. Lower is better; **bold** marks the best per row. All numbers are reproducible end-to-end with original metrics and normalization.
+WER / CER (↓, %), macro-averaged across each benchmark's language set (Higgs Audio v3 TTS; reproducible with original metrics and normalization):
 
-| Benchmark | Higgs Audio v2 | Higgs Audio v3 | Fish Audio S2 Pro | Qwen3-TTS-1.7B | VibeVoice-7B | IndexTTS-2 | MiMo-Audio-7B-Instruct | MOSS-TTS-v1.5 | OmniVoice | ChatterBox | FireRedTTS-2 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| SeedTTS | 2.10 | **1.11** | 1.31 | 1.30 | 3.59 | 1.63 | 3.70 | 1.73 | 1.21 | 17.00 | 1.72 |
-| CV3 | 21.19 | **4.41** | 4.60 | 7.73 | 11.66 | 129.26 | 71.55 | 6.11 | 4.92 | 32.62 | 19.20 |
-| MiniMax-Multilingual | 49.86 | **2.74** | 5.15 | 27.41 | 8.21 | 112.91 | 85.67 | 3.78 | 2.98 | 49.30 | 12.52 |
-| Higgs-Multilingual | 52.24 | **3.61** | 8.68 | 97.09 | 13.74 | 57.71 | 59.61 | 21.28 | 3.63 | 57.52 | 33.69 |
+| Benchmark | Languages | WER/CER ↓ |
+|---|---:|---:|
+| Seed-TTS | 2 | 1.11 |
+| CV3 | 9 | 4.41 |
+| MiniMax-Multilingual | 23 | 2.74 |
+| Higgs-Multilingual | 111 | 3.61 |
 
 ### Emergent TTS
 
-Win-rate (↑) per category — judge preference vs the BASELINE row; **bold** marks the highest win-rate per column. For a fair comparison, every model shares the same reference audio per prompt, and we run the benchmark text verbatim — no inline control tags inserted.
+Win-rate (↑) per category on the Emergent TTS benchmark — judge preference vs a fixed baseline. Benchmark text is run verbatim (no inline control tags).
 
-| Model | Overall ↑ | Emotions ↑ | Foreign Words ↑ | Paralinguistics ↑ | Complex Pronunciation ↑ | Questions ↑ | Syntactic Complexity ↑ |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Higgs Audio v3 | **53.65%** | 53.75% | **48.75%** | **68.57%** | 25.10% | **61.43%** | **60.71%** |
-| Fish Audio S2 Pro | 43.80% | 53.04% | 33.93% | 53.75% | 18.16% | 55.00% | 45.71% |
-| Qwen3-TTS-1.7B | 38.84% | 45.54% | 24.64% | 44.29% | **30.00%** | 53.39% | 34.11% |
-| OmniVoice | 40.82% | **61.07%** | 28.75% | 52.68% | 13.67% | 45.00% | 40.36% |
+| Category | Win-rate ↑ |
+|---|---:|
+| Overall | 53.65% |
+| Emotions | 53.75% |
+| Foreign Words | 48.75% |
+| Paralinguistics | 68.57% |
+| Complex Pronunciation | 25.10% |
+| Questions | 61.43% |
+| Syntactic Complexity | 60.71% |
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then download and serve the model:
 
 ```bash
-# Higgs TTS model is private; export your HF token before downloading.
-export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 hf download bosonai/higgs-audio-v3-tts-4b
-hf download bosonai/higgs-audio-v2-tokenizer
-```
 
-## Server Configuration
-
-The pipeline is `preprocessing → audio_encoder → tts_engine → vocoder`.
-
-```bash
 sgl-omni serve \
   --model-path bosonai/higgs-audio-v3-tts-4b \
   --port 8000
@@ -572,7 +566,7 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `seed` | int | `null` | Random seed for reproducibility |
 
 
-### Throughput
+### Performance
 
 Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurrency` sweep against a Higgs server (`max_running_requests=16`, bf16, CUDA Graph on). Each row is the **mean of 3 runs**. Hardware: **1× H100**.
 
@@ -583,3 +577,12 @@ Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurre
 | 4 | 5.45 | 733 ms | 0.177 | 22.84 |
 | 8 | 8.91 | 898 ms | 0.217 | 37.38 |
 | 16 | 14.74 | 1079 ms | 0.262 | 61.84 |
+
+
+- **Concurrency** — Maximum number of in-flight client requests (`--max-concurrency`).
+- **Throughput (req/s)** — Completed requests divided by total benchmark wall-clock time.
+- **Mean latency** — Average end-to-end time per request (send to full response received).
+- **RTF (per-req)** — Average ratio of processing time to generated audio duration per request (&lt;1 is faster than real time).
+- **audio_s/s** — Total seconds of audio produced divided by total benchmark wall-clock time.
+
+To reproduce the results, follow the instructions in [this script](https://github.com/sgl-project/sglang-omni/blob/main/benchmarks/eval/benchmark_tts_seedtts.py).
