@@ -160,12 +160,15 @@
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Higgs TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="voxtral_tts.html">Voxtral TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
 <li class="toctree-l1"><a class="reference internal" href="qwen3_tts.html">Qwen3 TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="qwen3_asr.html">Qwen3-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="whisper_asr.html">Whisper ASR</a></li>
 <li class="toctree-l1"><a class="reference internal" href="qwen3_omni.html">Qwen3-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="llada2_uni.html">LLaDA2.0-Uni</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Basic Usage</span></p>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
@@ -427,7 +430,6 @@
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#prosody">Prosody</a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-encoded-reference-codes">Pre-encoded reference codes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request parameters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#throughput">Throughput</a></li>
 </ul>
@@ -1072,21 +1074,6 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
 </div>
 </section>
 </section>
-<section id="pre-encoded-reference-codes">
-<h3>Pre-encoded reference codes<a class="headerlink" href="#pre-encoded-reference-codes" title="Link to this heading">#</a></h3>
-<p>For high-throughput pipelines (e.g. RL rollout) where the same reference audio is reused across many requests, you can encode the reference audio offline and pass the discrete codes directly via <code class="docutils literal notranslate"><span class="pre">reference_codes</span></code> — this skips the server-side codec encode step. Shape must be <code class="docutils literal notranslate"><span class="pre">[T,</span> <span class="pre">num_codebooks=8]</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># python</span>
-<span class="n">resp</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
-    <span class="s2">&quot;http://localhost:8000/v1/audio/speech&quot;</span><span class="p">,</span>
-    <span class="n">json</span><span class="o">=</span><span class="p">{</span>
-        <span class="s2">&quot;input&quot;</span><span class="p">:</span> <span class="n">SPEECH_INPUT</span><span class="p">,</span>
-        <span class="s2">&quot;reference_codes&quot;</span><span class="p">:</span> <span class="n">codes_TN</span><span class="p">,</span>   <span class="c1"># [T, 8] int list, pre-delay-pattern</span>
-        <span class="s2">&quot;reference_text&quot;</span><span class="p">:</span> <span class="n">REFERENCE_TEXT</span><span class="p">,</span>
-    <span class="p">},</span>
-<span class="p">)</span>
-</pre></div>
-</div>
-</section>
 <section id="request-parameters">
 <h3>Request parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h3>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1123,37 +1110,32 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Reference audio for voice cloning; each item has <code class="docutils literal notranslate"><span class="pre">audio_path</span></code> (local path or HTTP URL) and <code class="docutils literal notranslate"><span class="pre">text</span></code> (transcript)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reference_codes</span></code></p></td>
-<td><p>list[list[int]]</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
-<td><p>Pre-encoded discrete codes, shape <code class="docutils literal notranslate"><span class="pre">[T,</span> <span class="pre">8]</span></code> — alternative to <code class="docutils literal notranslate"><span class="pre">references[0].audio_path</span></code></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">reference_text</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> / <code class="docutils literal notranslate"><span class="pre">ref_text</span></code></p></td>
 <td><p>string</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
-<td><p>Transcript of reference audio when supplying <code class="docutils literal notranslate"><span class="pre">reference_codes</span></code></p></td>
+<td><p>Shorthand for <code class="docutils literal notranslate"><span class="pre">references[0].audio_path</span></code> / <code class="docutils literal notranslate"><span class="pre">references[0].text</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">2048</span></code></p></td>
 <td><p>Maximum number of generated multi-codebook steps</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
 <td><p>Sampling temperature</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
 <td><p>float</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Top-p sampling</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Top-k sampling</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
 <td><p>int</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Random seed for reproducibility</p></td>
@@ -1293,7 +1275,6 @@ onomatopoeia gives the model the acoustic cue to realize the effect. See the
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#prosody">Prosody</a></li>
 </ul>
 </li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-encoded-reference-codes">Pre-encoded reference codes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request parameters</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#throughput">Throughput</a></li>
 </ul>
