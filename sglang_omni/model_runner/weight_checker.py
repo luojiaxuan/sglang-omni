@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -86,9 +89,20 @@ class StrictWeightChecker:
         if model is None:
             raise RuntimeError("model_runner has no model for weights_checker")
 
+        logger.warning(
+            "weights_checker: starting full-model SHA256 digest; "
+            "inference is blocked until this completes. "
+            "Elapsed time will be reported in the response."
+        )
+        t0 = time.time()
         digests: dict[str, TensorDigest] = {}
         for name, tensor in self._iter_named_tensors(model):
             digests[name] = _digest_tensor(name, tensor)
+        logger.warning(
+            "weights_checker: digest complete; %d tensors in %.1fs",
+            len(digests),
+            time.time() - t0,
+        )
         return digests
 
     @staticmethod
