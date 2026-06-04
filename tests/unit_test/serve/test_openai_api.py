@@ -603,6 +603,16 @@ _ADMIN_PATHS_THAT_NEED_AUTH = [
     ("POST", "/weights_checker"),
 ]
 
+_ADMIN_API_KEY = "secret-key"
+
+
+def _admin_headers(
+    key: str = _ADMIN_API_KEY,
+    *,
+    scheme: str = "Bearer",
+) -> dict[str, str]:
+    return {"Authorization": f"{scheme} {key}"}
+
 
 def test_admin_routes_open_when_no_key_configured() -> None:
     """Without a key, all admin routes are accessible with no auth header."""
@@ -620,7 +630,7 @@ def test_admin_routes_require_bearer_token_when_key_configured() -> None:
     """When admin_api_key is set, requests without the header are rejected."""
     admin = AdminClient()
     client = TestClient(
-        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
     )
 
     for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
@@ -634,12 +644,12 @@ def test_admin_routes_require_bearer_token_when_key_configured() -> None:
 def test_admin_routes_reject_wrong_bearer_token() -> None:
     admin = AdminClient()
     client = TestClient(
-        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
     )
 
     for method, path in _ADMIN_PATHS_THAT_NEED_AUTH:
         resp = client.request(
-            method, path, json={}, headers={"Authorization": "Bearer wrong-key"}
+            method, path, json={}, headers=_admin_headers("wrong-key")
         )
         assert (
             resp.status_code == 403
@@ -649,16 +659,16 @@ def test_admin_routes_reject_wrong_bearer_token() -> None:
 def test_admin_routes_accept_correct_bearer_token() -> None:
     admin = AdminClient()
     client = TestClient(
-        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
     )
 
-    resp = client.get("/model_info", headers={"Authorization": "Bearer secret-key"})
+    resp = client.get("/model_info", headers=_admin_headers(scheme="bearer"))
     assert resp.status_code == 200
 
     resp = client.post(
         "/pause_generation",
         json={},
-        headers={"Authorization": "Bearer secret-key"},
+        headers=_admin_headers(),
     )
     assert resp.status_code == 200
 
@@ -671,7 +681,7 @@ def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
     resp = client.get("/model_info")
     assert resp.status_code == 401
 
-    resp = client.get("/model_info", headers={"Authorization": "Bearer env-key"})
+    resp = client.get("/model_info", headers=_admin_headers("env-key"))
     assert resp.status_code == 200
 
 
@@ -680,33 +690,34 @@ def test_admin_routes_env_key_is_used_when_no_explicit_key(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_update_weights_from_tensor_returns_501() -> None:
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/update_weights_from_tensor", {}),
+        (
+            "/update_weights_from_distributed",
+            {"names": [], "dtypes": [], "shapes": []},
+        ),
+    ],
+)
+def test_unimplemented_weight_update_endpoints_return_501(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
     admin = AdminClient()
     client = TestClient(create_app(admin, model_name="qwen3-omni"))
 
-    resp = client.post("/update_weights_from_tensor", json={})
+    resp = client.post(path, json=payload)
     assert resp.status_code == 501
     assert resp.json()["error"]["code"] == "not_implemented"
     assert "update_weights_from_disk" in resp.json()["error"]["message"]
-
-
-def test_update_weights_from_distributed_returns_501() -> None:
-    admin = AdminClient()
-    client = TestClient(create_app(admin, model_name="qwen3-omni"))
-
-    resp = client.post(
-        "/update_weights_from_distributed",
-        json={"names": [], "dtypes": [], "shapes": []},
-    )
-    assert resp.status_code == 501
-    assert resp.json()["error"]["code"] == "not_implemented"
 
 
 def test_stub_endpoints_also_check_auth_before_501() -> None:
     """Auth check fires before the 501 body."""
     admin = AdminClient()
     client = TestClient(
-        create_app(admin, model_name="qwen3-omni", admin_api_key="secret-key")
+        create_app(admin, model_name="qwen3-omni", admin_api_key=_ADMIN_API_KEY)
     )
 
     resp = client.post("/update_weights_from_tensor", json={})

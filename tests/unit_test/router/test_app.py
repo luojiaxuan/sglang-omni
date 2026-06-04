@@ -1686,6 +1686,16 @@ _ROUTER_ADMIN_PATHS = [
     ("POST", "/weights_checker"),
 ]
 
+_ROUTER_ADMIN_API_KEY = "router-secret"
+
+
+def _admin_headers(
+    key: str = _ROUTER_ADMIN_API_KEY,
+    *,
+    scheme: str = "Bearer",
+) -> dict[str, str]:
+    return {"Authorization": f"{scheme} {key}"}
+
 
 def _admin_router_app(admin_api_key: str | None = None) -> "FastAPI":
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1727,7 +1737,7 @@ def test_router_admin_routes_open_without_key() -> None:
 
 
 def test_router_admin_routes_require_bearer_when_key_set() -> None:
-    app = _admin_router_app(admin_api_key="router-secret")
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
     with TestClient(app) as client:
         for method, path in _ROUTER_ADMIN_PATHS:
             resp = client.request(method, path, json={})
@@ -1738,18 +1748,16 @@ def test_router_admin_routes_require_bearer_when_key_set() -> None:
 
 
 def test_router_admin_routes_reject_wrong_token() -> None:
-    app = _admin_router_app(admin_api_key="router-secret")
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
     with TestClient(app) as client:
-        resp = client.get("/model_info", headers={"Authorization": "Bearer wrong"})
+        resp = client.get("/model_info", headers=_admin_headers("wrong"))
         assert resp.status_code == 403
 
 
 def test_router_admin_routes_accept_correct_token() -> None:
-    app = _admin_router_app(admin_api_key="router-secret")
+    app = _admin_router_app(admin_api_key=_ROUTER_ADMIN_API_KEY)
     with TestClient(app) as client:
-        resp = client.get(
-            "/model_info", headers={"Authorization": "Bearer router-secret"}
-        )
+        resp = client.get("/model_info", headers=_admin_headers(scheme="bearer"))
         assert resp.status_code == 200
 
 
@@ -1777,9 +1785,7 @@ def test_router_admin_env_key(monkeypatch) -> None:
 
     with TestClient(app) as client:
         assert client.get("/model_info").status_code == 401
-        resp = client.get(
-            "/model_info", headers={"Authorization": "Bearer env-router-key"}
-        )
+        resp = client.get("/model_info", headers=_admin_headers("env-router-key"))
         assert resp.status_code == 200
 
 
@@ -1788,21 +1794,23 @@ def test_router_admin_env_key(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_router_update_weights_from_tensor_returns_501() -> None:
-    app = _admin_router_app()
-    with TestClient(app) as client:
-        resp = client.post("/update_weights_from_tensor", json={})
-    assert resp.status_code == 501
-    assert resp.json()["error"]["code"] == "not_implemented"
-
-
-def test_router_update_weights_from_distributed_returns_501() -> None:
-    app = _admin_router_app()
-    with TestClient(app) as client:
-        resp = client.post(
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/update_weights_from_tensor", {}),
+        (
             "/update_weights_from_distributed",
-            json={"names": [], "dtypes": [], "shapes": []},
-        )
+            {"names": [], "dtypes": [], "shapes": []},
+        ),
+    ],
+)
+def test_router_unimplemented_weight_update_endpoints_return_501(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    app = _admin_router_app()
+    with TestClient(app) as client:
+        resp = client.post(path, json=payload)
     assert resp.status_code == 501
     assert resp.json()["error"]["code"] == "not_implemented"
 

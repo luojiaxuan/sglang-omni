@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import time
 import uuid
 from typing import Any
@@ -26,7 +25,6 @@ from fastapi import (
     FastAPI,
     File,
     Form,
-    Header,
     HTTPException,
     Request,
     UploadFile,
@@ -54,6 +52,10 @@ from sglang_omni.client.audio import (
     encode_audio,
     encode_pcm,
     to_numpy,
+)
+from sglang_omni.http.admin_auth import (
+    make_admin_auth_dependency,
+    resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.models.tts_streaming import INITIAL_CODEC_CHUNK_FRAMES_PARAM
@@ -93,29 +95,6 @@ def _is_bad_request_error(exc: Exception) -> bool:
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
 
 
-def _make_admin_auth_dep(admin_api_key: str | None):
-    if not admin_api_key:
-
-        async def _no_auth() -> None:
-            return
-
-        return _no_auth
-
-    async def _check_admin_key(
-        authorization: str | None = Header(default=None),
-    ) -> None:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(
-                status_code=401,
-                detail="Admin API key required: Authorization: Bearer <key>",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        if authorization[7:] != admin_api_key:
-            raise HTTPException(status_code=403, detail="Invalid admin API key")
-
-    return _check_admin_key
-
-
 def create_app(
     client: Client,
     *,
@@ -149,7 +128,7 @@ def create_app(
     app.state.model_name = model_name or "sglang-omni"
     app.state.realtime_enabled = enable_realtime
 
-    resolved_key = admin_api_key or os.environ.get("SGLANG_OMNI_ADMIN_KEY") or None
+    resolved_key = resolve_admin_api_key(admin_api_key)
 
     # Register all routes
     register_favicon(app)
@@ -200,7 +179,7 @@ def _register_models(app: FastAPI) -> None:
 
 
 def _register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
-    _auth = _make_admin_auth_dep(admin_api_key)
+    _auth = make_admin_auth_dependency(admin_api_key)
 
     @app.get("/model_info", dependencies=[Depends(_auth)])
     async def model_info_get() -> JSONResponse:

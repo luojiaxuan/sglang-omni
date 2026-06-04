@@ -6,17 +6,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import unquote
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
+from sglang_omni.http.admin_auth import (
+    make_admin_auth_dependency,
+    resolve_admin_api_key,
+)
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.health import HealthChecker
@@ -36,29 +39,6 @@ _ADMIN_UPDATE_PATHS = {
     "/update_weights_from_disk",
 }
 _ADMIN_UPDATE_LOCK_TIMEOUT_S = 300.0
-
-
-def _make_admin_auth_dep(admin_api_key: str | None):
-    if not admin_api_key:
-
-        async def _no_auth() -> None:
-            return
-
-        return _no_auth
-
-    async def _check_admin_key(
-        authorization: str | None = Header(default=None),
-    ) -> None:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(
-                status_code=401,
-                detail="Admin API key required: Authorization: Bearer <key>",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        if authorization[7:] != admin_api_key:
-            raise HTTPException(status_code=403, detail="Invalid admin API key")
-
-    return _check_admin_key
 
 
 def create_app(
@@ -119,7 +99,7 @@ def create_app(
             if owns_client:
                 await client.aclose()
 
-    resolved_key = admin_api_key or os.environ.get("SGLANG_OMNI_ADMIN_KEY") or None
+    resolved_key = resolve_admin_api_key(admin_api_key)
 
     app = FastAPI(title="sglang-omni-router", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
@@ -143,7 +123,7 @@ def register_routes(
     *,
     admin_api_key: str | None = None,
 ) -> None:
-    _auth = _make_admin_auth_dep(admin_api_key)
+    _auth = make_admin_auth_dependency(admin_api_key)
 
     def _not_implemented_response() -> JSONResponse:
         return JSONResponse(
