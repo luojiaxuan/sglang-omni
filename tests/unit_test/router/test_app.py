@@ -7,11 +7,11 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from sglang_omni_router import proxy as proxy_module
-from sglang_omni_router.app import create_app
+from sglang_omni_router.app import _broadcast_admin_request, create_app
 from sglang_omni_router.config import RouterConfig, WorkerConfig
 from sglang_omni_router.selector import WorkerSelector
 from sglang_omni_router.worker import build_workers
@@ -1697,7 +1697,7 @@ def _admin_headers(
     return {"Authorization": f"{scheme} {key}"}
 
 
-def _admin_router_app(admin_api_key: str | None = None) -> "FastAPI":
+def _admin_router_app(admin_api_key: str | None = None) -> FastAPI:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "healthy"}, request=request)
@@ -1822,8 +1822,6 @@ def test_router_unimplemented_weight_update_endpoints_return_501(
 
 def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
     """If the lock is held beyond timeout, the request returns 503."""
-    from sglang_omni_router.app import _broadcast_admin_request
-
     async def _run():
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/health":

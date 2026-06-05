@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.model_runner.weight_checker import StrictWeightChecker
+from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -29,6 +30,44 @@ def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
     assert compare_before["matched"] is True
     assert compare_after["matched"] is False
     assert compare_after["changed"] == ["weight"]
+
+
+def test_strict_weight_checker_checksums_bfloat16_tensor_bytes() -> None:
+    model = torch.nn.Module()
+    model.register_buffer(
+        "low_precision_weight",
+        torch.tensor([1.0, -2.0, 3.5], dtype=torch.bfloat16),
+    )
+    checker = StrictWeightChecker(SimpleNamespace(model=model))
+
+    summary = checker.run("checksum")
+
+    assert summary["tensor_count"] == 1
+    assert set(summary["checksums"]) == {"low_precision_weight"}
+    assert summary["tensor_metadata"]["low_precision_weight"]["dtype"] == (
+        "torch.bfloat16"
+    )
+
+
+def test_tensor_bytes_supports_bfloat16_fallback_path() -> None:
+    tensor = torch.tensor([1.0, -2.0, 3.5], dtype=torch.bfloat16)
+
+    raw = _tensor_bytes(tensor)
+
+    assert isinstance(raw, bytes)
+    assert len(raw) == tensor.numel() * tensor.element_size()
+
+
+def test_tensor_bytes_supports_float8_fallback_path() -> None:
+    dtype = getattr(torch, "float8_e4m3fn", None)
+    if dtype is None:
+        pytest.skip("torch does not expose float8_e4m3fn")
+    tensor = torch.tensor([1.0, -2.0, 0.5], dtype=dtype)
+
+    raw = _tensor_bytes(tensor)
+
+    assert isinstance(raw, bytes)
+    assert len(raw) == tensor.numel() * tensor.element_size()
 
 
 def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> None:
