@@ -1051,7 +1051,7 @@ class OmniScheduler:
             success, message = self.model_worker.update_weights_from_disk(payload)
             flush_success: bool | None = None
             if success and bool(payload.get("flush_cache", True)):
-                flush_success = self._flush_cache_after_update(payload)
+                flush_success = self._flush_cache_after_update()
                 success = success and bool(flush_success)
                 if not flush_success:
                     message = f"{message}; cache flush failed"
@@ -1191,13 +1191,9 @@ class OmniScheduler:
         self.chunked_req = None
         return len(retracted_reqs)
 
-    def _flush_cache_after_update(self, payload: dict[str, Any]) -> bool:
+    def _flush_cache_after_update(self) -> bool:
         try:
-            return bool(
-                self.flush_cache(
-                    empty_cache=bool(payload.get("torch_empty_cache", False))
-                )
-            )
+            return bool(self.flush_cache())
         except Exception:
             logger.exception("flush_cache after weight update failed")
             return False

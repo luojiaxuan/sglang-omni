@@ -1822,6 +1822,7 @@ def test_router_unimplemented_weight_update_endpoints_return_501(
 
 def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
     """If the lock is held beyond timeout, the request returns 503."""
+
     async def _run():
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/health":

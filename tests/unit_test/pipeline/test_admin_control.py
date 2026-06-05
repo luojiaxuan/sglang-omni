@@ -147,6 +147,56 @@ def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> N
     assert update_calls == []
 
 
+def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    update_calls: list[dict] = []
+    flush_calls = 0
+    empty_cache_calls = 0
+
+    def update_weights_from_disk(payload: dict) -> tuple[bool, str]:
+        update_calls.append(dict(payload))
+        return True, "ok"
+
+    def flush_cache() -> bool:
+        nonlocal flush_calls
+        flush_calls += 1
+        return True
+
+    def empty_torch_cache() -> None:
+        nonlocal empty_cache_calls
+        empty_cache_calls += 1
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=update_weights_from_disk
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._engine_paused = False
+    scheduler._last_pause_mode = None
+    scheduler._async_pending = None
+    scheduler.result_queue = None
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: []
+    scheduler.flush_cache = flush_cache
+    scheduler._empty_torch_cache = empty_torch_cache
+
+    result = OmniScheduler._admin_update_weights_from_disk(
+        scheduler,
+        {
+            "model_path": "/tmp/new-model",
+            "torch_empty_cache": True,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["data"]["flush_cache"] is True
+    assert result["data"]["flush_success"] is True
+    assert update_calls == [{"model_path": "/tmp/new-model", "torch_empty_cache": True}]
+    assert flush_calls == 1
+    assert empty_cache_calls == 1
+
+
 def test_coordinator_admin_waits_for_all_stage_results() -> None:
     async def _run() -> None:
         coordinator = Coordinator(
