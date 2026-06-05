@@ -450,16 +450,22 @@ class MossTTSModelRunner(ModelRunner):
         positions_row = MossTTSModelRunner._as_row_tensor(
             positions, num_rows, torch.long, device
         )
-        if device.type == "cpu":
-            sampled = MossTTSModelRunner._multinomial_with_seed_cpu(
-                probs, seeds_row, positions_row
-            )
-        else:
-            sampled = multinomial_with_seed(probs, seeds_row, positions_row).view(-1)
-
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
-        if bool(fallback.any()):
-            sampled[fallback] = torch.argmax(logits[fallback], dim=-1)
+        sample_mask = ~fallback
+        sampled = torch.argmax(logits, dim=-1)
+        if bool(sample_mask.any()):
+            if device.type == "cpu":
+                sampled[sample_mask] = MossTTSModelRunner._multinomial_with_seed_cpu(
+                    probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                )
+            else:
+                sampled[sample_mask] = multinomial_with_seed(
+                    probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                ).view(-1)
         return sampled.to(torch.long)
 
     @staticmethod

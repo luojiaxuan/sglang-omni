@@ -5,17 +5,7 @@ import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import apply_rotary_pos_emb
 
-
-def is_package_available(package_name: str) -> bool:
-    try:
-        import importlib
-
-        package_exists = importlib.util.find_spec(package_name) is not None
-        return package_exists
-    except Exception:
-        return False
-
-
+_FLASH_ATTN_IMPORT_ERROR: Exception | None = None
 flash_attn_func = None
 flash_attn_varlen_func = None
 pad_input = None
@@ -24,8 +14,8 @@ unpad_input = None
 try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import pad_input, unpad_input
-except (ImportError, ModuleNotFoundError):
-    pass
+except (ImportError, ModuleNotFoundError) as exc:
+    _FLASH_ATTN_IMPORT_ERROR = exc
 
 
 def is_flash_attn_available() -> bool:
@@ -35,6 +25,15 @@ def is_flash_attn_available() -> bool:
         and pad_input is not None
         and unpad_input is not None
     )
+
+
+def _raise_flash_attn_unavailable() -> None:
+    raise ImportError(
+        "Ming flash_attn backend requires the legacy flash_attn API "
+        "with flash_attn_func and flash_attn_varlen_func. The installed "
+        "flash-attn package does not expose those symbols; use "
+        'attn_backend="torch" or install a compatible flash-attn build.'
+    ) from _FLASH_ATTN_IMPORT_ERROR
 
 
 class RMSNorm(nn.Module):
@@ -122,7 +121,8 @@ class Attention(nn.Module):
         self.to_out.append(nn.Dropout(dropout))
 
         if attn_backend == "flash_attn":
-            assert is_flash_attn_available(), "Please install flash-attn first."
+            if not is_flash_attn_available():
+                _raise_flash_attn_unavailable()
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
@@ -204,6 +204,8 @@ class Attention(nn.Module):
             x = x.transpose(1, 2).reshape(batch_size, -1, self.heads * head_dim)
 
         elif self.attn_backend == "flash_attn":
+            if not is_flash_attn_available():
+                _raise_flash_attn_unavailable()
             query = query.transpose(1, 2)  # [b, h, n, d] -> [b, n, h, d]
             key = key.transpose(1, 2)
             value = value.transpose(1, 2)
