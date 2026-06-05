@@ -520,6 +520,7 @@ class OmniScheduler:
 
     def _prepare_request_limits(self, req_data: Any) -> str | None:
         req = req_data.req
+        self._ensure_request_limit_compat_defaults()
         self.init_req_max_new_tokens(req)
         error_msg = validate_input_length(
             req,
@@ -531,6 +532,12 @@ class OmniScheduler:
         if hasattr(req_data, "max_new_tokens"):
             req_data.max_new_tokens = int(req.sampling_params.max_new_tokens)
         return None
+
+    def _ensure_request_limit_compat_defaults(self) -> None:
+        if not hasattr(self, "page_size"):
+            self.page_size = 1
+        if not hasattr(self, "max_total_num_tokens"):
+            self.max_total_num_tokens = int(self.max_req_len) + int(self.page_size) + 1
 
     def _take_deferred_request_payloads(self) -> list[Any]:
         if not self._dirty_deferred_request_ids:

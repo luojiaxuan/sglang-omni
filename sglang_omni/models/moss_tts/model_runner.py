@@ -14,6 +14,8 @@ from sglang_omni.scheduling.types import RequestOutput
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
+_UINT64_MASK = (1 << 64) - 1
+_INT64_SEED_MASK = (1 << 63) - 1
 
 
 class MossTTSModelRunner(ModelRunner):
@@ -448,12 +450,44 @@ class MossTTSModelRunner(ModelRunner):
         positions_row = MossTTSModelRunner._as_row_tensor(
             positions, num_rows, torch.long, device
         )
-        sampled = multinomial_with_seed(probs, seeds_row, positions_row).view(-1)
+        if device.type == "cpu":
+            sampled = MossTTSModelRunner._multinomial_with_seed_cpu(
+                probs, seeds_row, positions_row
+            )
+        else:
+            sampled = multinomial_with_seed(probs, seeds_row, positions_row).view(-1)
 
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
         if bool(fallback.any()):
             sampled[fallback] = torch.argmax(logits[fallback], dim=-1)
         return sampled.to(torch.long)
+
+    @staticmethod
+    def _multinomial_with_seed_cpu(
+        probs: torch.Tensor,
+        seeds: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        """CPU fallback for SGLang's Triton-backed deterministic sampler."""
+        sampled = torch.empty(probs.shape[0], dtype=torch.long, device=probs.device)
+        for row_idx in range(probs.shape[0]):
+            row = probs[row_idx]
+            if float(row.sum().item()) <= 0.0:
+                sampled[row_idx] = 0
+                continue
+            seed = int(seeds[row_idx].item()) & _UINT64_MASK
+            position = int(positions[row_idx].item()) & _UINT64_MASK
+            mixed_seed = (
+                seed
+                ^ ((position + 0x9E3779B97F4A7C15) & _UINT64_MASK)
+                ^ ((position << 17) & _UINT64_MASK)
+            ) & _INT64_SEED_MASK
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(mixed_seed)
+            sampled[row_idx] = torch.multinomial(
+                row.cpu(), num_samples=1, generator=generator
+            ).to(device=probs.device)
+        return sampled
 
     @staticmethod
     def _apply_top_k(scores: torch.Tensor, top_k_row: torch.Tensor) -> torch.Tensor:

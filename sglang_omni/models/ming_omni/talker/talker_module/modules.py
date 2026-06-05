@@ -16,9 +16,25 @@ def is_package_available(package_name: str) -> bool:
         return False
 
 
-if is_package_available("flash_attn"):
+flash_attn_func = None
+flash_attn_varlen_func = None
+pad_input = None
+unpad_input = None
+
+try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import pad_input, unpad_input
+except (ImportError, ModuleNotFoundError):
+    pass
+
+
+def is_flash_attn_available() -> bool:
+    return (
+        flash_attn_func is not None
+        and flash_attn_varlen_func is not None
+        and pad_input is not None
+        and unpad_input is not None
+    )
 
 
 class RMSNorm(nn.Module):
@@ -106,9 +122,7 @@ class Attention(nn.Module):
         self.to_out.append(nn.Dropout(dropout))
 
         if attn_backend == "flash_attn":
-            assert is_package_available(
-                "flash_attn"
-            ), "Please install flash-attn first."
+            assert is_flash_attn_available(), "Please install flash-attn first."
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
