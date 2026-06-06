@@ -15,6 +15,7 @@ try:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import pad_input, unpad_input
 except (ImportError, ModuleNotFoundError) as exc:
+    # Note:(Chenchen Hong) FlashAttention is optional; keep this for backend errors.
     _FLASH_ATTN_IMPORT_ERROR = exc
 
 

@@ -22,10 +22,10 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 _VOXTRAL_MISTRAL_COMMON_HINT = (
-    "Voxtral TTS requires the `mistral-common` package (speech / Tekken tokenizer). "
+    "Voxtral TTS requires the `mistral_common` package (speech / Tekken tokenizer). "
     "Please install it in your active environment, for example:\n"
-    "  pip install 'mistral-common[audio]>=1.8.0'\n"
-    "  uv pip install 'mistral-common[audio]>=1.8.0'"
+    "  pip install 'mistral_common[audio]>=1.11.0'\n"
+    "  uv pip install 'mistral_common[audio]>=1.11.0'"
 )
 
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+import sglang_omni.models.qwen3_asr.request_builders as request_builders
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_audio_token_lengths,
     qwen3_asr_num_audio_tokens,
@@ -83,8 +84,6 @@ def test_qwen3_asr_audio_token_length_formula_is_shared() -> None:
 
 
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
-    import sglang_omni.models.qwen3_asr.request_builders as request_builders
-
     num_mel_frames = 101
     num_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
