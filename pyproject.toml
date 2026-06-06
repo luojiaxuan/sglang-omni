@@ -28,7 +28,7 @@ dependencies = [
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     "sglang==0.5.12.post1",
     "flash-attn-4>=4.0.0b9,<4.0.0b16",  # Avoid cutlass-dsl>=4.5.2 conflict
-    "kernels>=0.12.0,<0.13",  # Match Transformers 5.6 hub-kernels API
+    "kernels>=0.14.0,<0.15",  # Match Transformers 5.6 / SGLang 0.5.12.post1 stack (ships kernels 0.14.1)
     "nixl",
     "mooncake-transfer-engine>=0.3.0",
     "logger",
@@ -70,7 +70,7 @@ dependencies = [
     # Gradio playground
     "gradio>=4.0.0",
     # Ming-Omni
-    "diffusers==0.37.1",
+    "diffusers==0.37.0",      # Align with sglang 0.5.12.post1 hard pin (diffusers==0.37.0)
     "x-transformers",          # Ming talker rotary embeddings
 ]
 
