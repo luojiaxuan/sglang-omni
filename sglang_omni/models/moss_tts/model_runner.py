@@ -461,8 +461,15 @@ class MossTTSModelRunner(ModelRunner):
                     positions_row[sample_mask],
                 )
             else:
+                # Note:(Chenchen Hong) SGLang 0.5.12.post1's multinomial_with_seed
+                # is a Gumbel-max sampler that expects logits (argmax(logits +
+                # gumbel)), not the post-softmax probs the old API took. Passing
+                # probs both loses the -inf top-k/top-p masking (masked tokens get
+                # prob 0, not excluded) and flattens the distribution, which made
+                # the MOSS audio heads emit only the pad code. Pass the masked
+                # scores (logits) here; the CPU fallback still needs probs.
                 sampled[sample_mask] = multinomial_with_seed(
-                    probs[sample_mask],
+                    scores[sample_mask],
                     seeds_row[sample_mask],
                     positions_row[sample_mask],
                 ).view(-1)
