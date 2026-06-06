@@ -94,7 +94,12 @@ def create_sglang_dllm_thinker_executor_from_config(
 
     overrides: dict[str, Any] = {
         "attention_backend": "flashinfer",
-        "disable_cuda_graph": True,
+        # Note:(Chenchen Hong) CudaGraphRunner captures the dllm forward
+        # (ForwardMode.DLLM_EXTEND, num_tokens_per_bs=block_size), so each of
+        # the ~block_size internal denoising forwards per block replays a graph
+        # instead of eager-launching. Leaving it off cost ~3.8x throughput on
+        # LLaDA2-Uni under the post1 stack, so keep it on.
+        "disable_cuda_graph": False,
     }
     overrides.update(server_args_overrides or {})
 
