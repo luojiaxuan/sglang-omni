@@ -133,7 +133,14 @@ class LLaDA2MoeAttention(nn.Module):
                     layer=self.attn,
                     forward_batch=forward_batch,
                 )
+                # Note:(Chenchen Hong) SGLang 0.5.12.post1's fused rope+kv-store
+                # kernel (apply_rope_inplace_with_kvcache) reshapes q/k by the
+                # cos_sin_cache width (rope_dim), so it only supports full rotary.
+                # LLaDA2 uses partial rotary (rotary_dim < head_dim), which makes
+                # the kernel raise "shape '[t, kv_heads, rope_dim]' is invalid".
+                # Skip the fused kv store there; self.attn writes the kv cache.
                 if enable_fused_set_kv_buffer(forward_batch)
+                and self.rotary_dim == self.head_dim
                 else None
             ),
         )
