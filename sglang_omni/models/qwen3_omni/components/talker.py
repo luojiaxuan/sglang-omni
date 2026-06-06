@@ -1161,7 +1161,9 @@ class Qwen3OmniTalker(nn.Module):
             vocab_mask=None,
             apply_mask_func=None,
             penalizer_orchestrator=None,
-            acc_linear_penalties=None,
+            # Note:(Chenchen Hong) SGLang 0.5.12.post1 replaced the single
+            # acc_linear_penalties field with acc_additive_penalties /
+            # acc_scaling_penalties (both default None); leave them unset.
             has_custom_logit_processor=False,
             custom_params=None,
             custom_logit_processor=None,

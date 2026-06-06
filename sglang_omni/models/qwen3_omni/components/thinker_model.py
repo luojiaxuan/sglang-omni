@@ -263,6 +263,15 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         return None, forward_batch, inner_state
 
     def apply_qk_norm_rope(self, qkv, positions, forward_batch):
+        # Note:(Chenchen Hong) The talker reuses this attention with a plain
+        # (non-MRoPE) RotaryEmbedding, but SGLang 0.5.12.post1 still supplies
+        # MRoPE [3, seq] positions (including the dummy positions built during
+        # cuda-graph capture). A base RotaryEmbedding reads positions.size(0) as
+        # the token count, so [3, seq] makes it reshape into 3 "batches" and
+        # raises "shape '[3, -1, head_dim]' is invalid". Collapse to the temporal
+        # row (all MRoPE sections are equal for the talker's audio/text tokens).
+        if positions.dim() == 2 and not isinstance(self.rotary_emb, MRotaryEmbedding):
+            positions = positions[0]
         use_fused = self.use_fused_qk_norm_rope and qkv.dtype == torch.bfloat16
         if use_fused:
             theta = self.config.rope_theta
