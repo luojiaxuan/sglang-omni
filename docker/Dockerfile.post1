@@ -43,4 +43,13 @@ RUN cd /workspace/sglang-omni \
     && uv pip install -e . --system --break-system-packages \
     && python3 -c "import sglang_omni; print('sglang_omni import OK')"
 
+# The base image ships the CUDA-13 mooncake/nixl builds, but sglang-omni's
+# generic `mooncake-transfer-engine` / `nixl` requirements pull CUDA-12 wheels
+# that break `import mooncake` (libcudart.so.12) on this cu130 stack. Restore the
+# CUDA-13 variants so the Mooncake / NIXL relays keep working.
+RUN pip install --force-reinstall --no-deps --root-user-action=ignore \
+        mooncake-transfer-engine-cuda13==0.3.10.post2 \
+    && uv pip uninstall nixl-cu12 --system --break-system-packages \
+    && python3 -c "import mooncake, nixl; print('mooncake + nixl (cu13) OK')"
+
 WORKDIR /workspace/sglang-omni
