@@ -1,0 +1,46 @@
+# Post-bump development image: SGLang 0.5.12.post1 stack + UCX + sglang-omni deps.
+#
+# Mirrors docker/Dockerfile (the frankleeeee/sglang-omni:dev recipe) but rebases
+# onto the released 0.5.12.post1 runtime (torch 2.11.0+cu130 / transformers 5.6.0
+# / flashinfer 0.6.11.post1 / flash-attn-4 4.0.0b14 / nvidia-cutlass-dsl 4.5.1)
+# and installs the post1-aligned sglang-omni dependency set.
+#
+# Build:  docker build -f docker/Dockerfile.post1 -t <tag> .
+FROM lmsysorg/sglang:latest AS base
+
+# libtool is required by UCX autogen.sh but is absent from the base image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libtool libtool-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+# install UCX (RDMA/CMA transport backing the NIXL and Mooncake relays)
+RUN git clone https://github.com/openucx/ucx.git \
+    && cd ucx \
+    && git checkout v1.20.x \
+    && ./autogen.sh \
+    && ./contrib/configure-release-mt  \
+    --enable-shared                    \
+    --disable-static                   \
+    --disable-doxygen-doc              \
+    --enable-optimizations             \
+    --enable-cma                       \
+    --enable-devel-headers             \
+    --with-cuda=/usr/local/cuda        \
+    --with-verbs                       \
+    --with-dm                          \
+    --prefix=/usr/local                \
+    && make -j \
+    && make -j install-strip \
+    && ldconfig \
+    && cd / && rm -rf /ucx
+
+# install sglang-omni (editable) plus the post1-aligned dependency set.
+# uv honours the [tool.uv] protobuf override, so descript-audiotools' stale
+# protobuf<3.20 requirement does not downgrade the protobuf 6.x stack that
+# sglang 0.5.12.post1 depends on.
+COPY . /workspace/sglang-omni
+RUN cd /workspace/sglang-omni \
+    && uv pip install -e . --system --break-system-packages \
+    && python3 -c "import sglang_omni; print('sglang_omni import OK')"
+
+WORKDIR /workspace/sglang-omni

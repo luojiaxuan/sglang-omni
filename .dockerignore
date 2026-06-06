@@ -1,0 +1,10 @@
+.git
+**/__pycache__
+*.pyc
+.pytest_cache
+*.egg-info
+.humanize
+.venv
+*.log
+profiles_*
+bench_*/
