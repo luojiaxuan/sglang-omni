@@ -364,8 +364,16 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             fb,
             save_kv_cache=save_kv_cache,
         )
-        if attn_output.dtype != self.o_proj.weight.dtype:
-            attn_output = attn_output.to(dtype=self.o_proj.weight.dtype)
+        # Note:(Chenchen Hong) Align the attention output to the activation
+        # compute dtype (v.dtype, i.e. bf16/fp16), not o_proj.weight.dtype. For
+        # FP8 W8A8 linears the weight is stored as float8_e4m3fn, so casting to
+        # weight.dtype hands an fp8 activation to per_token_group_quant_fp8 —
+        # post1's sgl_kernel rejects that (failed to dispatch Float8_e4m3fn
+        # during talker graph capture). forward_prepare_native returns None in
+        # the hidden_states slot, so v (the projected value) is the available
+        # compute-dtype reference; the quant method quantizes the activation.
+        if attn_output.dtype != v.dtype:
+            attn_output = attn_output.to(dtype=v.dtype)
         output, _ = self.o_proj(attn_output)
         return output
 
