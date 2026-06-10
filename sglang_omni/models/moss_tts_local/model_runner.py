@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
 from sglang_omni.scheduling.types import RequestOutput
 
 
@@ -25,6 +26,9 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
+        # Legacy single-slot kept for backward-compat with tests that bypass
+        # _collect_frame and set these directly.  _collect_frame itself only
+        # writes the per-step journal; these are never set in production.
         self._pending_rows: torch.Tensor | None = None
         self._pending_embeds: torch.Tensor | None = None
 
@@ -94,7 +98,12 @@ class MossTTSLocalModelRunner(ModelRunner):
                 # stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
-                data.pending_feedback_queue.clear()
+                pool_row = self.model._state_pool.row_for(sched_req.request_id)
+                if pool_row is not None:
+                    self.model._state_pool._params_written_rids.discard(
+                        sched_req.request_id
+                    )
+                    self.model._state_pool.reset_row(pool_row)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(
@@ -126,30 +135,21 @@ class MossTTSLocalModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
-        embedding = self.model._decode_input_embedding
-        weight = embedding.weight
+        pool = self.model._state_pool
+        weight = self.model._decode_input_embedding.weight
         if forward_batch.input_ids.numel() < batch_size:
             raise RuntimeError(
                 "MOSS-TTS Local decode input_ids must contain one row id per request"
             )
-        if batch_size > int(weight.shape[0]):
+        if batch_size > pool.padding_row:
             raise RuntimeError(
                 "MOSS-TTS Local decode batch exceeds the staged decode-embedding "
-                f"rows ({batch_size} > {int(weight.shape[0])})"
+                f"rows ({batch_size} > {pool.padding_row})"
             )
-        rows = []
-        for sched_req in requests:
-            queue = sched_req.data.pending_feedback_queue
-            if not queue:
-                rows.append(torch.zeros(self.model.hidden_size, device=weight.device))
-                continue
-            if hasattr(queue, "popleft"):
-                rows.append(queue.popleft())
-            else:
-                rows.append(queue.pop(0))
-        stacked = torch.stack(rows, dim=0).to(device=weight.device, dtype=weight.dtype)
+        pool_rows = [pool.acquire_row(sched_req.request_id) for sched_req in requests]
+        row_tensor = torch.tensor(pool_rows, dtype=torch.long, device=weight.device)
         with torch.no_grad():
-            weight[:batch_size].copy_(stacked)
+            weight[:batch_size].copy_(pool.feedback_embeds[row_tensor])
 
         row_ids = torch.arange(
             batch_size,
@@ -178,62 +178,29 @@ class MossTTSLocalModelRunner(ModelRunner):
 
         cfg = self.model.config
         device = hidden_states.device
+        pool = self.model._state_pool
+        pool_rows = []
+        for sched_req in requests:
+            rid = sched_req.request_id
+            row = self.model.acquire_row(rid)
+            pool_rows.append(row)
+            if rid not in pool._params_written_rids:
+                pool.write_params(row, sched_req.data)
+                pool._params_written_rids.add(rid)
         datas = [sched_req.data for sched_req in requests]
         batch_size = len(datas)
         num_channels = int(cfg.n_vq) + 1
 
-        # Assign each request its decode-state pool row on first collect
-        # (idempotent by rid); the row stays stable across retraction/resume
-        # and is recycled only when the request finishes or aborts.
-        for sched_req in requests:
-            self.model.acquire_row(sched_req.request_id)
-
-        # The static per-request sampling parameters only change with batch
-        # composition, so rebuild them once per composition; gen_steps moves
-        # every step and is rebuilt each time.
-        cache_key = tuple(sched_req.request_id for sched_req in requests)
-        cached = getattr(self, "_param_cache", None)
-        if cached is None or cached[0] != cache_key:
-            params = {
-                "text_temp": torch.tensor(
-                    [float(d.text_temperature) for d in datas],
-                    dtype=torch.float32,
-                    device=device,
-                ),
-                "text_top_p": torch.tensor(
-                    [float(d.text_top_p) for d in datas],
-                    dtype=torch.float32,
-                    device=device,
-                ),
-                "text_top_k": torch.tensor(
-                    [int(d.text_top_k) for d in datas],
-                    dtype=torch.long,
-                    device=device,
-                ),
-                "audio_temp": torch.tensor(
-                    [float(d.audio_temperature) for d in datas],
-                    dtype=torch.float32,
-                    device=device,
-                ),
-                "audio_top_p": torch.tensor(
-                    [float(d.audio_top_p) for d in datas],
-                    dtype=torch.float32,
-                    device=device,
-                ),
-                "audio_top_k": torch.tensor(
-                    [int(d.audio_top_k) for d in datas],
-                    dtype=torch.long,
-                    device=device,
-                ),
-                "seeds": torch.tensor(
-                    [int(d.sampling_seed) for d in datas],
-                    dtype=torch.long,
-                    device=device,
-                ),
-            }
-            self._param_cache = (cache_key, params)
-        else:
-            params = cached[1]
+        row_t = torch.tensor(pool_rows, dtype=torch.long, device=device)
+        params = {
+            "text_temp": pool.text_temp[row_t],
+            "text_top_p": pool.text_top_p[row_t],
+            "text_top_k": pool.text_top_k[row_t],
+            "audio_temp": pool.audio_temp[row_t],
+            "audio_top_p": pool.audio_top_p[row_t],
+            "audio_top_k": pool.audio_top_k[row_t],
+            "seeds": pool.seeds[row_t],
+        }
         text_temp = params["text_temp"]
         text_top_p = params["text_top_p"]
         text_top_k = params["text_top_k"]
@@ -317,8 +284,18 @@ class MossTTSLocalModelRunner(ModelRunner):
             embeds = self.model._prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
-        self._pending_rows = rows
-        self._pending_embeds = embeds.detach()
+        row_t = torch.tensor(
+            pool_rows, dtype=torch.long, device=pool.feedback_embeds.device
+        )
+        pool.feedback_embeds[row_t] = embeds.detach().to(
+            device=pool.feedback_embeds.device,
+            dtype=pool.feedback_embeds.dtype,
+        )
+        result.moss_journal = MossTTSLocalDecodeJournal(
+            rids=[sched_req.request_id for sched_req in requests],
+            pool_rows=pool_rows,
+            rows=rows,
+        )
 
     @staticmethod
     def _row_radix_token_ids(
@@ -401,25 +378,27 @@ class MossTTSLocalModelRunner(ModelRunner):
         scheduler_output: Any,
         outputs: dict[str, RequestOutput],
     ) -> None:
-        del result
-        rows = self._pending_rows
-        embeds = self._pending_embeds
-        self._pending_rows = None
-        self._pending_embeds = None
-        if rows is None or embeds is None:
-            return
+        journal = getattr(result, "moss_journal", None) if result is not None else None
+        if journal is None:
+            # Fallback: tests that bypass _collect_frame set _pending_rows directly.
+            rows = self._pending_rows
+            self._pending_rows = None
+            self._pending_embeds = None
+            if rows is None:
+                return
+            rids = [r.request_id for r in scheduler_output.requests]
+            journal = MossTTSLocalDecodeJournal(rids=rids, pool_rows=[], rows=rows)
 
         end_id = int(self.model.config.audio_end_token_id)
-        # rows/embeds are step-private tensors (the graph outputs were
-        # snapshotted in _collect_frame), so per-request views are stable.
-        for row_idx, sched_req in enumerate(scheduler_output.requests):
+        for i, sched_req in enumerate(scheduler_output.requests):
+            assert journal.rids[i] == sched_req.request_id, (
+                "journal/batch alignment broken: "
+                f"{journal.rids[i]} != {sched_req.request_id}"
+            )
             req = sched_req.data.req
             if req is not None and getattr(req, "is_chunked", 0) > 0:
-                # Mid-prefill chunk: feedback/rows not yet valid, skip.
                 continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
-                # Stop decision: no frame is emitted alongside audio_end.
                 continue
-            sched_req.data.output_rows.append(rows[row_idx])
-            sched_req.data.pending_feedback_queue.append(embeds[row_idx])
+            sched_req.data.output_rows.append(journal.rows[i])

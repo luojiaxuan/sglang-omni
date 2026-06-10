@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import torch
 
+from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 from sglang_omni.models.moss_tts_local.state_pool import (
     MossTTSLocalDecodeJournal,
     MossTTSLocalDecodeStatePool,
@@ -169,3 +170,117 @@ def test_journal_holds_fields():
     assert journal.rids == ["a", "b"]
     assert journal.pool_rows == [0, 1]
     assert torch.equal(journal.rows, rows)
+
+
+def test_feedback_gather_equals_old_popleft():
+    model = _model(max_running_requests=4)
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    rows = [pool.acquire_row("a"), pool.acquire_row("b")]
+    expected = torch.stack(
+        [
+            torch.arange(_HIDDEN, dtype=torch.bfloat16),
+            torch.arange(_HIDDEN, dtype=torch.bfloat16) + 10,
+        ],
+        dim=0,
+    )
+    pool.feedback_embeds[torch.tensor(rows, dtype=torch.long)] = expected
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    forward_batch = SimpleNamespace(input_ids=torch.full((2,), -1, dtype=torch.long))
+    requests = [
+        SimpleNamespace(request_id="a", data=SimpleNamespace()),
+        SimpleNamespace(request_id="b", data=SimpleNamespace()),
+    ]
+
+    runner._write_decode_input_embedding(forward_batch, requests)
+
+    assert torch.equal(model._decode_input_embedding.weight[:2], expected)
+    assert torch.equal(forward_batch.input_ids, torch.tensor([0, 1]))
+
+
+def test_fresh_row_zeros_feedback():
+    model = _model(max_running_requests=2)
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    forward_batch = SimpleNamespace(input_ids=torch.full((1,), -1, dtype=torch.long))
+    requests = [SimpleNamespace(request_id="fresh", data=SimpleNamespace())]
+
+    runner._write_decode_input_embedding(forward_batch, requests)
+
+    assert torch.equal(
+        model._decode_input_embedding.weight[:1],
+        torch.zeros((1, _HIDDEN), dtype=torch.bfloat16),
+    )
+
+
+def test_double_collect_overwrites_feedback():
+    hidden_size = 4
+    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+    embedding = SimpleNamespace(weight=weight)
+    model = SimpleNamespace(
+        _decode_input_embedding=embedding,
+        _state_pool=None,
+        config=SimpleNamespace(
+            n_vq=12,
+            audio_assistant_slot_token_id=1000,
+            audio_end_token_id=1001,
+        ),
+        frame_graph_max_bs=0,
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    model.acquire_row = pool.acquire_row
+    embeds = [
+        torch.full((1, hidden_size), 1, dtype=torch.bfloat16),
+        torch.full((1, hidden_size), 2, dtype=torch.bfloat16),
+    ]
+
+    def decode_frame(hidden_states, *, sample_text, sample_audio):
+        del hidden_states, sample_text, sample_audio
+        return (
+            torch.zeros(1, dtype=torch.long),
+            torch.full((1, 12), 7, dtype=torch.long),
+        )
+
+    def prepare_multi_modal_inputs(rows):
+        del rows
+        return embeds.pop(0)
+
+    model.decode_frame = decode_frame
+    model._prepare_multi_modal_inputs = prepare_multi_modal_inputs
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    data = SimpleNamespace(
+        text_temperature=1.0,
+        text_top_p=1.0,
+        text_top_k=50,
+        audio_temperature=1.0,
+        audio_top_p=1.0,
+        audio_top_k=50,
+        sampling_seed=0,
+        generation_steps=0,
+        audio_repetition_penalty=1.0,
+        output_rows=[],
+    )
+    request = SimpleNamespace(request_id="rid", data=data)
+
+    for _ in range(2):
+        result = SimpleNamespace(
+            logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
+        )
+        schedule_batch = SimpleNamespace()
+        runner._collect_frame(result, None, schedule_batch, [request])
+
+    row = pool.row_for("rid")
+    assert row is not None
+    assert torch.equal(
+        pool.feedback_embeds[row],
+        torch.full((hidden_size,), 2, dtype=torch.bfloat16),
+    )
+

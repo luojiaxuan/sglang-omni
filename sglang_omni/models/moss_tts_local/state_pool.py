@@ -3,9 +3,7 @@
 
 Next-step-critical per-request decode state (the next frame's feedback
 embedding and the request-static sampling parameters/seed) lives in stable,
-process-lifetime GPU buffers indexed by a per-request row, replacing the
-request-local Python objects (``pending_feedback_queue``, ``_param_cache``)
-that the previous design carried on each scheduler request. Output-only frame
+process-lifetime GPU buffers indexed by a per-request row. Output-only frame
 collection moves to a per-step :class:`MossTTSLocalDecodeJournal`.
 
 The layout mirrors the Higgs ``HiggsBatchedSamplerState`` row pool and the
@@ -72,6 +70,7 @@ class MossTTSLocalDecodeStatePool:
         self.seeds = torch.zeros(self.num_rows, device=self.device, dtype=torch.int64)
 
         self._rid_to_row: dict[str, int] = {}
+        self._params_written_rids: set[str] = set()
         # Real rows 0..P-2 are assignable; the padding row stays out of the
         # free list so it is never handed to a request.
         self._free_rows: list[int] = list(range(self.padding_row))
@@ -100,6 +99,7 @@ class MossTTSLocalDecodeStatePool:
         row_idx = self._rid_to_row.pop(rid, None)
         if row_idx is None:
             return
+        self._params_written_rids.discard(rid)
         self.reset_row(row_idx)
         self._free_rows.append(row_idx)
 
