@@ -643,3 +643,59 @@ def test_encode_audio_stereo_wav_and_mono_fallback():
         np.ones(64, dtype=np.float32) * 0.1, response_format="wav", sample_rate=48000
     )
     assert struct.unpack("<H", mono_blob[22:24])[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# is_chunked guard in post_process_outputs (bugfix)
+# ---------------------------------------------------------------------------
+
+
+def test_post_process_outputs_skips_chunked_rows():
+    """Chunked-prefill rows must not be appended to output_rows."""
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
+    batch_size = 2
+
+    # Minimal model stub providing only what post_process_outputs needs.
+    model_stub = types.SimpleNamespace(
+        config=types.SimpleNamespace(audio_end_token_id=151670)
+    )
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = model_stub
+
+    # Two rows: row 0 is chunked (mid-prefill), row 1 is normal.
+    rows = torch.arange(batch_size * (N_VQ + 1), dtype=torch.long).reshape(
+        batch_size, N_VQ + 1
+    )
+    embeds = torch.zeros(batch_size, 64, dtype=torch.float32)
+    runner._pending_rows = rows
+    runner._pending_embeds = embeds
+
+    # Build minimal sched_req stubs.
+    def _req(is_chunked):
+        return types.SimpleNamespace(is_chunked=is_chunked)
+
+    def _sched_req(rid, is_chunked):
+        data = types.SimpleNamespace(
+            req=_req(is_chunked),
+            output_rows=[],
+            pending_feedback_queue=[],
+        )
+        return types.SimpleNamespace(request_id=rid, data=data)
+
+    req_a = _sched_req("r0", is_chunked=1)  # mid-prefill chunk, must be skipped
+    req_b = _sched_req("r1", is_chunked=0)  # normal decode row
+
+    sched_output = types.SimpleNamespace(requests=[req_a, req_b])
+    outputs = {
+        "r0": types.SimpleNamespace(data=1000),  # non-end token
+        "r1": types.SimpleNamespace(data=1001),  # non-end token
+    }
+
+    runner.post_process_outputs(None, sched_output, outputs)
+
+    assert req_a.data.output_rows == [], "chunked row must not be appended"
+    assert len(req_b.data.output_rows) == 1, "normal row must be appended"

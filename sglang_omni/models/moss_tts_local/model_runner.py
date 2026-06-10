@@ -407,6 +407,10 @@ class MossTTSLocalModelRunner(ModelRunner):
         # rows/embeds are step-private tensors (the graph outputs were
         # snapshotted in _collect_frame), so per-request views are stable.
         for row_idx, sched_req in enumerate(scheduler_output.requests):
+            req = sched_req.data.req
+            if req is not None and getattr(req, "is_chunked", 0) > 0:
+                # Mid-prefill chunk: feedback/rows not yet valid, skip.
+                continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
                 # Stop decision: no frame is emitted alongside audio_end.
