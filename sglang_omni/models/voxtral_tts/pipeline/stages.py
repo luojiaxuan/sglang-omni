@@ -153,6 +153,28 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 # ---- Generation ----
 
 
+def _enable_inductor_gemm_autotune() -> None:
+    # Note:(Chenchen Hong) On the torch 2.11 / CUDA 13 stack inductor's default
+    # GEMM lowering routes the compiled acoustic-transformer matmuls onto
+    # split-K cuBLAS (nvjet) kernels ~14% slower than the triton templates the
+    # pre-bump (torch 2.9) inductor selected, costing ~8% RTF. Per-shape GEMM
+    # autotuning makes inductor benchmark triton vs aten and keep the fastest,
+    # recovering the throughput. Scoped to the Voxtral generation process; the
+    # only cost is a little extra one-time autotune at startup.
+    try:
+        from torch._inductor import config as inductor_config
+    except Exception:
+        return
+    if hasattr(inductor_config, "max_autotune_gemm"):
+        inductor_config.max_autotune_gemm = True
+    if hasattr(inductor_config, "max_autotune_gemm_backends"):
+        inductor_config.max_autotune_gemm_backends = "TRITON,ATEN"
+    logger.info(
+        "Voxtral: enabled inductor per-shape GEMM autotuning (TRITON,ATEN); "
+        "adds one-time startup autotune cost."
+    )
+
+
 def create_generation_executor(
     model_path: str,
     *,
@@ -192,6 +214,9 @@ def create_generation_executor(
         sampling_backend="pytorch",
         torch_compile_max_bs=16,
     )
+
+    if getattr(server_args, "enable_torch_compile", False):
+        _enable_inductor_gemm_autotune()
 
     want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
     if want_cuda_graph:
