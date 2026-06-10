@@ -284,3 +284,70 @@ def test_double_collect_overwrites_feedback():
         torch.full((hidden_size,), 2, dtype=torch.bfloat16),
     )
 
+
+def test_journal_rid_assertion_fires():
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))
+    journal = MossTTSLocalDecodeJournal(
+        rids=["other"],
+        pool_rows=[0],
+        rows=torch.zeros((1, 13), dtype=torch.long),
+    )
+    result = SimpleNamespace(moss_journal=journal)
+    sched_req = SimpleNamespace(
+        request_id="rid",
+        data=SimpleNamespace(req=None, output_rows=[]),
+    )
+    scheduler_output = SimpleNamespace(requests=[sched_req])
+    outputs = {"rid": SimpleNamespace(data=1000)}
+
+    try:
+        runner.post_process_outputs(result, scheduler_output, outputs)
+    except AssertionError as exc:
+        assert "journal/batch alignment broken" in str(exc)
+    else:
+        raise AssertionError("expected journal rid mismatch to assert")
+
+
+def test_stop_row_not_appended_via_journal():
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))
+    row = torch.arange(13, dtype=torch.long)
+    result = SimpleNamespace(
+        moss_journal=MossTTSLocalDecodeJournal(
+            rids=["rid"],
+            pool_rows=[0],
+            rows=row.reshape(1, 13),
+        )
+    )
+    data = SimpleNamespace(req=None, output_rows=[])
+    sched_req = SimpleNamespace(request_id="rid", data=data)
+    scheduler_output = SimpleNamespace(requests=[sched_req])
+    outputs = {"rid": SimpleNamespace(data=1001)}
+
+    runner.post_process_outputs(result, scheduler_output, outputs)
+
+    assert data.output_rows == []
+
+
+def test_journal_rows_appended_to_output_rows():
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))
+    row = torch.arange(13, dtype=torch.long)
+    result = SimpleNamespace(
+        moss_journal=MossTTSLocalDecodeJournal(
+            rids=["rid"],
+            pool_rows=[0],
+            rows=row.reshape(1, 13),
+        )
+    )
+    data = SimpleNamespace(req=None, output_rows=[])
+    sched_req = SimpleNamespace(request_id="rid", data=data)
+    scheduler_output = SimpleNamespace(requests=[sched_req])
+    outputs = {"rid": SimpleNamespace(data=1000)}
+
+    runner.post_process_outputs(result, scheduler_output, outputs)
+
+    assert len(data.output_rows) == 1
+    assert torch.equal(data.output_rows[0], row)
+
