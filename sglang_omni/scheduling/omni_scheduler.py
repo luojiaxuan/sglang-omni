@@ -623,8 +623,9 @@ class OmniScheduler:
             # forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL gate
             # (``forward_ct % INTERVAL == 0``) fires every decode step. The
             # fallback branch below reaches upstream run_batch, which counts
-            # itself, so we only count the custom-runner path here.
-            self.forward_ct += 1
+            # itself, so we only count the custom-runner path here. (getattr:
+            # __init__ sets forward_ct, but object.__new__ test fixtures don't.)
+            self.forward_ct = getattr(self, "forward_ct", 0) + 1
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
             self._emit_stream_output(sched_output, mr_output)
@@ -692,7 +693,7 @@ class OmniScheduler:
         self._emit_prefill_start_for_batch(batch)
         # One forward per launch; mirror upstream run_batch's per-forward
         # counter (the matching resolve does no forward, so it must not count).
-        self.forward_ct += 1
+        self.forward_ct = getattr(self, "forward_ct", 0) + 1
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
