@@ -182,6 +182,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         batch_size = len(datas)
         num_channels = int(cfg.n_vq) + 1
 
+        # Assign each request its decode-state pool row on first collect
+        # (idempotent by rid); the row stays stable across retraction/resume
+        # and is recycled only when the request finishes or aborts.
+        for sched_req in requests:
+            self.model.acquire_row(sched_req.request_id)
+
         # The static per-request sampling parameters only change with batch
         # composition, so rebuild them once per composition; gen_steps moves
         # every step and is rebuilt each time.

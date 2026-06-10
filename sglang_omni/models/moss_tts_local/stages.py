@@ -344,6 +344,13 @@ def create_sglang_tts_engine_executor(
         model=model
     )
 
+    def abort_request(request_id: str) -> None:
+        # An aborted request may be mid-preprocessing (drop its prepared
+        # handoff) and/or hold a decode-state pool row (release it); both
+        # legs are idempotent no-ops when the request never reached them.
+        cleanup_prepared_moss_tts_local_request(request_id)
+        model.reset_request(request_id)
+
     return OmniScheduler(
         tp_worker=model_worker,
         tree_cache=tree_cache,
@@ -356,7 +363,7 @@ def create_sglang_tts_engine_executor(
         model_runner=MossTTSLocalModelRunner(model_worker, output_proc),
         request_builder=request_builder,
         result_adapter=result_adapter,
-        abort_callback=cleanup_prepared_moss_tts_local_request,
+        abort_callback=abort_request,
     )
 
 
