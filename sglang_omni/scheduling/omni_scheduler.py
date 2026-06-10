@@ -1014,8 +1014,19 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        pre_finished = [r.finished() for r in batch.reqs]
-        # rids finished in a PRIOR step (overrun) — suppress their stream emit
+        # A request RETRACTED at step S (KV freed, moved back to the waiting
+        # queue) is still present in step S+1's already-launched lagged batch.
+        # Upstream process_batch_result would append + check_finished and, if the
+        # lagged frame triggers a finish, re-free its already-freed KV — the
+        # enable_overlap guard upstream that would skip it is off in this stack.
+        # So treat a retracted req exactly like a prior-step finish: drop it from
+        # this resolve batch (suppress stream emit + exclude from keep) so
+        # process_batch_result never touches it.
+        pre_finished = [
+            r.finished() or bool(getattr(r, "is_retracted", False))
+            for r in batch.reqs
+        ]
+        # rids finished/retracted in a PRIOR step (overrun) — suppress their emit
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids

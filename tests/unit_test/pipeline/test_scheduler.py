@@ -300,6 +300,38 @@ def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
 
 
+def test_omni_scheduler_resolve_drops_retracted_req() -> None:
+    """A request retracted (KV freed, back to waiting) while its lagged async
+    step was in flight must be dropped from the resolve batch — skip_rids plus
+    excluded from process_batch_result and next_token_ids — so upstream never
+    re-frees its already-freed KV (the double-free assertion). Shared crash-fix
+    for the async resolve path used by Higgs and MOSS-TTS-Local.
+    """
+    captured: dict = {}
+
+    def fake_resolve(batch, sched_output, pending_step, skip_rids=None):
+        captured["skip_rids"] = skip_rids
+        return SimpleNamespace(next_token_ids=torch.tensor([10, 20], dtype=torch.long))
+
+    def fake_process(batch, result):
+        captured["reqs"] = [r.rid for r in batch.reqs]
+        captured["ntids"] = result.next_token_ids.tolist()
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._run_batch_resolve = fake_resolve
+    scheduler.process_batch_result = fake_process
+
+    keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
+    retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
+    batch = SimpleNamespace(reqs=[keep, retr])
+
+    scheduler._resolve_and_process(batch, object(), object())
+
+    assert captured["skip_rids"] == {"retr"}
+    assert captured["reqs"] == ["keep"]
+    assert captured["ntids"] == [10]  # retracted row trimmed from next_token_ids
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:

@@ -187,10 +187,15 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
+        # finished() covers the overrun finish; is_retracted covers a request
+        # retracted (KV freed) while its lagged step was in flight — both must be
+        # skipped so _finalize neither re-emits nor re-frees them (mirrors the
+        # scheduler-side drop in _resolve_and_process).
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
             if req.data.req.finished()
+            or bool(getattr(req.data.req, "is_retracted", False))
         }
         self.post_decode_resolve(
             pending.host_buf,

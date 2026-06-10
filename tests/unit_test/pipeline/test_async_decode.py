@@ -187,6 +187,38 @@ def test_resolve_recomputes_finished_overrun_skip_rids():
     assert r.last_skip_rids == {"skip"}
 
 
+def test_resolve_skips_retracted_row():
+    """A request retracted (KV freed, returned to waiting) while its lagged step
+    was in flight must be skipped at resolve, exactly like a prior-step finish.
+
+    This guards the shared async-resolve path (Higgs and MOSS-TTS-Local both use
+    base ModelRunner.execute_resolve): without overlap, upstream would otherwise
+    append + check_finished the retracted req and re-free its already-freed KV
+    (a double-free assertion). Crash-fix only; faithful frame accounting for a
+    retracted req is out of scope here.
+    """
+    r = _StubRunner()
+    keep_req = types.SimpleNamespace(finished=lambda: False, is_retracted=False)
+    retracted_req = types.SimpleNamespace(finished=lambda: False, is_retracted=True)
+    sched_output = types.SimpleNamespace(
+        requests=[
+            types.SimpleNamespace(
+                request_id="keep",
+                data=types.SimpleNamespace(req=keep_req),
+            ),
+            types.SimpleNamespace(
+                request_id="retracted",
+                data=types.SimpleNamespace(req=retracted_req),
+            ),
+        ],
+        batch_data=object(),
+    )
+    with _patch_event(ready=True):
+        step = r.execute_launch(sched_output)
+        r.execute_resolve(step)
+    assert r.last_skip_rids == {"retracted"}
+
+
 def test_finalize_skips_overrun_bookkeeping_and_extras():
     class _OutputProcessor:
         def process(self, batch_result, scheduler_output):
