@@ -656,6 +656,9 @@ def test_post_process_outputs_skips_chunked_rows():
     import types
 
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import (
+        MossTTSLocalDecodeJournal,
+    )
 
     batch_size = 2
 
@@ -670,20 +673,13 @@ def test_post_process_outputs_skips_chunked_rows():
     rows = torch.arange(batch_size * (N_VQ + 1), dtype=torch.long).reshape(
         batch_size, N_VQ + 1
     )
-    embeds = torch.zeros(batch_size, 64, dtype=torch.float32)
-    runner._pending_rows = rows
-    runner._pending_embeds = embeds
 
     # Build minimal sched_req stubs.
     def _req(is_chunked):
         return types.SimpleNamespace(is_chunked=is_chunked)
 
     def _sched_req(rid, is_chunked):
-        data = types.SimpleNamespace(
-            req=_req(is_chunked),
-            output_rows=[],
-            pending_feedback_queue=[],
-        )
+        data = types.SimpleNamespace(req=_req(is_chunked), output_rows=[])
         return types.SimpleNamespace(request_id=rid, data=data)
 
     req_a = _sched_req("r0", is_chunked=1)  # mid-prefill chunk, must be skipped
@@ -695,7 +691,13 @@ def test_post_process_outputs_skips_chunked_rows():
         "r1": types.SimpleNamespace(data=1001),  # non-end token
     }
 
-    runner.post_process_outputs(None, sched_output, outputs)
+    # Output collection goes solely through the per-step journal.
+    result = types.SimpleNamespace(
+        moss_journal=MossTTSLocalDecodeJournal(
+            rids=["r0", "r1"], pool_rows=[0, 1], rows=rows
+        )
+    )
+    runner.post_process_outputs(result, sched_output, outputs)
 
     assert req_a.data.output_rows == [], "chunked row must not be appended"
     assert len(req_b.data.output_rows) == 1, "normal row must be appended"

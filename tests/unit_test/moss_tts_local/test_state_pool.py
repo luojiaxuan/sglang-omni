@@ -285,6 +285,49 @@ def test_double_collect_overwrites_feedback():
     )
 
 
+def test_resume_reprefill_overwrites_stranded_feedback():
+    """Retraction resume wipes the stranded feedback row and forces a param
+    re-write — the pool-row replacement for the old
+    ``pending_feedback_queue.clear()``. Drives the retraction branch of
+    ``_build_prefill_input_embeds`` (the only path that resets a live row).
+    """
+    model = _model(max_running_requests=4)
+    model.hidden_size = _HIDDEN
+    model.dtype = torch.bfloat16
+    model._prepare_multi_modal_inputs = lambda rows: torch.zeros(
+        (rows.shape[0], _HIDDEN), dtype=torch.bfloat16
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+
+    row = pool.acquire_row("a")
+    pool.write_params(row, _params(seed=1))
+    pool._params_written_rids.add("a")
+    # Feedback stranded by the retraction (must be wiped by the resume).
+    pool.feedback_embeds[row].fill_(5.0)
+
+    # prompt_rows (2 frames) + already-generated output_rows (3 frames); the
+    # resume re-prefills the whole span, so extend_input_len = 2 + 3.
+    width = 13
+    prompt_rows = torch.zeros((2, width), dtype=torch.long)
+    generated = [torch.zeros(width, dtype=torch.long) for _ in range(3)]
+    data = SimpleNamespace(
+        req=SimpleNamespace(extend_input_len=5, prefix_indices=[], rid="a"),
+        prompt_rows=prompt_rows,
+        output_rows=generated,
+    )
+    sched_req = SimpleNamespace(request_id="a", data=data)
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
+
+    runner._build_prefill_input_embeds(forward_batch, [sched_req])
+
+    assert torch.all(pool.feedback_embeds[row] == 0), "stranded feedback must be wiped"
+    assert "a" not in pool._params_written_rids, "params must be re-written on resume"
+
+
 def test_journal_rid_assertion_fires():
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))
@@ -303,10 +346,10 @@ def test_journal_rid_assertion_fires():
 
     try:
         runner.post_process_outputs(result, scheduler_output, outputs)
-    except AssertionError as exc:
+    except RuntimeError as exc:
         assert "journal/batch alignment broken" in str(exc)
     else:
-        raise AssertionError("expected journal rid mismatch to assert")
+        raise AssertionError("expected journal rid mismatch to raise")
 
 
 def test_stop_row_not_appended_via_journal():

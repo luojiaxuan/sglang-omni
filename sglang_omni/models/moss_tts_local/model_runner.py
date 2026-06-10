@@ -26,11 +26,6 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        # Legacy single-slot kept for backward-compat with tests that bypass
-        # _collect_frame and set these directly.  _collect_frame itself only
-        # writes the per-step journal; these are never set in production.
-        self._pending_rows: torch.Tensor | None = None
-        self._pending_embeds: torch.Tensor | None = None
 
     def custom_prefill_forward(
         self,
@@ -378,23 +373,25 @@ class MossTTSLocalModelRunner(ModelRunner):
         scheduler_output: Any,
         outputs: dict[str, RequestOutput],
     ) -> None:
-        journal = getattr(result, "moss_journal", None) if result is not None else None
+        # The per-step journal is the single source of truth for output
+        # collection. A missing journal means no frame was produced this step
+        # (e.g. a prefill-only batch), which is the synchronous-baseline early
+        # return.
+        journal = getattr(result, "moss_journal", None)
         if journal is None:
-            # Fallback: tests that bypass _collect_frame set _pending_rows directly.
-            rows = self._pending_rows
-            self._pending_rows = None
-            self._pending_embeds = None
-            if rows is None:
-                return
-            rids = [r.request_id for r in scheduler_output.requests]
-            journal = MossTTSLocalDecodeJournal(rids=rids, pool_rows=[], rows=rows)
+            return
 
         end_id = int(self.model.config.audio_end_token_id)
         for i, sched_req in enumerate(scheduler_output.requests):
-            assert journal.rids[i] == sched_req.request_id, (
-                "journal/batch alignment broken: "
-                f"{journal.rids[i]} != {sched_req.request_id}"
-            )
+            # Alignment tripwire: a raise (not a bare assert) so it survives
+            # python -O and matches the model package's raise convention; the
+            # journal is built from this same requests list, so misalignment
+            # only ever surfaces a real bug, never silent frame corruption.
+            if journal.rids[i] != sched_req.request_id:
+                raise RuntimeError(
+                    "MOSS-TTS Local journal/batch alignment broken: "
+                    f"{journal.rids[i]} != {sched_req.request_id}"
+                )
             req = sched_req.data.req
             if req is not None and getattr(req, "is_chunked", 0) > 0:
                 continue
