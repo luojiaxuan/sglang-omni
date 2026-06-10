@@ -351,3 +351,50 @@ def test_journal_rows_appended_to_output_rows():
     assert len(data.output_rows) == 1
     assert torch.equal(data.output_rows[0], row)
 
+
+def test_param_gather_matches_old_cache():
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
+    data = _params(seed=12345)
+    row = pool.acquire_row("rid")
+    pool.write_params(row, data)
+    row_t = torch.tensor([row], dtype=torch.long, device=pool.device)
+
+    params = {
+        "text_temp": pool.text_temp[row_t],
+        "text_top_p": pool.text_top_p[row_t],
+        "text_top_k": pool.text_top_k[row_t],
+        "audio_temp": pool.audio_temp[row_t],
+        "audio_top_p": pool.audio_top_p[row_t],
+        "audio_top_k": pool.audio_top_k[row_t],
+        "seeds": pool.seeds[row_t],
+    }
+
+    assert torch.equal(
+        params["text_temp"],
+        torch.tensor([float(data.text_temperature)], dtype=torch.float32),
+    )
+    assert torch.equal(
+        params["text_top_p"],
+        torch.tensor([float(data.text_top_p)], dtype=torch.float32),
+    )
+    assert torch.equal(
+        params["text_top_k"],
+        torch.tensor([int(data.text_top_k)], dtype=torch.long),
+    )
+    assert torch.equal(
+        params["audio_temp"],
+        torch.tensor([float(data.audio_temperature)], dtype=torch.float32),
+    )
+    assert torch.equal(
+        params["audio_top_p"],
+        torch.tensor([float(data.audio_top_p)], dtype=torch.float32),
+    )
+    assert torch.equal(
+        params["audio_top_k"],
+        torch.tensor([int(data.audio_top_k)], dtype=torch.long),
+    )
+    assert torch.equal(
+        params["seeds"],
+        torch.tensor([int(data.sampling_seed)], dtype=torch.long),
+    )
+
