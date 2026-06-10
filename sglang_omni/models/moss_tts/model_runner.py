@@ -481,7 +481,7 @@ class MossTTSModelRunner(ModelRunner):
         seeds: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        """CPU fallback for SGLang's Triton-backed deterministic sampler."""
+        """CPU-only seeded fallback; approximates the GPU sampler (not bit-exact)."""
         sampled = torch.empty(probs.shape[0], dtype=torch.long, device=probs.device)
         for row_idx in range(probs.shape[0]):
             row = probs[row_idx]
