@@ -266,6 +266,40 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
     assert batch.input_ids.tolist() == [11, 12]
 
 
+def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
+    """OmniScheduler overrides upstream run_batch, so it must count forwards
+    itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
+    gate (``forward_ct % INTERVAL == 0``) fires every step. One forward per
+    sync run_batch and per async launch; resolve does no forward.
+    """
+
+    class FakeModelRunner:
+        def execute(self, sched_output):
+            sched_output.batch_data.output_ids = torch.tensor([1], dtype=torch.int32)
+            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+
+        def execute_launch(self, sched_output):
+            return SimpleNamespace()
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = FakeModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler._prefill_start_done = set()
+    scheduler.forward_ct = 0
+
+    def _batch():
+        return SimpleNamespace(
+            reqs=[SimpleNamespace(rid="r", _omni_data=SimpleNamespace())],
+            output_ids=None,
+        )
+
+    scheduler._run_batch(_batch())
+    assert scheduler.forward_ct == 1, "sync run_batch must advance forward_ct"
+
+    scheduler._run_batch_launch(_batch())
+    assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:

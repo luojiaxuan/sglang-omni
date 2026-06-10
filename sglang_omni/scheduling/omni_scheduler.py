@@ -617,6 +617,14 @@ class OmniScheduler:
         """
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
+            # Mirror upstream run_batch's per-forward counter. OmniScheduler
+            # overrides run_batch, so upstream's ``self.forward_ct += 1``
+            # (scheduler.py run_batch) never runs on this path; without it
+            # forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL gate
+            # (``forward_ct % INTERVAL == 0``) fires every decode step. The
+            # fallback branch below reaches upstream run_batch, which counts
+            # itself, so we only count the custom-runner path here.
+            self.forward_ct += 1
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
             self._emit_stream_output(sched_output, mr_output)
@@ -682,6 +690,9 @@ class OmniScheduler:
         Returns ``(sched_output, pending_step)``; the caller holds the pending
         step (launch-first keeps two steps momentarily in flight)."""
         self._emit_prefill_start_for_batch(batch)
+        # One forward per launch; mirror upstream run_batch's per-forward
+        # counter (the matching resolve does no forward, so it must not count).
+        self.forward_ct += 1
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
