@@ -14,8 +14,14 @@ logger = logging.getLogger(__name__)
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
-_HIGGS_ASYNC_DECODE_FACTORY = (
-    "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
+# Engine-stage factories whose runner implements the async-decode lookahead
+# (post_decode_launch / post_decode_resolve). Set-ized so the --async-decode
+# CLI gate admits more than one model (#695 form).
+_ASYNC_DECODE_FACTORIES = frozenset(
+    {
+        "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+    }
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -694,7 +700,7 @@ def _apply_stage_factory_args_override(
     stage_name: str,
     updates: dict[str, object],
     reason: str,
-    supported_factory: str | None = None,
+    supported_factories: frozenset[str] | None = None,
     flag_name: str | None = None,
 ) -> None:
     matching_stages = _find_matching_stages(
@@ -703,11 +709,12 @@ def _apply_stage_factory_args_override(
         reason=reason,
     )
     for stage in matching_stages:
-        if supported_factory is not None and stage.factory != supported_factory:
+        if supported_factories is not None and stage.factory not in supported_factories:
             display_flag = flag_name or reason
             raise typer.BadParameter(
-                f"{display_flag} currently supports only Higgs TTS; "
-                f"stage {stage.name!r} uses factory {stage.factory!r}"
+                f"{display_flag} currently supports only Higgs TTS and "
+                f"MOSS-TTS-Local; stage {stage.name!r} uses factory "
+                f"{stage.factory!r}"
             )
         factory_args = dict(stage.factory_args or {})
         factory_args.update(updates)
@@ -753,7 +760,7 @@ def apply_async_decode_cli_overrides(
         stage_name="tts_engine",
         updates=updates,
         reason="async decode override",
-        supported_factory=_HIGGS_ASYNC_DECODE_FACTORY,
+        supported_factories=_ASYNC_DECODE_FACTORIES,
         flag_name="--async-decode/--async-decode-min-batch-size",
     )
     return pipeline_config
