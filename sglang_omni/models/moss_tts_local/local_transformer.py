@@ -49,7 +49,14 @@ def sample_seeded_branchless(
 
     probs = torch.softmax(scores, dim=-1)
     probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    sampled = multinomial_with_seed(probs, seeds, positions).view(-1)
+    # Note:(Chenchen Hong) SGLang 0.5.12.post1's multinomial_with_seed is a
+    # Gumbel-max sampler (argmax(logits + gumbel)) that expects logits, not the
+    # post-softmax probs the old API took. Passing probs lets masked tokens
+    # (prob 0, not -inf) still win the gumbel argmax and flattens the
+    # distribution, so this graphed/branchless path diverged from the eager
+    # _sample_tokens path (which already passes the masked scores). Pass the
+    # masked scores (logits); probs is still used for the fallback check below.
+    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
     fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
     return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
 
