@@ -1272,3 +1272,31 @@ def test_chunked_prefill_generation_steps_matches_single_shot():
         data.req.is_chunked = is_chunked
         _finalize_once(runner, sched_req)
     assert data.generation_steps == 1
+
+
+def test_lookahead_eligible_routes_eager_batches_to_sync():
+    """Lookahead is eligible only when bs <= frame_graph_max_bs AND every
+    request has audio_repetition_penalty == 1.0; a rep-penalty request or a
+    batch over the graph cap forces the eager path and must route to sync.
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = types.SimpleNamespace(frame_graph_max_bs=16)
+
+    def _batch(penalties):
+        return types.SimpleNamespace(
+            reqs=[
+                types.SimpleNamespace(
+                    _omni_data=types.SimpleNamespace(audio_repetition_penalty=p)
+                )
+                for p in penalties
+            ]
+        )
+
+    assert runner.lookahead_eligible(_batch([1.0, 1.0])) is True
+    assert runner.lookahead_eligible(_batch([1.0, 1.3])) is False  # rep-penalty eager
+    assert runner.lookahead_eligible(_batch([1.0] * 17)) is False  # bs over graph cap

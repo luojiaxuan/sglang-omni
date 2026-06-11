@@ -72,6 +72,27 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         self._collect_frame(result, forward_batch, schedule_batch, requests)
 
+    def lookahead_eligible(self, batch: Any) -> bool:
+        """One-step lookahead is only safe when the whole batch takes the
+        graphed frame-decode path. The eager fallback fires when any request has
+        ``audio_repetition_penalty != 1`` (``_collect_frame`` then reads each
+        request's previously-generated ``output_rows`` via
+        ``_gather_rep_histories``, which under lookahead lags one frame and would
+        diverge from the synchronous decode) or when ``bs > frame_graph_max_bs``.
+        Route those batches through the synchronous path; the base default True
+        covers the all-graphed common case.
+        """
+        reqs = getattr(batch, "reqs", None) or []
+        if len(reqs) > int(getattr(self.model, "frame_graph_max_bs", 0)):
+            return False
+        for req in reqs:
+            data = getattr(req, "_omni_data", None)
+            if data is not None and float(
+                getattr(data, "audio_repetition_penalty", 1.0)
+            ) != 1.0:
+                return False
+        return True
+
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
