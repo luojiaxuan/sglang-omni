@@ -1388,3 +1388,25 @@ def test_async_launch_resolve_matches_sync_collect():
     )
     assert len(req_s.data.output_rows) == len(req_a.data.output_rows) == 1
     assert torch.equal(req_s.data.output_rows[0], req_a.data.output_rows[0])
+
+
+def test_async_decode_cli_accepts_moss_local():
+    """The set-ized --async-decode CLI gate accepts the MOSS-TTS-Local engine
+    factory (no BadParameter) and writes the flags onto its tts_engine stage.
+    Default stays OFF (config sets no key); only an explicit --async-decode on
+    turns it on, pending the Phase-3 flag-flip PR.
+    """
+    pytest.importorskip("sglang")
+
+    from sglang_omni.cli.serve import apply_async_decode_cli_overrides
+    from sglang_omni.config import resolve_stage_factory_args
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
+
+    config = MossTTSLocalPipelineConfig(model_path="dummy")
+    apply_async_decode_cli_overrides(
+        config, async_decode="on", async_decode_min_batch_size=4
+    )
+    stage = next(s for s in config.stages if s.name == "tts_engine")
+    args = resolve_stage_factory_args(stage, config)
+    assert args["enable_async_decode"] is True
+    assert args["async_decode_min_batch_size"] == 4
