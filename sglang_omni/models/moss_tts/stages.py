@@ -203,6 +203,63 @@ def create_preprocessing_executor(
     )
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a 0/1/true/false env toggle, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _compile_moss_backbone(model: Any) -> None:
+    """Compile the Qwen3 decoder layers into ``_compiled_decode_layers``.
+
+    Ported from Higgs ``_compile_higgs_backbone`` (#579). MOSS keeps the inner
+    Qwen3 backbone at ``model.model`` (a :class:`MossQwen3Model`), so the
+    decode-only dispatch lives there.
+    """
+    inner = getattr(model, "model", None)
+    layers = getattr(inner, "layers", None) if inner is not None else None
+    if layers is None:
+        return
+
+    from sglang.srt.model_executor.cuda_graph_runner import set_torch_compile_config
+
+    set_torch_compile_config()
+    compile_mode = os.environ.get(
+        "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+    )
+    inner._compiled_decode_layers = [
+        torch.compile(layer, mode=compile_mode) for layer in layers
+    ]
+    # ``_warmup_eager_pre_cg`` (called below) makes the full decode bs range
+    # safe under torch.compile + CG, so we no longer cap below the largest
+    # captured bs. Kept as a hook in case a future workaround needs it.
+    inner._compiled_max_decode_bs = 16
+
+
+def _warmup_eager_pre_cg(model_runner: Any) -> None:
+    """Run a single eager forward at bs=1 BEFORE CG capture starts.
+
+    Temporarily hides ``_compiled_decode_layers`` so the dispatch in
+    ``MossQwen3Model.forward`` falls back to ``self.layers``. The eager
+    forward initializes lazy CUDA state (allocator pools, cuBLAS handles,
+    etc.) that would otherwise get initialized inside the FIRST CG capture's
+    dynamo trace — a code path that empirically corrupts the captured kernels
+    for that bs. See Higgs issue_565_torch_compile_result.md (PR #579).
+    """
+    inner = getattr(model_runner.model, "model", None)
+    saved = getattr(inner, "_compiled_decode_layers", None)
+    if saved is None:
+        return
+    inner._compiled_decode_layers = None
+    try:
+        model_runner._dummy_run(batch_size=1)
+        torch.cuda.synchronize()
+    finally:
+        inner._compiled_decode_layers = saved
+
+
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
@@ -224,13 +281,16 @@ def create_sglang_tts_engine_executor(
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
+    # Env toggles let the A/B/2x2 perf matrix (eager+CG / compile+CG /
+    # compile-only / eager-only) run on one branch without code edits.
+    # Explicit ``server_args_overrides`` still win over the env-derived values.
     overrides: dict[str, Any] = {
         "dtype": dtype,
         "cuda_graph_bs": [1, 2, 4, 8, 16],
         "cuda_graph_max_bs": 16,
-        "disable_cuda_graph": False,
+        "disable_cuda_graph": _env_flag("MOSS_TTS_DISABLE_CUDA_GRAPH", False),
         "disable_overlap_schedule": True,
-        "enable_torch_compile": False,
+        "enable_torch_compile": _env_flag("MOSS_TTS_ENABLE_TORCH_COMPILE", False),
         "max_prefill_tokens": 8192,
         "max_running_requests": 16,
         "sampling_backend": "pytorch",
@@ -268,6 +328,23 @@ def create_sglang_tts_engine_executor(
         server_args.disable_cuda_graph = False
 
     model = model_worker.model_runner.model
+
+    # Issue #637: torch.compile on the AR backbone (manual layer-by-layer,
+    # see :func:`_compile_moss_backbone`). Done AFTER infra build and BEFORE
+    # CG capture so the captured graphs record the compiled kernels.
+    if bool(getattr(server_args, "enable_torch_compile", False)):
+        _compile_moss_backbone(model)
+        # Disable sglang's auto-compile path: we already wrapped the layers,
+        # and letting ``patch_model`` re-wrap the whole forward at capture
+        # time triggers a device-side assert at bs >= 8 (observed on Higgs).
+        server_args.enable_torch_compile = False
+        # Warm up in eager mode BEFORE CG capture so the first compile dynamo
+        # trace during capture sees a fully-initialized CUDA state. Without
+        # this, lazy CUDA init lands inside the captured graph and corrupts
+        # replay at the first compiled+captured bs (Higgs #565/#579).
+        if want_cuda_graph:
+            _warmup_eager_pre_cg(model_worker.model_runner)
+
     if want_cuda_graph:
         model_worker.model_runner.init_device_graphs()
 

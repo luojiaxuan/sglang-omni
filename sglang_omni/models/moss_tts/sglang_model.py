@@ -26,9 +26,9 @@ from sglang.srt.model_executor.forward_batch_info import (
     PPProxyTensors,
 )
 from sglang.srt.model_loader.weight_utils import default_weight_loader
-from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.models.moss_tts.moss_qwen3_backbone import MossQwen3Model
 from sglang_omni.models.moss_tts.payload_types import moss_tts_special_token_defaults
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             for _ in range(self.config.channels):
                 self.embedding_list.append(PPMissingLayer())
 
-        self.model = Qwen3Model(
+        self.model = MossQwen3Model(
             config=self.config.language_config,
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
