@@ -180,6 +180,23 @@ class MossTTSLocalModelRunner(ModelRunner):
         del forward_batch
         if not requests:
             return
+        rows, end_id = self._run_frame_decode(result, requests)
+        # The generated-row radix key is a capture-safe GPU hash (#745), so this
+        # is a plain device op with no host sync. The async launch publishes the
+        # same ids; both call the one _row_radix_token_ids on equal rows.
+        next_text = rows[:, 0]
+        next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
+        result.next_token_ids = next_token_ids
+        schedule_batch.output_ids = next_token_ids
+
+    def _run_frame_decode(self, result: Any, requests: list):
+        """GPU half shared by sync ``_collect_frame`` and async
+        ``post_decode_launch``: run the batched local micro-decode, build the
+        per-request rows, scatter the next-frame feedback into the pool, and
+        attach the per-step journal to ``result``. Returns ``(rows, end_id)``;
+        does NOT compute the radix token ids or publish ``next_token_ids`` — the
+        caller does (sync inline; async on the pinned snapshot in resolve).
+        """
         hidden_states = getattr(result.logits_output, "hidden_states", None)
         if not isinstance(hidden_states, torch.Tensor):
             raise RuntimeError(
@@ -289,9 +306,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         rows[:, 0] = next_text
         rows[:, 1:] = codes
 
-        next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
-        result.next_token_ids = next_token_ids
-        schedule_batch.output_ids = next_token_ids
         if embeds is None:
             embeds = self.model._prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
@@ -301,22 +315,60 @@ class MossTTSLocalModelRunner(ModelRunner):
             for i, sched_req in enumerate(requests)
             if not self._is_chunked_request(sched_req)
         ]
-        if not emit_indices:
-            return
+        if emit_indices:
+            emit_index_t = torch.tensor(
+                emit_indices, dtype=torch.long, device=rows.device
+            )
+            emit_pool_rows = [pool_rows[i] for i in emit_indices]
+            emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
+            emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
+            pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
+                device=pool.feedback_embeds.device,
+                dtype=pool.feedback_embeds.dtype,
+            )
+            result.moss_journal = MossTTSLocalDecodeJournal(
+                rids=[requests[i].request_id for i in emit_indices],
+                pool_rows=emit_pool_rows,
+                rows=rows.index_select(0, emit_index_t),
+            )
+        # Always return rows so both the sync inline path and the async launch
+        # publish next_token_ids; an all-chunked batch just attaches no journal.
+        return rows, end_id
 
-        emit_index_t = torch.tensor(emit_indices, dtype=torch.long, device=rows.device)
-        emit_pool_rows = [pool_rows[i] for i in emit_indices]
-        emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
-        emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
-        pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
-            device=pool.feedback_embeds.device,
-            dtype=pool.feedback_embeds.dtype,
-        )
-        result.moss_journal = MossTTSLocalDecodeJournal(
-            rids=[requests[i].request_id for i in emit_indices],
-            pool_rows=emit_pool_rows,
-            rows=rows.index_select(0, emit_index_t),
-        )
+    def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
+        """Async-decode GPU half of ``post_decode``: run the frame micro-decode,
+        scatter feedback + attach the journal (``_run_frame_decode``), and publish
+        the real radix token ids computed on device. The generated-row key is a
+        capture-safe GPU hash (#745), so the launch has no host sync and needs no
+        D2H snapshot: it produces the final ``next_token_ids`` directly, and resolve
+        carries no host hash. The base records a CUDA event right after, so
+        ``event.query()`` means the launched step's GPU work is done. Returns None
+        (no host buffer for resolve to read).
+        """
+        del forward_batch
+        if not requests:
+            return None
+        rows, end_id = self._run_frame_decode(result, requests)
+        result.next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
+        return None
+
+    def post_decode_resolve(
+        self,
+        host_buf: Any,
+        result: Any,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        """Async-decode host half. The generated-row radix key is now a GPU hash
+        (#745), so the launch already published the real ``next_token_ids`` on
+        device and there is no host hash to recompute here: this hook is a no-op.
+        The host work the lookahead overlaps with the next step's forward is the
+        shared ``_finalize`` tail (the journal-apply into ``output_rows`` and the
+        ``next_token_ids`` host read) plus the finished/retracted ``skip_rids`` the
+        base recomputes; none of it needs a pinned rows snapshot.
+        """
+        del host_buf, result, forward_batch, schedule_batch, requests
 
     @staticmethod
     def _row_radix_token_ids(
@@ -445,6 +497,21 @@ class MossTTSLocalModelRunner(ModelRunner):
                 f"{journal.rids} != {expected_rids}"
             )
         for i, sched_req in enumerate(expected_reqs):
+            # Async lookahead overrun: a request that finished (HAZARD B) or was
+            # retracted in a PRIOR step is still present in this lagged resolve
+            # batch; its wasted-step frame must not reach output_rows / the
+            # vocoder. Chunked rows are already excluded from expected_reqs and
+            # from the journal above. Structural no-op on the sync path (a
+            # prior-step finish/retract is never in the sync batch; this step's
+            # own stop is caught by the end_id guard below). getattr keeps
+            # fixtures whose req stub omits finished()/is_retracted working.
+            req = sched_req.data.req
+            if req is not None:
+                finished_fn = getattr(req, "finished", None)
+                if (callable(finished_fn) and finished_fn()) or bool(
+                    getattr(req, "is_retracted", False)
+                ):
+                    continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
                 continue

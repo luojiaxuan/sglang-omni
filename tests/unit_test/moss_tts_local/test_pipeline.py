@@ -1300,3 +1300,91 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
     assert runner.lookahead_eligible(_batch([1.0, 1.0])) is True
     assert runner.lookahead_eligible(_batch([1.0, 1.3])) is False  # rep-penalty eager
     assert runner.lookahead_eligible(_batch([1.0] * 17)) is False  # bs over graph cap
+
+
+def test_async_launch_resolve_matches_sync_collect():
+    """post_decode_launch + post_decode_resolve must yield the same published
+    next_token_ids and the same output_rows append as synchronous _collect_frame
+    (the async path defers only the radix hash to the pinned snapshot). CPU stub:
+    eager decode (no CUDA graph), pinned staging mocked to a plain clone.
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+
+    hidden_size = 4
+
+    def _make_runner():
+        weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+        model = types.SimpleNamespace(
+            _decode_input_embedding=types.SimpleNamespace(weight=weight),
+            _state_pool=None,
+            config=types.SimpleNamespace(
+                n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
+            ),
+            frame_graph_max_bs=0,  # eager path
+            device=torch.device("cpu"),
+        )
+        pool = MossTTSLocalDecodeStatePool(model)
+        model._state_pool = pool
+        model.acquire_row = pool.acquire_row
+        model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
+            torch.zeros(1, dtype=torch.long),  # stop_choice=0 -> continue (slot)
+            torch.arange(12, dtype=torch.long).reshape(1, 12),
+        )
+        model._prepare_multi_modal_inputs = lambda rows: torch.full(
+            (1, hidden_size), 3, dtype=torch.bfloat16
+        )
+        runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner.model = model
+        return runner
+
+    def _sched_req():
+        data = types.SimpleNamespace(
+            req=None,
+            text_temperature=1.0, text_top_p=1.0, text_top_k=50,
+            audio_temperature=1.0, audio_top_p=1.0, audio_top_k=50,
+            sampling_seed=0, generation_steps=0, audio_repetition_penalty=1.0,
+            output_rows=[],
+        )
+        return types.SimpleNamespace(request_id="rid", data=data)
+
+    def _result():
+        return types.SimpleNamespace(
+            logits_output=types.SimpleNamespace(
+                hidden_states=torch.zeros(1, hidden_size)
+            )
+        )
+
+    # Synchronous collect.
+    rs = _make_runner()
+    req_s, res_s, sb_s = _sched_req(), _result(), types.SimpleNamespace()
+    rs._collect_frame(res_s, None, sb_s, [req_s])
+
+    # Async launch + resolve (separate runner/pool to avoid cross-overwrite).
+    ra = _make_runner()
+    req_a, res_a = _sched_req(), _result()
+    host_buf = ra.post_decode_launch(res_a, None, [req_a])
+    assert host_buf is None  # GPU hash at launch leaves no snapshot for resolve
+    ra.post_decode_resolve(host_buf, res_a, None, None, [req_a])  # no-op
+
+    # The launch publishes the real radix ids on device (GPU hash); resolve is a
+    # no-op, so async and sync yield identical published ids.
+    assert torch.equal(res_s.next_token_ids, res_a.next_token_ids)
+    assert torch.equal(sb_s.output_ids, res_s.next_token_ids)  # sync still publishes
+
+    # output_rows append parity through the shared post_process_outputs tail.
+    rs.post_process_outputs(
+        res_s,
+        types.SimpleNamespace(requests=[req_s]),
+        {"rid": types.SimpleNamespace(data=int(res_s.next_token_ids[0]))},
+    )
+    ra.post_process_outputs(
+        res_a,
+        types.SimpleNamespace(requests=[req_a]),
+        {"rid": types.SimpleNamespace(data=int(res_a.next_token_ids[0]))},
+    )
+    assert len(req_s.data.output_rows) == len(req_a.data.output_rows) == 1
+    assert torch.equal(req_s.data.output_rows[0], req_a.data.output_rows[0])
