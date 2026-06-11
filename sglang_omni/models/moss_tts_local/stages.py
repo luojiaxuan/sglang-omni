@@ -345,9 +345,8 @@ def create_sglang_tts_engine_executor(
     )
 
     def abort_request(request_id: str) -> None:
-        # An aborted request may be mid-preprocessing (drop its prepared
-        # handoff) and/or hold a decode-state pool row (release it); both
-        # legs are idempotent no-ops when the request never reached them.
+        # Drop any prepared handoff and release any held pool row; both are
+        # idempotent no-ops if the request never reached them.
         cleanup_prepared_moss_tts_local_request(request_id)
         model.reset_request(request_id)
 

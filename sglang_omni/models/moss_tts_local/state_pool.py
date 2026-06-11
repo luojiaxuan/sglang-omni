@@ -6,12 +6,10 @@ embedding and the request-static sampling parameters/seed) lives in stable,
 process-lifetime GPU buffers indexed by a per-request row. Output-only frame
 collection moves to a per-step :class:`MossTTSLocalDecodeJournal`.
 
-The layout mirrors the Higgs ``HiggsBatchedSamplerState`` row pool and the
-Delay-path ``MossDecodeStatePool`` (#719): ``P = max_running_requests + 1``
-rows, with the last row (``padding_row = P - 1``) reserved — never acquired,
-never request-owned — so a future CUDA-graph that must route non-real/done
-rows somewhere has a stable target (#736). The buffer addresses are fixed for
-the process lifetime; adding a field is ABI-additive.
+``P = max_running_requests + 1`` rows indexed by a per-request row. The last
+row (``padding_row = P - 1``) is reserved — never acquired — as a stable
+routing target for non-real/done rows under a future CUDA graph (#736). Buffer
+addresses are fixed for the process lifetime.
 """
 
 from __future__ import annotations
@@ -39,9 +37,8 @@ class MossTTSLocalDecodeStatePool:
         self.device = weight.device
         self.dtype = weight.dtype
 
-        # Feedback embedding for the next decode step (one row per request);
-        # bf16 to match the staging table dtype so before_decode's gather is a
-        # plain copy and the future zero-copy aliasing (#736) is a drop-in.
+        # Feedback embedding for the next decode step; bf16 matches the staging
+        # table dtype so before_decode's gather is a plain copy (#736).
         self.feedback_embeds = torch.zeros(
             self.num_rows,
             self.hidden_size,
@@ -163,7 +160,7 @@ class MossTTSLocalDecodeJournal:
     carry the "consume one step later" output data. The journal pins the
     per-step ``rows`` tensor together with the request ids (for an alignment
     assertion at apply time) and the pool rows the step touched; it is attached
-    to the step's ``batch_result`` so the async-decode lookahead window (PR-B)
+    to the step's ``batch_result`` so the async-decode lookahead window (#734)
     keeps it alive until resolve.
     """
 

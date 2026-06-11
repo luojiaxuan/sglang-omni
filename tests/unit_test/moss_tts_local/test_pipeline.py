@@ -645,11 +645,6 @@ def test_encode_audio_stereo_wav_and_mono_fallback():
     assert struct.unpack("<H", mono_blob[22:24])[0] == 1
 
 
-# ---------------------------------------------------------------------------
-# is_chunked guard in post_process_outputs (bugfix)
-# ---------------------------------------------------------------------------
-
-
 def test_post_process_outputs_skips_chunked_rows():
     """Chunked-prefill rows must not be appended to output_rows."""
     pytest.importorskip("sglang")
