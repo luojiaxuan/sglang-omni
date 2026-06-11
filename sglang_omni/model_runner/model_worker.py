@@ -274,11 +274,8 @@ def _apply_model_worker_backend_policy(
         and effective_quantization is None
         and moe_runner_backend == "auto"
     ):
-        # Note:(Chenchen Hong) flashinfer_cutlass's MoE has no H20 kernel
-        # coverage, so its first call autotunes (with a host sync) inside CUDA
-        # graph capture and deadlocks talker startup on H20 (capture freezes at
-        # bs=16 0%). triton ships H20 MoE configs and captures cleanly; keep
-        # flashinfer_cutlass on H100/H200 where it is faster and capture-safe.
+        # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
+        # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
         server_args.moe_runner_backend = (
             "triton" if _is_h20_device() else "flashinfer_cutlass"
         )
@@ -383,14 +380,7 @@ def _get_config_value(config: object, key: str) -> object | None:
 
 
 def _is_h20_device() -> bool:
-    """True only on NVIDIA H20.
-
-    H20 is a reduced-compute sm_90 SKU that flashinfer's CUTLASS MoE has no
-    kernel coverage for; its first call autotunes (with a host sync) inside CUDA
-    graph capture and deadlocks talker startup there. Match the device name on a
-    word boundary so the related but capable H100/H200/B200 are never caught
-    (note: ``"H20" in "NVIDIA H200"`` is True as a substring, hence the regex).
-    """
+    """True only on NVIDIA H20 (word-boundary match so "H200" isn't caught)."""
     try:
         import re
 

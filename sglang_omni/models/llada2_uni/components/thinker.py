@@ -124,14 +124,9 @@ class LLaDA2MoeAttention(nn.Module):
         # via cos_sin_cache whose width equals rotary_dim (< head_dim).
         # Only the first rotary_dim dims are rotated; the rest pass through.
         #
-        # Note:(Chenchen Hong) SGLang 0.5.12.post1's fused rope+kv-store kernel
-        # (apply_rope_inplace_with_kvcache) reshapes q/k by the cos_sin_cache
-        # width (rope_dim), so it only supports full rotary. LLaDA2 uses partial
-        # rotary (rotary_dim < head_dim), which makes the kernel raise
-        # "shape '[t, kv_heads, rope_dim]' is invalid". When the fused store is
-        # skipped there, self.attn must write the kv cache instead (otherwise
-        # the kv cache is never populated -> wrong attention -> the model needs
-        # extra diffusion steps to converge, a latency regression).
+        # Note:(Chenchen Hong) post1's fused rope+kv-store kernel only supports
+        # full rotary; LLaDA2 has partial rotary, so when the fused store is
+        # skipped self.attn must write the kv cache (else wrong attn -> slower).
         can_fuse_set_kv = (
             enable_fused_set_kv_buffer(forward_batch)
             and self.rotary_dim == self.head_dim

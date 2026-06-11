@@ -263,13 +263,9 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         return None, forward_batch, inner_state
 
     def apply_qk_norm_rope(self, qkv, positions, forward_batch):
-        # Note:(Chenchen Hong) The talker reuses this attention with a plain
-        # (non-MRoPE) RotaryEmbedding, but SGLang 0.5.12.post1 still supplies
-        # MRoPE [3, seq] positions (including the dummy positions built during
-        # cuda-graph capture). A base RotaryEmbedding reads positions.size(0) as
-        # the token count, so [3, seq] makes it reshape into 3 "batches" and
-        # raises "shape '[3, -1, head_dim]' is invalid". Collapse to the temporal
-        # row (all MRoPE sections are equal for the talker's audio/text tokens).
+        # Note:(Chenchen Hong) the talker uses a base (non-MRoPE) RotaryEmbedding
+        # but post1 still passes MRoPE [3, seq] positions; collapse to the
+        # temporal row so it isn't misread as 3 batches (all sections equal here).
         if positions.dim() == 2 and not isinstance(self.rotary_emb, MRotaryEmbedding):
             positions = positions[0]
         use_fused = self.use_fused_qk_norm_rope and qkv.dtype == torch.bfloat16
@@ -364,14 +360,9 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             fb,
             save_kv_cache=save_kv_cache,
         )
-        # Note:(Chenchen Hong) Align the attention output to the activation
-        # compute dtype (v.dtype, i.e. bf16/fp16), not o_proj.weight.dtype. For
-        # FP8 W8A8 linears the weight is stored as float8_e4m3fn, so casting to
-        # weight.dtype hands an fp8 activation to per_token_group_quant_fp8 —
-        # post1's sgl_kernel rejects that (failed to dispatch Float8_e4m3fn
-        # during talker graph capture). forward_prepare_native returns None in
-        # the hidden_states slot, so v (the projected value) is the available
-        # compute-dtype reference; the quant method quantizes the activation.
+        # Note:(Chenchen Hong) cast attn output to the compute dtype (v.dtype),
+        # not o_proj.weight.dtype: for FP8 weights the latter feeds an fp8
+        # activation to the quantizer, which post1's sgl_kernel rejects.
         if attn_output.dtype != v.dtype:
             attn_output = attn_output.to(dtype=v.dtype)
         output, _ = self.o_proj(attn_output)

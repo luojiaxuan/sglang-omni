@@ -152,12 +152,9 @@ def create_talker_scheduler(
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
-    # Note:(Chenchen Hong) The talker emits codec logits (codec vocab), but
-    # create_sglang_infrastructure derives model_config from the full omni
-    # checkpoint, so model_config.vocab_size is the thinker text vocab. SGLang
-    # 0.5.12.post1 sizes the repetition-penalty orchestrator from vocab_size and
-    # then multiplies the (codec-vocab) talker logits by a (text-vocab) penalty
-    # tensor, raising a shape mismatch. Align the talker vocab to the codec vocab.
+    # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes
+    # the repetition-penalty orchestrator from model_config.vocab_size (the
+    # thinker text vocab), which mismatches the talker's codec-vocab logits.
     _codec_vocab_size = model_config.hf_config.talker_config.text_config.vocab_size
     model_config.vocab_size = _codec_vocab_size
     _runner_cfg = getattr(model_worker.model_runner, "model_config", None)

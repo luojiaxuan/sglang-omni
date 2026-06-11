@@ -154,13 +154,9 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 
 
 def _enable_inductor_gemm_autotune() -> None:
-    # Note:(Chenchen Hong) On the torch 2.11 / CUDA 13 stack inductor's default
-    # GEMM lowering routes the compiled acoustic-transformer matmuls onto
-    # split-K cuBLAS (nvjet) kernels ~14% slower than the triton templates the
-    # pre-bump (torch 2.9) inductor selected, costing ~8% RTF. Per-shape GEMM
-    # autotuning makes inductor benchmark triton vs aten and keep the fastest,
-    # recovering the throughput. Scoped to the Voxtral generation process; the
-    # only cost is a little extra one-time autotune at startup.
+    # Note:(Chenchen Hong) on torch 2.11/cu13 inductor routes the compiled
+    # matmuls to slow split-K cuBLAS (~8% RTF); per-shape GEMM autotuning makes
+    # it benchmark triton vs aten and keep the fastest. One-time startup cost.
     try:
         from torch._inductor import config as inductor_config
     except Exception:

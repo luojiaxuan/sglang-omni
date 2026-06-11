@@ -105,10 +105,8 @@ class WhisperEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(config.d_model)
 
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:
-        # Note:(Chenchen Hong) input_features can arrive on CPU; move it to the
-        # conv weight's device as well as its dtype, otherwise the CUDA conv1
-        # raises "Input type (torch.HalfTensor) and weight type
-        # (torch.cuda.HalfTensor) should be the same".
+        # Note:(Chenchen Hong) move input_features to the conv weight's device
+        # (not just dtype), else the CUDA conv1 raises a device-mismatch error.
         hidden_states = input_features.to(
             device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
         )
