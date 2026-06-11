@@ -95,9 +95,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
                 pool_row = self.model._state_pool.row_for(sched_req.request_id)
                 if pool_row is not None:
-                    self.model._state_pool._params_written_rids.discard(
-                        sched_req.request_id
-                    )
+                    self.model._state_pool.invalidate_params(sched_req.request_id)
                     self.model._state_pool.reset_row(pool_row)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
@@ -179,14 +177,14 @@ class MossTTSLocalModelRunner(ModelRunner):
             rid = sched_req.request_id
             row = self.model.acquire_row(rid)
             pool_rows.append(row)
-            if rid not in pool._params_written_rids:
-                pool.write_params(row, sched_req.data)
-                pool._params_written_rids.add(rid)
+            pool.ensure_params(row, rid, sched_req.data)
         datas = [sched_req.data for sched_req in requests]
         batch_size = len(datas)
         num_channels = int(cfg.n_vq) + 1
 
-        row_t = torch.tensor(pool_rows, dtype=torch.long, device=device)
+        row_t = torch.tensor(
+            pool_rows, dtype=torch.long, device=pool.feedback_embeds.device
+        )
         params = {
             "text_temp": pool.text_temp[row_t],
             "text_top_p": pool.text_top_p[row_t],
@@ -279,17 +277,26 @@ class MossTTSLocalModelRunner(ModelRunner):
             embeds = self.model._prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
-        row_t = torch.tensor(
-            pool_rows, dtype=torch.long, device=pool.feedback_embeds.device
-        )
-        pool.feedback_embeds[row_t] = embeds.detach().to(
+        emit_indices = [
+            i
+            for i, sched_req in enumerate(requests)
+            if not self._is_chunked_request(sched_req)
+        ]
+        if not emit_indices:
+            return
+
+        emit_index_t = torch.tensor(emit_indices, dtype=torch.long, device=rows.device)
+        emit_pool_rows = [pool_rows[i] for i in emit_indices]
+        emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
+        emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
+        pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
             device=pool.feedback_embeds.device,
             dtype=pool.feedback_embeds.dtype,
         )
         result.moss_journal = MossTTSLocalDecodeJournal(
-            rids=[sched_req.request_id for sched_req in requests],
-            pool_rows=pool_rows,
-            rows=rows,
+            rids=[requests[i].request_id for i in emit_indices],
+            pool_rows=emit_pool_rows,
+            rows=rows.index_select(0, emit_index_t),
         )
 
     @staticmethod
@@ -367,6 +374,11 @@ class MossTTSLocalModelRunner(ModelRunner):
                 scores < 0, scores * penalty, scores / penalty
             )
 
+    @staticmethod
+    def _is_chunked_request(sched_req: Any) -> bool:
+        req = getattr(sched_req.data, "req", None)
+        return req is not None and getattr(req, "is_chunked", 0) > 0
+
     def post_process_outputs(
         self,
         result: Any,
@@ -382,19 +394,25 @@ class MossTTSLocalModelRunner(ModelRunner):
             return
 
         end_id = int(self.model.config.audio_end_token_id)
-        for i, sched_req in enumerate(scheduler_output.requests):
-            # Alignment tripwire: a raise (not a bare assert) so it survives
-            # python -O and matches the model package's raise convention; the
-            # journal is built from this same requests list, so misalignment
-            # only ever surfaces a real bug, never silent frame corruption.
-            if journal.rids[i] != sched_req.request_id:
-                raise RuntimeError(
-                    "MOSS-TTS Local journal/batch alignment broken: "
-                    f"{journal.rids[i]} != {sched_req.request_id}"
-                )
-            req = sched_req.data.req
-            if req is not None and getattr(req, "is_chunked", 0) > 0:
-                continue
+        expected_reqs = [
+            sched_req
+            for sched_req in scheduler_output.requests
+            if not self._is_chunked_request(sched_req)
+        ]
+        expected_rids = [sched_req.request_id for sched_req in expected_reqs]
+        rows_len = int(journal.rows.shape[0])
+        if len(journal.rids) != rows_len or len(journal.pool_rows) != rows_len:
+            raise RuntimeError(
+                "MOSS-TTS Local journal length mismatch: "
+                f"rids={len(journal.rids)} pool_rows={len(journal.pool_rows)} "
+                f"rows={rows_len}"
+            )
+        if journal.rids != expected_rids:
+            raise RuntimeError(
+                "MOSS-TTS Local journal/batch alignment broken: "
+                f"{journal.rids} != {expected_rids}"
+            )
+        for i, sched_req in enumerate(expected_reqs):
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
                 continue

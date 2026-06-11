@@ -656,9 +656,7 @@ def test_post_process_outputs_skips_chunked_rows():
     import types
 
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-    from sglang_omni.models.moss_tts_local.state_pool import (
-        MossTTSLocalDecodeJournal,
-    )
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
 
     batch_size = 2
 
@@ -691,10 +689,11 @@ def test_post_process_outputs_skips_chunked_rows():
         "r1": types.SimpleNamespace(data=1001),  # non-end token
     }
 
-    # Output collection goes solely through the per-step journal.
+    # Output collection goes solely through the per-step journal. Chunked rows
+    # are not journaled because no frame should be emitted or fed back.
     result = types.SimpleNamespace(
         moss_journal=MossTTSLocalDecodeJournal(
-            rids=["r0", "r1"], pool_rows=[0, 1], rows=rows
+            rids=["r1"], pool_rows=[1], rows=rows[1:]
         )
     )
     runner.post_process_outputs(result, sched_output, outputs)

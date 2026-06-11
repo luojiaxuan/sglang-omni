@@ -129,6 +129,16 @@ class MossTTSLocalDecodeStatePool:
         self.audio_top_k[row_idx] = int(data.audio_top_k)
         self.seeds[row_idx] = int(data.sampling_seed)
 
+    def ensure_params(self, row_idx: int, rid: str, data: Any) -> None:
+        """Write request-static params once for the current row acquisition."""
+        if rid not in self._params_written_rids:
+            self.write_params(row_idx, data)
+            self._params_written_rids.add(rid)
+
+    def invalidate_params(self, rid: str) -> None:
+        """Force params to be rewritten on the next ``ensure_params`` call."""
+        self._params_written_rids.discard(rid)
+
     def row_for(self, rid: str) -> int | None:
         """Return ``rid``'s row, or ``None`` if it holds no row."""
         return self._rid_to_row.get(rid)

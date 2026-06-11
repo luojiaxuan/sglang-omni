@@ -12,10 +12,15 @@ from types import SimpleNamespace
 import torch
 
 from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+from sglang_omni.models.moss_tts_local.request_builders import (
+    MossTTSLocalSGLangRequestData,
+    make_moss_tts_local_scheduler_adapters,
+)
 from sglang_omni.models.moss_tts_local.state_pool import (
     MossTTSLocalDecodeJournal,
     MossTTSLocalDecodeStatePool,
 )
+from sglang_omni.proto import OmniRequest, StagePayload
 
 _HIDDEN = 8
 
@@ -155,6 +160,18 @@ def test_write_params_does_not_touch_other_rows():
     pool.write_params(row_a, _params(seed=1))
     assert pool.seeds[row_b] == 0
     assert pool.text_temp[row_b] == 0.0
+
+
+def test_ensure_params_writes_once_until_invalidated():
+    pool = MossTTSLocalDecodeStatePool(_model())
+    row = pool.acquire_row("a")
+    pool.ensure_params(row, "a", _params(seed=1))
+    pool.ensure_params(row, "a", _params(seed=2))
+    assert int(pool.seeds[row]) == 1
+
+    pool.invalidate_params("a")
+    pool.ensure_params(row, "a", _params(seed=2))
+    assert int(pool.seeds[row]) == 2
 
 
 def test_row_for_returns_none_when_unheld():
@@ -301,8 +318,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     model._state_pool = pool
 
     row = pool.acquire_row("a")
-    pool.write_params(row, _params(seed=1))
-    pool._params_written_rids.add("a")
+    pool.ensure_params(row, "a", _params(seed=1))
     # Feedback stranded by the retraction (must be wiped by the resume).
     pool.feedback_embeds[row].fill_(5.0)
 
@@ -325,7 +341,90 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     runner._build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert torch.all(pool.feedback_embeds[row] == 0), "stranded feedback must be wiped"
-    assert "a" not in pool._params_written_rids, "params must be re-written on resume"
+    pool.ensure_params(row, "a", _params(seed=2))
+    assert int(pool.seeds[row]) == 2, "params must be re-written on resume"
+
+
+def test_collect_frame_skips_chunked_feedback_and_journal():
+    hidden_size = 4
+    weight = torch.zeros(3, hidden_size, dtype=torch.bfloat16)
+    embedding = SimpleNamespace(weight=weight)
+    model = SimpleNamespace(
+        _decode_input_embedding=embedding,
+        _state_pool=None,
+        config=SimpleNamespace(
+            n_vq=12,
+            audio_assistant_slot_token_id=1000,
+            audio_end_token_id=1001,
+        ),
+        frame_graph_max_bs=0,
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    model.acquire_row = pool.acquire_row
+
+    def decode_frame(hidden_states, *, sample_text, sample_audio):
+        del hidden_states, sample_text, sample_audio
+        return (
+            torch.zeros(2, dtype=torch.long),
+            torch.full((2, 12), 7, dtype=torch.long),
+        )
+
+    def prepare_multi_modal_inputs(rows):
+        del rows
+        return torch.tensor(
+            [[1, 1, 1, 1], [2, 2, 2, 2]],
+            dtype=torch.bfloat16,
+        )
+
+    model.decode_frame = decode_frame
+    model._prepare_multi_modal_inputs = prepare_multi_modal_inputs
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+
+    def data(is_chunked):
+        return SimpleNamespace(
+            req=SimpleNamespace(is_chunked=is_chunked),
+            text_temperature=1.0,
+            text_top_p=1.0,
+            text_top_k=50,
+            audio_temperature=1.0,
+            audio_top_p=1.0,
+            audio_top_k=50,
+            sampling_seed=0,
+            generation_steps=0,
+            audio_repetition_penalty=1.0,
+            output_rows=[],
+        )
+
+    requests = [
+        SimpleNamespace(request_id="chunked", data=data(is_chunked=1)),
+        SimpleNamespace(request_id="normal", data=data(is_chunked=0)),
+    ]
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(2, hidden_size))
+    )
+    schedule_batch = SimpleNamespace()
+
+    runner._collect_frame(result, None, schedule_batch, requests)
+
+    chunked_row = pool.row_for("chunked")
+    normal_row = pool.row_for("normal")
+    assert chunked_row is not None
+    assert normal_row is not None
+    assert torch.equal(
+        pool.feedback_embeds[chunked_row],
+        torch.zeros(hidden_size, dtype=torch.bfloat16),
+    )
+    assert torch.equal(
+        pool.feedback_embeds[normal_row],
+        torch.full((hidden_size,), 2, dtype=torch.bfloat16),
+    )
+    assert result.moss_journal.rids == ["normal"]
+    assert result.moss_journal.pool_rows == [normal_row]
+    assert result.moss_journal.rows.shape == (1, 13)
 
 
 def test_journal_rid_assertion_fires():
@@ -350,6 +449,30 @@ def test_journal_rid_assertion_fires():
         assert "journal/batch alignment broken" in str(exc)
     else:
         raise AssertionError("expected journal rid mismatch to raise")
+
+
+def test_journal_length_mismatch_raises_runtime_error():
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))
+    journal = MossTTSLocalDecodeJournal(
+        rids=["rid"],
+        pool_rows=[],
+        rows=torch.zeros((1, 13), dtype=torch.long),
+    )
+    result = SimpleNamespace(moss_journal=journal)
+    sched_req = SimpleNamespace(
+        request_id="rid",
+        data=SimpleNamespace(req=None, output_rows=[]),
+    )
+    scheduler_output = SimpleNamespace(requests=[sched_req])
+    outputs = {"rid": SimpleNamespace(data=1000)}
+
+    try:
+        runner.post_process_outputs(result, scheduler_output, outputs)
+    except RuntimeError as exc:
+        assert "journal length mismatch" in str(exc)
+    else:
+        raise AssertionError("expected journal length mismatch to raise")
 
 
 def test_stop_row_not_appended_via_journal():
@@ -441,3 +564,34 @@ def test_param_gather_matches_old_cache():
         torch.tensor([int(data.sampling_seed)], dtype=torch.long),
     )
 
+
+def test_result_adapter_releases_row_when_apply_raises():
+    reset_calls = []
+    model = SimpleNamespace(reset_request=lambda rid: reset_calls.append(rid))
+    _, result_adapter = make_moss_tts_local_scheduler_adapters(model=model)
+    payload = StagePayload(
+        request_id="rid",
+        request=OmniRequest(inputs={}, params={}, metadata={}),
+        data={},
+    )
+    data = MossTTSLocalSGLangRequestData(
+        input_ids=torch.zeros(1, dtype=torch.long),
+        max_new_tokens=1,
+        temperature=0.0,
+        output_ids=[],
+        prompt_rows=torch.zeros((1, 13), dtype=torch.long),
+        output_rows=[
+            torch.zeros(13, dtype=torch.long),
+            torch.zeros(12, dtype=torch.long),
+        ],
+        stage_payload=payload,
+    )
+
+    try:
+        result_adapter(data)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected malformed output_rows to raise")
+
+    assert reset_calls == ["rid"]

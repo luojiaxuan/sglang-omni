@@ -434,10 +434,11 @@ def make_moss_tts_local_scheduler_adapters(*, model: Any):
         return build_sglang_moss_tts_local_request(payload, model=model)
 
     def result_adapter(data: MossTTSLocalSGLangRequestData) -> StagePayload:
-        result = apply_sglang_moss_tts_local_result(data.stage_payload, data)
-        # Release the finished request's decode-state pool row (mirrors Higgs
-        # request_builders.py:186); recycles the row for a waiting request.
-        model.reset_request(data.stage_payload.request_id)
-        return result
+        try:
+            return apply_sglang_moss_tts_local_result(data.stage_payload, data)
+        finally:
+            # Release the finished request's decode-state pool row (mirrors
+            # Higgs request_builders.py:186); recycles the row for a waiter.
+            model.reset_request(data.stage_payload.request_id)
 
     return request_builder, result_adapter
