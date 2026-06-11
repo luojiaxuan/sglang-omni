@@ -181,6 +181,31 @@ def test_row_for_returns_none_when_unheld():
     assert pool.row_for("a") == row
 
 
+def test_reset_for_refill_clears_active_row():
+    pool = MossTTSLocalDecodeStatePool(_model())
+    row = pool.acquire_row("a")
+    pool.ensure_params(row, "a", _params(seed=1))
+    pool.feedback_embeds[row] = 1.0
+
+    assert pool.reset_for_refill("a") is True
+    assert int(pool.seeds[row]) == 0
+    assert int(torch.count_nonzero(pool.feedback_embeds[row])) == 0
+    # params were invalidated, so the next ensure_params re-writes them.
+    pool.ensure_params(row, "a", _params(seed=2))
+    assert int(pool.seeds[row]) == 2
+
+
+def test_reset_for_refill_is_noop_for_unheld_rid():
+    pool = MossTTSLocalDecodeStatePool(_model())
+    row = pool.acquire_row("a")
+    pool.ensure_params(row, "a", _params(seed=1))
+
+    assert pool.reset_for_refill("nobody") is False
+    # the held row and its write-once flag are untouched.
+    pool.ensure_params(row, "a", _params(seed=9))
+    assert int(pool.seeds[row]) == 1
+
+
 def test_journal_holds_fields():
     rows = torch.arange(2 * 13, dtype=torch.long).reshape(2, 13)
     journal = MossTTSLocalDecodeJournal(rids=["a", "b"], pool_rows=[0, 1], rows=rows)

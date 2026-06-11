@@ -93,10 +93,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 # stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
-                pool_row = self.model._state_pool.row_for(sched_req.request_id)
-                if pool_row is not None:
-                    self.model._state_pool.invalidate_params(sched_req.request_id)
-                    self.model._state_pool.reset_row(pool_row)
+                self.model._state_pool.reset_for_refill(sched_req.request_id)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(

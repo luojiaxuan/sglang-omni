@@ -139,6 +139,18 @@ class MossTTSLocalDecodeStatePool:
         """Force params to be rewritten on the next ``ensure_params`` call."""
         self._params_written_rids.discard(rid)
 
+    def reset_for_refill(self, rid: str) -> bool:
+        """Invalidate params and zero ``rid``'s row for a retraction re-prefill.
+
+        Returns ``False`` (no-op) when ``rid`` holds no row.
+        """
+        row_idx = self.row_for(rid)
+        if row_idx is None:
+            return False
+        self.invalidate_params(rid)
+        self.reset_row(row_idx)
+        return True
+
     def row_for(self, rid: str) -> int | None:
         """Return ``rid``'s row, or ``None`` if it holds no row."""
         return self._rid_to_row.get(rid)
