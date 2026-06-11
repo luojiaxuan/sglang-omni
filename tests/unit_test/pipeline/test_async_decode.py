@@ -219,6 +219,16 @@ def test_resolve_skips_retracted_row():
     assert r.last_skip_rids == {"retracted"}
 
 
+def test_base_lookahead_eligible_default_true():
+    """Base runner default: any batch is lookahead-eligible. A model with a
+    sync-only collect fallback overrides this; the scheduler's async gate
+    consults it alongside the min-batch-size and is-decode checks.
+    """
+    r = _StubRunner()
+    assert r.lookahead_eligible(types.SimpleNamespace(reqs=[])) is True
+    assert r.lookahead_eligible(None) is True
+
+
 def test_finalize_skips_overrun_bookkeeping_and_extras():
     class _OutputProcessor:
         def process(self, batch_result, scheduler_output):

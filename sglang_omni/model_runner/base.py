@@ -423,6 +423,20 @@ class ModelRunner:
     ) -> None:
         """Called after decode forward."""
 
+    def lookahead_eligible(self, batch: Any) -> bool:
+        """Whether this batch may use one-step async-decode lookahead.
+
+        Default True: a model implementing post_decode_launch/resolve is
+        lookahead-safe for any batch it accepts. A model whose collect has a
+        sync-only fallback (e.g. an eager path that reads lagging per-request
+        history, which under lookahead would diverge from sync) overrides this
+        to route such batches through the synchronous path. The scheduler's
+        async gate consults it (in addition to the min-batch-size and is-decode
+        checks).
+        """
+        del batch
+        return True
+
     def post_process_outputs(
         self,
         result: Any,

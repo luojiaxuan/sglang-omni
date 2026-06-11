@@ -1083,10 +1083,16 @@ class OmniScheduler:
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
+            # Model gate: a runner whose collect has a sync-only fallback routes
+            # those batches through the synchronous path (default True). getattr
+            # keeps the gate safe for scheduler test fixtures built without a
+            # model runner; in production _model_runner is always set.
+            runner = getattr(self, "_model_runner", None)
             use_lookahead = (
                 batch is not None
                 and len(batch.reqs) >= self.async_decode_min_batch_size
                 and self._batch_is_decode(batch)
+                and (runner is None or runner.lookahead_eligible(batch))
             )
 
             if use_lookahead:
