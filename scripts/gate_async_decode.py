@@ -135,11 +135,53 @@ def compare_exact(off_dir: str, on_dir: str, rids: list[str]) -> list[str]:
     return diffs
 
 
+def send_scenario(sc: Scenario, port: int, dump_dir: str) -> int:
+    """POST the scenario's fixed-seed requests to /v1/audio/speech. The server's
+    gate hook (installed via gate_serve.py + MOSS_GATE_DUMP_AUDIO_CODES) dumps
+    audio_codes keyed by request_id; the client passes request_id via the
+    x-request-id header (rid mapping validated at GPU run time)."""
+    import json
+    import urllib.request
+
+    url = f"http://localhost:{port}/v1/audio/speech"
+    sent = 0
+    for i, r in enumerate(sc.requests):
+        rid = f"req{i}"
+        body = {
+            "model": "moss-tts-local",
+            "input": r.text,
+            "voice": "default",
+            "seed": r.seed,
+            "extra_body": {
+                "max_new_tokens": r.max_new_tokens,
+                "repetition_penalty": r.repetition_penalty,
+            },
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "x-request-id": rid},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                resp.read()  # audio bytes discarded; codes are dumped server-side
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"[send] {sc.key} {rid} failed: {exc}")
+    print(f"[send] {sc.key}: {sent}/{len(sc.requests)} sent (server dumps -> {dump_dir})")
+    return 0 if sent == len(sc.requests) else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scenario", choices=sorted(SCENARIOS), required=True)
     p.add_argument("--off-dump", help="dir with OFF-arm <rid>.npy audio_codes")
     p.add_argument("--on-dump", help="dir with ON-arm <rid>.npy audio_codes")
+    p.add_argument("--send", action="store_true", help="POST the scenario's requests")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--dump-dir", help="(informational) where the server dumps codes")
+    p.add_argument("--emit-env", action="store_true", help="print ON-arm env K=V line")
+    p.add_argument("--emit-flags", action="store_true", help="print ON-arm CLI flags")
     p.add_argument(
         "--print-config",
         action="store_true",
@@ -147,6 +189,15 @@ def main(argv=None) -> int:
     )
     args = p.parse_args(argv)
     sc = SCENARIOS[args.scenario]
+
+    if args.emit_env:
+        print(" ".join(f"{k}={v}" for k, v in sc.on_env.items()))
+        return 0
+    if args.emit_flags:
+        print(" ".join(sc.on_flags))
+        return 0
+    if args.send:
+        return send_scenario(sc, args.port, args.dump_dir or "")
 
     if args.print_config or not (args.off_dump and args.on_dump):
         print(f"[{sc.key}] {sc.desc}")
@@ -162,13 +213,16 @@ def main(argv=None) -> int:
             print("\n(no --off-dump/--on-dump given: printed config only)")
         return 0
 
-    rids = [f"req{i}" for i in range(len(sc.requests))]
+    # Dump files are keyed by the request's seed (the server assigns its own
+    # request_id and ignores x-request-id), so map each scenario request to its
+    # seed key.
+    keys = [str(r.seed) for r in sc.requests]
     if sc.criterion == "exact":
-        diffs = compare_exact(args.off_dump, args.on_dump, rids)
+        diffs = compare_exact(args.off_dump, args.on_dump, keys)
         if diffs:
-            print(f"[{sc.key}] FAIL — audio_codes differ for: {diffs}")
+            print(f"[{sc.key}] FAIL — audio_codes differ for seeds: {diffs}")
             return 1
-        print(f"[{sc.key}] PASS — all {len(rids)} requests bit-identical ON vs OFF")
+        print(f"[{sc.key}] PASS — all {len(keys)} requests bit-identical ON vs OFF")
         return 0
 
     # structural: presence + no-crash are checked by the run wrapper; here we
@@ -176,13 +230,13 @@ def main(argv=None) -> int:
     import numpy as np
 
     print(f"[{sc.key}] structural — ON/OFF audio_codes shapes (drift localization):")
-    for rid in rids:
+    for key in keys:
         try:
-            a, b = load_codes(args.off_dump, rid), load_codes(args.on_dump, rid)
+            a, b = load_codes(args.off_dump, key), load_codes(args.on_dump, key)
             same = a.shape == b.shape and np.array_equal(a, b)
-            print(f"  {rid}: off={a.shape} on={b.shape} identical={same}")
+            print(f"  seed={key}: off={a.shape} on={b.shape} identical={same}")
         except FileNotFoundError as exc:
-            print(f"  {rid}: MISSING ({exc})")
+            print(f"  seed={key}: MISSING ({exc})")
     print(f"[{sc.key}] structural — manual review of the above + run-log (no crash).")
     return 0
 
