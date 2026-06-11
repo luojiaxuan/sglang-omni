@@ -336,10 +336,11 @@ def create_sglang_tts_engine_executor(
         "dtype": dtype,
         "cuda_graph_bs": [1, 2, 4, 8, 16],
         "cuda_graph_max_bs": 16,
-        # Perf A/B knobs for the 2x2 cross-validation matrix (compile x CG).
+        # Perf A/B knobs for the backbone compile-vs-CG cross-validation.
         # Default = compile ON, CG ON (the headline config of this branch).
-        #   MOSS_TTS_DISABLE_CUDA_GRAPH=1   -> skip backbone CUDA graphs
-        #   MOSS_TTS_ENABLE_TORCH_COMPILE=0 -> skip AR-backbone torch.compile
+        #   MOSS_TTS_ENABLE_TORCH_COMPILE=0       -> skip AR-backbone torch.compile
+        #   MOSS_TTS_DISABLE_BACKBONE_CUDA_GRAPH=1-> skip ONLY backbone CG (frame CG stays on)
+        #   MOSS_TTS_DISABLE_CUDA_GRAPH=1         -> skip BOTH backbone and frame CG
         "disable_cuda_graph": _env_flag("MOSS_TTS_DISABLE_CUDA_GRAPH", False),
         "disable_overlap_schedule": True,
         "enable_torch_compile": _env_flag("MOSS_TTS_ENABLE_TORCH_COMPILE", True),
@@ -363,8 +364,24 @@ def create_sglang_tts_engine_executor(
         **overrides,
     )
 
-    want_cuda_graph = not bool(getattr(server_args, "disable_cuda_graph", False))
-    if want_cuda_graph:
+    # CUDA-graph scope. This model double-graphs two independent hot paths:
+    # the AR backbone (sglang init_device_graphs) and the per-frame local
+    # transformer (omni init_frame_decode_graphs, captured via its own
+    # torch.cuda.CUDAGraph). The global MOSS_TTS_DISABLE_CUDA_GRAPH (folded
+    # into server_args above) kills BOTH; the finer
+    # MOSS_TTS_DISABLE_BACKBONE_CUDA_GRAPH skips ONLY the backbone graph while
+    # keeping the frame graph on -- this isolates the backbone for the
+    # compile-vs-CG cross-validation (the frame loop is ~22 ms/frame eager and
+    # would otherwise dominate every measurement).
+    want_frame_cg = not bool(getattr(server_args, "disable_cuda_graph", False))
+    want_backbone_cg = want_frame_cg and not _env_flag(
+        "MOSS_TTS_DISABLE_BACKBONE_CUDA_GRAPH", False
+    )
+
+    # Suppress sglang's own backbone-CG capture during infra build so we can
+    # (optionally) compile first and capture manually. Leaving it suppressed
+    # (no restore below) keeps the backbone eager.
+    if not bool(getattr(server_args, "disable_cuda_graph", False)):
         server_args.disable_cuda_graph = True
 
     (
@@ -381,7 +398,7 @@ def create_sglang_tts_engine_executor(
         model_arch_override="MossTTSLocalSGLangModel",
     )
 
-    if want_cuda_graph:
+    if want_backbone_cg:
         server_args.disable_cuda_graph = False
 
     model = model_worker.model_runner.model
@@ -392,14 +409,15 @@ def create_sglang_tts_engine_executor(
     if bool(getattr(server_args, "enable_torch_compile", False)):
         _compile_moss_local_backbone(model)
         server_args.enable_torch_compile = False
-        if want_cuda_graph:
+        if want_backbone_cg:
             _warmup_eager_pre_cg(model_worker.model_runner)
 
-    if want_cuda_graph:
+    if want_backbone_cg:
         model_worker.model_runner.init_device_graphs()
-        # Also graph the per-frame local-transformer decode (1 + n_vq
-        # micro-steps and 13 seeded sampling passes per frame): eager it is
-        # kernel-launch-bound at ~22 ms/frame independent of batch size.
+    if want_frame_cg:
+        # Graph the per-frame local-transformer decode (1 + n_vq micro-steps
+        # and 13 seeded sampling passes per frame): eager it is kernel-launch-
+        # bound at ~22 ms/frame independent of batch size.
         model.init_frame_decode_graphs(
             list(overrides.get("cuda_graph_bs") or [1, 2, 4, 8, 16])
         )
