@@ -452,6 +452,70 @@ def test_collect_frame_skips_chunked_feedback_and_journal():
     assert result.moss_journal.rows.shape == (1, 13)
 
 
+def test_sampling_position_floor_is_sync_noop():
+    """C5 soul: on the sync path generation_steps is incremented after every
+    collect (base _finalize, the sole increment), so the floor
+    max(sampling_steps, generation_steps) is a no-op — the RNG position is
+    exactly generation_steps every step, bit-identical to pre-C5.
+    """
+    data = SimpleNamespace(generation_steps=0, sampling_steps=None)
+    for step in range(5):
+        pos = MossTTSLocalModelRunner._advance_sampling_position(data)
+        # floor no-op: position == generation_steps == the true step index
+        assert pos == data.generation_steps == step
+        assert data.sampling_steps == step + 1
+        data.generation_steps += 1  # base _finalize, after each sync collect
+
+
+def test_sampling_position_floor_leads_under_lookahead():
+    """C5 soul (async): generation_steps lags (it only moves at resolve), so the
+    floor lifts the position to the launch-advanced sampling_steps — launch(N+1)
+    samples at N+1, not the stale generation_steps (N). This is what makes async
+    ON bit-identical to sync.
+    """
+    data = SimpleNamespace(generation_steps=0, sampling_steps=None)
+    # launch(0): position 0; generation_steps NOT yet bumped (resolve lags).
+    assert MossTTSLocalModelRunner._advance_sampling_position(data) == 0
+    # launch(1) before resolve(0): generation_steps still 0, but the floor uses
+    # the launch-advanced sampling_steps (1), so the position is 1, not stale 0.
+    assert MossTTSLocalModelRunner._advance_sampling_position(data) == 1
+    assert data.sampling_steps == 2
+
+
+def test_resume_resets_sampling_steps_to_generation_steps():
+    """C5 soul: the retraction-resume branch resets sampling_steps to
+    generation_steps so a lookahead-advanced counter does not skip the resumed
+    frame's RNG position. No-op on the sync path (already equal).
+    """
+    model = _model(max_running_requests=4)
+    model.hidden_size = _HIDDEN
+    model.dtype = torch.bfloat16
+    model._prepare_multi_modal_inputs = lambda rows: torch.zeros(
+        (rows.shape[0], _HIDDEN), dtype=torch.bfloat16
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    pool.acquire_row("a")
+
+    width = 13
+    data = SimpleNamespace(
+        req=SimpleNamespace(extend_input_len=5, prefix_indices=[], rid="a"),
+        prompt_rows=torch.zeros((2, width), dtype=torch.long),
+        output_rows=[torch.zeros(width, dtype=torch.long) for _ in range(3)],
+        generation_steps=3,
+        sampling_steps=99,  # lookahead-advanced, must be reset to generation_steps
+    )
+    sched_req = SimpleNamespace(request_id="a", data=data)
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
+
+    runner._build_prefill_input_embeds(forward_batch, [sched_req])
+
+    assert data.sampling_steps == 3, "resume must reset sampling_steps to generation_steps"
+
+
 def test_journal_rid_assertion_fires():
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))

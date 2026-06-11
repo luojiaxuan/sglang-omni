@@ -115,6 +115,11 @@ class MossTTSLocalModelRunner(ModelRunner):
                 # stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
+                # The resume re-samples frame `generation_steps` at RNG position
+                # `generation_steps`; reset the launch-side counter to match so a
+                # lookahead-advanced sampling_steps does not skip the position.
+                # No-op on the sync path (the two are already equal there).
+                data.sampling_steps = int(getattr(data, "generation_steps", 0))
                 self.model._state_pool.reset_for_refill(sched_req.request_id)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
@@ -238,7 +243,9 @@ class MossTTSLocalModelRunner(ModelRunner):
         audio_top_k = params["audio_top_k"]
         sampling_seeds = params["seeds"]
         gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
+            [self._advance_sampling_position(d) for d in datas],
+            dtype=torch.long,
+            device=device,
         )
         rep_penalties = [float(d.audio_repetition_penalty) for d in datas]
         rep_histories = self._gather_rep_histories(datas, rep_penalties, device)
@@ -397,6 +404,25 @@ class MossTTSLocalModelRunner(ModelRunner):
         no GPU->CPU sync. See ``docs/design/gpu_radix_hash.md``.
         """
         return gpu_radix_row_hash(rows, next_text, end_id)
+
+    @staticmethod
+    def _advance_sampling_position(data: Any) -> int:
+        """Return this collect's seeded-sampling RNG position and advance the
+        per-request launch-side counter (floor mode).
+
+        ``position = max(sampling_steps or 0, generation_steps)``. On the sync
+        path every collect is immediately followed by ``generation_steps += 1``
+        (base ``_finalize``, the sole increment point), so ``sampling_steps`` and
+        ``generation_steps`` stay equal and the floor is a no-op — the position
+        is exactly ``generation_steps``, bit-identical to before. Under async
+        lookahead, ``generation_steps`` only moves at resolve (one step behind),
+        so ``launch(N+1)`` would otherwise reuse the stale ``N``; the floor lifts
+        it to the ``N+1`` that ``launch(N)`` already advanced ``sampling_steps``
+        to.
+        """
+        s = max(int(getattr(data, "sampling_steps", None) or 0), int(data.generation_steps))
+        data.sampling_steps = s + 1
+        return s
 
     @staticmethod
     def _gather_rep_histories(
