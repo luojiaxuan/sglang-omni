@@ -335,6 +335,7 @@ def test_model_worker_backend_policy_precedence(
         "_is_fp8_cutlass_moe_supported",
         lambda: case.cutlass_supported,
     )
+    monkeypatch.setattr(model_worker, "_is_h20_device", lambda: False)
     server_args = _server_args(
         quantization=case.server_quantization,
         moe_runner_backend=case.initial_moe_backend,
