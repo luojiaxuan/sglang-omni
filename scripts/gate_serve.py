@@ -19,8 +19,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gate_dump_hook  # noqa: E402  (gate-only module)
+import gate_query_counters  # noqa: E402  (gate-only module)
 
 gate_dump_hook.install()
+gate_query_counters.install()
 
 from sglang_omni.cli import app  # noqa: E402
 
