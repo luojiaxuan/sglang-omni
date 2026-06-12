@@ -243,8 +243,29 @@ class MossTTSLocalModelRunner(ModelRunner):
         audio_top_p = params["audio_top_p"]
         audio_top_k = params["audio_top_k"]
         sampling_seeds = params["seeds"]
+        # Sampling position per row. Advance the launch-side counter only for the
+        # rows whose frame is actually emitted; non-final chunked rows (filtered
+        # into emit_set below) get a read-only position so the batched decode has
+        # one but do not advance, mirroring how D1 advances generation_steps only
+        # for emitted rows. A mid-prefill chunk's garbage frame must not shift the
+        # final chunk's sampling position off the no-chunk path.
+        emit_set = {
+            i
+            for i, sched_req in enumerate(requests)
+            if not self._is_chunked_request(sched_req)
+        }
         gen_steps = torch.tensor(
-            [self._advance_sampling_position(d) for d in datas],
+            [
+                (
+                    self._advance_sampling_position(d)
+                    if i in emit_set
+                    else max(
+                        int(getattr(d, "sampling_steps", None) or 0),
+                        int(d.generation_steps),
+                    )
+                )
+                for i, d in enumerate(datas)
+            ],
             dtype=torch.long,
             device=device,
         )
@@ -318,11 +339,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             embeds = self.model._prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
-        emit_indices = [
-            i
-            for i, sched_req in enumerate(requests)
-            if not self._is_chunked_request(sched_req)
-        ]
+        emit_indices = sorted(emit_set)
         if emit_indices:
             emit_index_t = torch.tensor(
                 emit_indices, dtype=torch.long, device=rows.device

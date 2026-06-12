@@ -1396,6 +1396,84 @@ def test_async_launch_resolve_matches_sync_collect():
     assert torch.equal(req_s.data.output_rows[0], req_a.data.output_rows[0])
 
 
+def test_chunked_rows_do_not_advance_sampling_steps():
+    """A non-final chunked-prefill row's garbage frame must not advance the
+    launch-side sampling counter, so the final chunk samples at the same RNG
+    position as a single-shot prefill (mirrors D1's generation_steps handling).
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+
+    hidden_size = 4
+
+    def _make_runner():
+        weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+        model = types.SimpleNamespace(
+            _decode_input_embedding=types.SimpleNamespace(weight=weight),
+            _state_pool=None,
+            config=types.SimpleNamespace(
+                n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
+            ),
+            frame_graph_max_bs=0,
+            device=torch.device("cpu"),
+        )
+        pool = MossTTSLocalDecodeStatePool(model)
+        model._state_pool = pool
+        model.acquire_row = pool.acquire_row
+        model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
+            torch.zeros(1, dtype=torch.long),
+            torch.arange(12, dtype=torch.long).reshape(1, 12),
+        )
+        model._prepare_multi_modal_inputs = lambda rows: torch.full(
+            (1, hidden_size), 3, dtype=torch.bfloat16
+        )
+        runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner.model = model
+        return runner
+
+    def _result():
+        return types.SimpleNamespace(
+            logits_output=types.SimpleNamespace(
+                hidden_states=torch.zeros(1, hidden_size)
+            )
+        )
+
+    def _data(is_chunked):
+        return types.SimpleNamespace(
+            req=types.SimpleNamespace(is_chunked=is_chunked),
+            text_temperature=1.0,
+            text_top_p=1.0,
+            text_top_k=50,
+            audio_temperature=1.0,
+            audio_top_p=1.0,
+            audio_top_k=50,
+            sampling_seed=0,
+            generation_steps=0,
+            sampling_steps=None,
+            audio_repetition_penalty=1.0,
+            output_rows=[],
+        )
+
+    # Single-shot prefill: the only chunk is final, advances sampling_steps to 1.
+    r = _make_runner()
+    single = types.SimpleNamespace(request_id="r", data=_data(is_chunked=0))
+    r._run_frame_decode(_result(), [single])
+    assert single.data.sampling_steps == 1
+
+    # Three-chunk prefill on the same request: the mid chunks do not advance, the
+    # final chunk does, so the end state matches the single-shot path.
+    r = _make_runner()
+    data = _data(is_chunked=2)
+    sched = types.SimpleNamespace(request_id="r", data=data)
+    for is_chunked in (2, 1, 0):
+        data.req.is_chunked = is_chunked
+        r._run_frame_decode(_result(), [sched])
+    assert data.sampling_steps == 1
+
+
 def test_async_decode_cli_accepts_moss_local():
     """The set-ized --async-decode CLI gate accepts the MOSS-TTS-Local engine
     factory (no BadParameter) and writes the flags onto its tts_engine stage.
