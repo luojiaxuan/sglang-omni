@@ -37,10 +37,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     req: Any = None
     synced: bool = False
     generation_steps: int = 0
-    # Launch-side seeded-sampling step counter (PR-B async decode). None until
-    # the first collect. generation_steps moves at resolve (one step behind under
-    # lookahead); sampling_steps advances at launch so the RNG position is the
-    # true step index. Floored by generation_steps so the sync path is unchanged.
+    # Launch-side seeded-sampling step counter (async decode): advances at launch
+    # while generation_steps moves at resolve. Floored so the sync path is unchanged.
     sampling_steps: int | None = None
     suppress_tokens: list[int] | None = None
     input_embeds_are_projected: bool = False

@@ -617,14 +617,10 @@ class OmniScheduler:
         """
         self._emit_prefill_start_for_batch(batch)
         if self._model_runner is not None:
-            # Mirror upstream run_batch's per-forward counter. OmniScheduler
-            # overrides run_batch, so upstream's ``self.forward_ct += 1``
-            # (scheduler.py run_batch) never runs on this path; without it
-            # forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL gate
-            # (``forward_ct % INTERVAL == 0``) fires every decode step. The
-            # fallback branch below reaches upstream run_batch, which counts
-            # itself, so we only count the custom-runner path here. (getattr:
-            # __init__ sets forward_ct, but object.__new__ test fixtures don't.)
+            # Mirror upstream run_batch's per-forward counter: OmniScheduler
+            # overrides run_batch, so without this forward_ct stays 0 and
+            # SGLANG_TEST_RETRACT fires every step. Only the custom-runner path
+            # needs it (the fallback reaches upstream run_batch, which counts).
             self.forward_ct = getattr(self, "forward_ct", 0) + 1
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
@@ -1015,18 +1011,14 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        # A request RETRACTED at step S (KV freed, moved back to the waiting
-        # queue) is still present in step S+1's already-launched lagged batch.
-        # Upstream process_batch_result would append + check_finished and, if the
-        # lagged frame triggers a finish, re-free its already-freed KV — the
-        # enable_overlap guard upstream that would skip it is off in this stack.
-        # So treat a retracted req exactly like a prior-step finish: drop it from
-        # this resolve batch (suppress stream emit + exclude from keep) so
-        # process_batch_result never touches it.
+        # A request retracted at step S (KV freed) is still in step S+1's lagged
+        # batch; without dropping it, process_batch_result would re-free its KV
+        # (the upstream enable_overlap guard is off here). Treat it like a
+        # prior-step finish: drop it from this resolve batch.
         pre_finished = [
             r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
-        # rids finished/retracted in a PRIOR step (overrun) — suppress their emit
+        # rids finished/retracted in a prior step (overrun): suppress their emit
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
@@ -1082,10 +1074,8 @@ class OmniScheduler:
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
-            # Model gate: a runner whose collect has a sync-only fallback routes
-            # those batches through the synchronous path (default True). getattr
-            # keeps the gate safe for scheduler test fixtures built without a
-            # model runner; in production _model_runner is always set.
+            # Route through sync when the runner's collect has a sync-only
+            # fallback (default True for runners not overriding lookahead_eligible).
             runner = getattr(self, "_model_runner", None)
             use_lookahead = (
                 batch is not None

@@ -187,10 +187,8 @@ class ModelRunner:
         else:
             pending.event.synchronize()
             self._async_query_miss += 1
-        # finished() covers the overrun finish; is_retracted covers a request
-        # retracted (KV freed) while its lagged step was in flight — both must be
-        # skipped so _finalize neither re-emits nor re-frees them (mirrors the
-        # scheduler-side drop in _resolve_and_process).
+        # Skip reqs finished or retracted in a prior (lagged) step so _finalize
+        # neither re-emits nor re-frees their KV (mirrors _resolve_and_process).
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
@@ -426,13 +424,9 @@ class ModelRunner:
     def lookahead_eligible(self, batch: Any) -> bool:
         """Whether this batch may use one-step async-decode lookahead.
 
-        Default True: a model implementing post_decode_launch/resolve is
-        lookahead-safe for any batch it accepts. A model whose collect has a
-        sync-only fallback (e.g. an eager path that reads lagging per-request
-        history, which under lookahead would diverge from sync) overrides this
-        to route such batches through the synchronous path. The scheduler's
-        async gate consults it (in addition to the min-batch-size and is-decode
-        checks).
+        Default True. A runner whose collect has a sync-only fallback (one that
+        would diverge from sync under a one-step lag) overrides this to route
+        those batches synchronously. The scheduler's async gate consults it.
         """
         del batch
         return True
