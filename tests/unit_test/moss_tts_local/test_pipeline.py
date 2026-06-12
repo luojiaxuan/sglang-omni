@@ -411,7 +411,6 @@ def test_audio_repetition_penalty_matches_upstream_semantics():
 
 
 def test_row_radix_token_ids_hash_rows_and_keep_eos():
-    from sglang_omni.models.moss_tts.request_builders import build_row_cache_key_ids
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 
     end_id = 151670
@@ -422,14 +421,17 @@ def test_row_radix_token_ids_hash_rows_and_keep_eos():
     next_text = rows[:, 0].clone()
 
     out = MossTTSLocalModelRunner._row_radix_token_ids(rows, next_text, end_id)
-    expected = [k % 151643 for k in build_row_cache_key_ids(rows)]
+    # Post-090c9cf the generated-row key is the capture-safe GPU polynomial hash
+    # (gpu_radix_row_hash), not the host blake2b; assert the spec the key must
+    # satisfy, not a specific digest. Exact hash semantics live in
+    # test_radix_hash.py / docs/design/gpu_radix_hash.md.
     assert int(out[1]) == end_id  # stop decision keeps the raw eos id
-    assert int(out[0]) == expected[0]
-    assert int(out[2]) == expected[2]
-    assert int(out[0]) != int(out[2])  # different codes -> different keys
+    assert int(out[0]) != int(out[2])  # full-row dependence: codes differ -> keys
     assert int(out[0]) != slot_id  # no longer the constant slot id
-    # Generated ids must stay inside the vocab: the scheduler finishes any
-    # request whose output id crosses the vocab boundary.
+    # Hashed (non-eos) rows fold below the special-token band so the scheduler's
+    # vocab-boundary finish never trips on a generated frame.
+    assert int(out[0]) < 151643
+    assert int(out[2]) < 151643
     assert all(0 <= int(v) < 151936 for v in out)
 
 
@@ -1186,6 +1188,11 @@ def test_post_process_outputs_skips_chunked_rows():
 
 
 def test_finalize_skip_rids_selects_chunked_rows():
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
 
     def _sched_req(rid, is_chunked):
@@ -1207,6 +1214,11 @@ def test_chunked_prefill_generation_steps_matches_single_shot():
     # generation_steps identical to a single-shot prefill, so the first decode
     # frame samples at the same position (position = generation_steps *
     # num_channels + channel) — bit-identical to the no-chunk path.
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
     class _OutputProcessor:
         def process(self, batch_result, scheduler_output):
             del batch_result
