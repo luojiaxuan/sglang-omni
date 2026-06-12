@@ -4,8 +4,15 @@ Bit-identity and overrun-safety gate for the PR-B one-step lookahead. Same
 build, the only difference between the two arms is `--async-decode on|off` plus
 each scenario's flags/env. The comparison point is the vocoder-entry
 `state.audio_codes` (isolating the AR from vocoder non-determinism), dumped per
-request keyed by seed. The single source of truth for the scenario table is
-`scripts/gate_async_decode.py` (`SCENARIOS`); this doc explains the methodology.
+request keyed by seed.
+
+The GPU integration harness (the server launcher, the dump/counter hooks, the
+concurrent driver, the ABAB runner) is operational tooling that needs a live
+serving stack and GPUs, so it lives outside the product tree rather than in this
+PR's diff. Its CPU-testable contract, the scenario table and the comparison and
+counter logic, is locked by
+`tests/unit_test/moss_tts_local/test_gate_scenarios.py`; this doc explains the
+methodology the harness implements.
 
 ## Concurrency (load-bearing)
 
@@ -109,13 +116,12 @@ touched the lookahead. The concurrent rewrite makes three changes, recorded here
 
 ## Running
 
-`scripts/gate_run.sh` drives both arms per scenario on the same cards (launch
-OFF, send, kill; launch ON, send, kill; compare). Pass scenarios as ONE quoted
-argument (`SCENARIOS=${1:-...}` takes only `$1`):
+The operational harness (kept as cluster tooling, outside this PR) drives both
+arms per scenario on the same cards: launch OFF, send concurrently, kill; launch
+ON, send, kill; compare. It is run on the GPU box before merge and the run log is
+pasted into the PR.
 
-```
-GATE_CARDS=7 bash scripts/gate_run.sh "S1 S2 S3a S3b S4 S5"
-```
-
-CPU unit tests cover the launch/resolve contract; this gate is the GPU
-integration check and is run before merge, with the run log pasted into the PR.
+CPU coverage in-tree: the launch/resolve contract is tested by
+`tests/unit_test/moss_tts_local/test_pipeline.py` and
+`tests/unit_test/pipeline/test_async_decode.py`; the gate scenario table and the
+comparison/counter logic by `test_gate_scenarios.py`.
