@@ -375,6 +375,21 @@ class MossTTSLocalModelRunner(ModelRunner):
         req = getattr(sched_req.data, "req", None)
         return req is not None and getattr(req, "is_chunked", 0) > 0
 
+    def finalize_skip_rids(self, scheduler_output) -> set[str]:
+        """Non-final chunked-prefill rows must not advance ``generation_steps``.
+
+        Their micro-decode still runs (as today), but the spurious step would
+        shift the final chunk's sampling position off the no-chunk path; the
+        sampling is positional (``position = generation_steps * num_channels +
+        channel``), so suppressing the advance keeps the chunked path
+        bit-identical to the single-shot prefill path.
+        """
+        return {
+            sched_req.request_id
+            for sched_req in scheduler_output.requests
+            if self._is_chunked_request(sched_req)
+        }
+
     def post_process_outputs(
         self,
         result: Any,
