@@ -45,6 +45,9 @@ def install() -> bool:
                         f"{getattr(self, '_async_query_miss', 0)}"
                     )
             except Exception:
+                # Best-effort gate-only telemetry: never let a counter-dump I/O
+                # error perturb the resolve it wraps (the gate reads whatever the
+                # last successful write left).
                 pass
         return r
 
