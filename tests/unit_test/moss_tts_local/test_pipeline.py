@@ -1344,9 +1344,15 @@ def test_async_launch_resolve_matches_sync_collect():
     def _sched_req():
         data = types.SimpleNamespace(
             req=None,
-            text_temperature=1.0, text_top_p=1.0, text_top_k=50,
-            audio_temperature=1.0, audio_top_p=1.0, audio_top_k=50,
-            sampling_seed=0, generation_steps=0, audio_repetition_penalty=1.0,
+            text_temperature=1.0,
+            text_top_p=1.0,
+            text_top_k=50,
+            audio_temperature=1.0,
+            audio_top_p=1.0,
+            audio_top_k=50,
+            sampling_seed=0,
+            generation_steps=0,
+            audio_repetition_penalty=1.0,
             output_rows=[],
         )
         return types.SimpleNamespace(request_id="rid", data=data)

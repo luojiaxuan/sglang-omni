@@ -87,9 +87,10 @@ class MossTTSLocalModelRunner(ModelRunner):
             return False
         for req in reqs:
             data = getattr(req, "_omni_data", None)
-            if data is not None and float(
-                getattr(data, "audio_repetition_penalty", 1.0)
-            ) != 1.0:
+            if (
+                data is not None
+                and float(getattr(data, "audio_repetition_penalty", 1.0)) != 1.0
+            ):
                 return False
         return True
 
@@ -420,7 +421,9 @@ class MossTTSLocalModelRunner(ModelRunner):
         it to the ``N+1`` that ``launch(N)`` already advanced ``sampling_steps``
         to.
         """
-        s = max(int(getattr(data, "sampling_steps", None) or 0), int(data.generation_steps))
+        s = max(
+            int(getattr(data, "sampling_steps", None) or 0), int(data.generation_steps)
+        )
         data.sampling_steps = s + 1
         return s
 
