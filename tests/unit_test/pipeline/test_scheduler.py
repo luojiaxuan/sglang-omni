@@ -652,6 +652,8 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     scheduler._aborted_request_ids = set()
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 128
 
     sampling_params = SimpleNamespace(max_new_tokens=10)
     req = SimpleNamespace(
@@ -683,6 +685,8 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     scheduler._aborted_request_ids = set()
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 128
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -734,6 +738,8 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
     scheduler.tree_cache = None
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 128
     scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
 
     over_context_req = SimpleNamespace(
@@ -781,6 +787,8 @@ def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None
     scheduler._aborted_request_ids = set()
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
+    scheduler.page_size = 1
+    scheduler.max_total_num_tokens = 128
 
     sampling_params = SimpleNamespace(max_new_tokens=3)
     req = SimpleNamespace(
