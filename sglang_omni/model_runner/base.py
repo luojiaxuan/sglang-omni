@@ -323,6 +323,12 @@ class ModelRunner:
         """
         return set()
 
+    def on_generation_step_advanced(
+        self, sched_req: Any, generation_steps: int
+    ) -> None:
+        """Hook after ``generation_steps`` is committed on request data."""
+        return None
+
     def _finalize(
         self,
         batch_result,
@@ -371,6 +377,7 @@ class ModelRunner:
                 continue
             data = sched_req.data
             data.generation_steps = int(data.generation_steps) + 1
+            self.on_generation_step_advanced(sched_req, data.generation_steps)
             req_output = outputs[sched_req.request_id]
             extra = req_output.extra
             if isinstance(extra, dict) and extra:

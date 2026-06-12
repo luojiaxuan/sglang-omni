@@ -2,9 +2,10 @@
 """Row-indexed decode-state pool for MOSS-TTS Local (v1.5).
 
 Next-step-critical per-request decode state (the next frame's feedback
-embedding and the request-static sampling parameters/seed) lives in stable,
-process-lifetime GPU buffers indexed by a per-request row. Output-only frame
-collection moves to a per-step :class:`MossTTSLocalDecodeJournal`.
+embedding, request-static sampling parameters/seed, and generation step) lives
+in stable, process-lifetime GPU buffers indexed by a per-request row.
+Output-only frame collection moves to a per-step
+:class:`MossTTSLocalDecodeJournal`.
 
 ``P = max_running_requests + 1`` rows indexed by a per-request row. The last
 row (``padding_row = P - 1``) is reserved — never acquired — as a stable
@@ -65,6 +66,9 @@ class MossTTSLocalDecodeStatePool:
             self.num_rows, device=self.device, dtype=torch.int64
         )
         self.seeds = torch.zeros(self.num_rows, device=self.device, dtype=torch.int64)
+        self.generation_steps = torch.zeros(
+            self.num_rows, device=self.device, dtype=torch.int64
+        )
 
         self._rid_to_row: dict[str, int] = {}
         self._params_written_rids: set[str] = set()
@@ -110,6 +114,7 @@ class MossTTSLocalDecodeStatePool:
         self.text_top_k[row_idx] = 0
         self.audio_top_k[row_idx] = 0
         self.seeds[row_idx] = 0
+        self.generation_steps[row_idx] = 0
 
     def write_params(self, row_idx: int, data: Any) -> None:
         """Write the seven request-static sampling fields into ``row_idx``.
@@ -136,7 +141,14 @@ class MossTTSLocalDecodeStatePool:
         """Force params to be rewritten on the next ``ensure_params`` call."""
         self._params_written_rids.discard(rid)
 
-    def reset_for_refill(self, rid: str) -> bool:
+    def commit_generation_step(self, rid: str, generation_steps: int) -> None:
+        """Mirror the request's committed generation step into its pool row."""
+        row_idx = self.row_for(rid)
+        if row_idx is None:
+            return
+        self.generation_steps[row_idx] = int(generation_steps)
+
+    def reset_for_refill(self, rid: str, generation_steps: int = 0) -> bool:
         """Invalidate params and zero ``rid``'s row for a retraction re-prefill.
 
         Returns ``False`` (no-op) when ``rid`` holds no row.
@@ -146,11 +158,24 @@ class MossTTSLocalDecodeStatePool:
             return False
         self.invalidate_params(rid)
         self.reset_row(row_idx)
+        self.generation_steps[row_idx] = int(generation_steps)
         return True
 
     def row_for(self, rid: str) -> int | None:
         """Return ``rid``'s row, or ``None`` if it holds no row."""
         return self._rid_to_row.get(rid)
+
+    def prepare_active_rows(
+        self, requests: list[Any]
+    ) -> tuple[torch.Tensor, list[int]]:
+        """Acquire active rows and write request-static params for this batch."""
+        pool_rows = []
+        for sched_req in requests:
+            rid = sched_req.request_id
+            row_idx = self.acquire_row(rid)
+            pool_rows.append(row_idx)
+            self.ensure_params(row_idx, rid, sched_req.data)
+        return torch.tensor(pool_rows, dtype=torch.long, device=self.device), pool_rows
 
 
 class MossTTSLocalDecodeJournal:

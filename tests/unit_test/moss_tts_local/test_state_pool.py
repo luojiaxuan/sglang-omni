@@ -58,6 +58,8 @@ def test_pool_dims_derive_from_embedding_weight():
     for name in ("text_top_k", "audio_top_k", "seeds"):
         assert getattr(pool, name).shape == (5,)
         assert getattr(pool, name).dtype == torch.int64
+    assert pool.generation_steps.shape == (5,)
+    assert pool.generation_steps.dtype == torch.int64
 
 
 def test_acquire_is_idempotent_by_rid():
@@ -113,12 +115,14 @@ def test_release_resets_row_fields():
     pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.write_params(row, _params(seed=123))
+    pool.commit_generation_step("a", 3)
     pool.feedback_embeds[row].fill_(1.0)
     pool.release_row("a")
     assert torch.all(pool.feedback_embeds[row] == 0)
     assert pool.text_temp[row] == 0.0
     assert pool.audio_top_k[row] == 0
     assert pool.seeds[row] == 0
+    assert pool.generation_steps[row] == 0
 
 
 def test_reset_row_zeroes_all_fields():
@@ -136,6 +140,7 @@ def test_reset_row_zeroes_all_fields():
         "text_top_k",
         "audio_top_k",
         "seeds",
+        "generation_steps",
     ):
         assert getattr(pool, name)[row] == 0
 
@@ -181,15 +186,27 @@ def test_row_for_returns_none_when_unheld():
     assert pool.row_for("a") == row
 
 
+def test_commit_generation_step_updates_active_row():
+    pool = MossTTSLocalDecodeStatePool(_model())
+    row = pool.acquire_row("a")
+
+    pool.commit_generation_step("a", 7)
+    pool.commit_generation_step("ghost", 3)
+
+    assert int(pool.generation_steps[row]) == 7
+
+
 def test_reset_for_refill_clears_active_row():
     pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", _params(seed=1))
+    pool.commit_generation_step("a", 4)
     pool.feedback_embeds[row] = 1.0
 
-    assert pool.reset_for_refill("a") is True
+    assert pool.reset_for_refill("a", generation_steps=4) is True
     assert int(pool.seeds[row]) == 0
     assert int(torch.count_nonzero(pool.feedback_embeds[row])) == 0
+    assert int(pool.generation_steps[row]) == 4
     # params were invalidated, so the next ensure_params re-writes them.
     pool.ensure_params(row, "a", _params(seed=2))
     assert int(pool.seeds[row]) == 2
@@ -204,6 +221,21 @@ def test_reset_for_refill_is_noop_for_unheld_rid():
     # the held row and its write-once flag are untouched.
     pool.ensure_params(row, "a", _params(seed=9))
     assert int(pool.seeds[row]) == 1
+
+
+def test_prepare_active_rows_gathers_rows_and_params():
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
+    reqs = [
+        SimpleNamespace(request_id="a", data=_params(seed=11)),
+        SimpleNamespace(request_id="b", data=_params(seed=22)),
+    ]
+
+    row_t, rows = pool.prepare_active_rows(reqs)
+
+    assert row_t.dtype == torch.long
+    assert row_t.device == pool.device
+    assert rows == [pool.row_for("a"), pool.row_for("b")]
+    assert torch.equal(pool.seeds[row_t], torch.tensor([11, 22], dtype=torch.long))
 
 
 def test_journal_holds_fields():
@@ -232,8 +264,8 @@ def test_feedback_gather_equals_old_popleft():
     runner.model = model
     forward_batch = SimpleNamespace(input_ids=torch.full((2,), -1, dtype=torch.long))
     requests = [
-        SimpleNamespace(request_id="a", data=SimpleNamespace()),
-        SimpleNamespace(request_id="b", data=SimpleNamespace()),
+        SimpleNamespace(request_id="a", data=_params(seed=1)),
+        SimpleNamespace(request_id="b", data=_params(seed=2)),
     ]
 
     runner._write_decode_input_embedding(forward_batch, requests)
@@ -249,7 +281,7 @@ def test_fresh_row_zeros_feedback():
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = model
     forward_batch = SimpleNamespace(input_ids=torch.full((1,), -1, dtype=torch.long))
-    requests = [SimpleNamespace(request_id="fresh", data=SimpleNamespace())]
+    requests = [SimpleNamespace(request_id="fresh", data=_params(seed=1))]
 
     runner._write_decode_input_embedding(forward_batch, requests)
 
@@ -327,6 +359,103 @@ def test_double_collect_overwrites_feedback():
     )
 
 
+def test_collect_frame_reads_generation_steps_from_pool():
+    hidden_size = 4
+    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+    embedding = SimpleNamespace(weight=weight)
+    model = SimpleNamespace(
+        _decode_input_embedding=embedding,
+        _state_pool=None,
+        config=SimpleNamespace(
+            n_vq=12,
+            audio_assistant_slot_token_id=1000,
+            audio_end_token_id=1001,
+        ),
+        frame_graph_max_bs=1,
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    captured = {}
+
+    def decode_frame_graphed(hidden_states, **kwargs):
+        del hidden_states
+        captured["base_positions"] = kwargs["base_positions"].detach().clone()
+        return (
+            torch.zeros(1, dtype=torch.long),
+            torch.full((1, 12), 7, dtype=torch.long),
+            torch.ones((1, hidden_size), dtype=torch.bfloat16),
+        )
+
+    model.decode_frame_graphed = decode_frame_graphed
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    data = SimpleNamespace(
+        req=SimpleNamespace(is_chunked=0),
+        text_temperature=1.0,
+        text_top_p=1.0,
+        text_top_k=50,
+        audio_temperature=1.0,
+        audio_top_p=1.0,
+        audio_top_k=50,
+        sampling_seed=0,
+        generation_steps=99,
+        audio_repetition_penalty=1.0,
+        output_rows=[],
+    )
+    request = SimpleNamespace(request_id="rid", data=data)
+    row = pool.acquire_row("rid")
+    pool.ensure_params(row, "rid", data)
+    pool.commit_generation_step("rid", 4)
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
+    )
+
+    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+
+    assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
+
+
+def test_finalize_commits_generation_steps_to_pool():
+    model = _model(max_running_requests=2)
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    model.config = SimpleNamespace(audio_end_token_id=1001)
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    runner.output_processor = SimpleNamespace(
+        process=lambda batch_result, scheduler_output: {
+            req.request_id: SimpleNamespace(data=1000, extra=None)
+            for req in scheduler_output.requests
+        }
+    )
+    data = SimpleNamespace(
+        req=SimpleNamespace(is_chunked=0),
+        generation_steps=0,
+        extra_model_outputs={},
+        output_rows=[],
+    )
+    sched_req = SimpleNamespace(request_id="rid", data=data)
+    row = pool.acquire_row("rid")
+
+    runner._finalize(
+        SimpleNamespace(
+            next_token_ids=torch.tensor([0]),
+            logits_output=None,
+            can_run_cuda_graph=False,
+            moss_journal=None,
+        ),
+        SimpleNamespace(),
+        SimpleNamespace(is_prefill_only=False, output_ids=None),
+        SimpleNamespace(seq_lens=[1], input_ids=torch.zeros(1, dtype=torch.long)),
+        SimpleNamespace(requests=[sched_req]),
+    )
+
+    assert data.generation_steps == 1
+    assert int(pool.generation_steps[row]) == 1
+
+
 def test_resume_reprefill_overwrites_stranded_feedback():
     """Retraction resume wipes the stranded feedback row and forces a param
     re-write — the pool-row replacement for the old
@@ -344,6 +473,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
 
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", _params(seed=1))
+    pool.commit_generation_step("a", 3)
     # Feedback stranded by the retraction (must be wiped by the resume).
     pool.feedback_embeds[row].fill_(5.0)
 
@@ -356,6 +486,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
         req=SimpleNamespace(extend_input_len=5, prefix_indices=[], rid="a"),
         prompt_rows=prompt_rows,
         output_rows=generated,
+        generation_steps=3,
     )
     sched_req = SimpleNamespace(request_id="a", data=data)
 
@@ -366,6 +497,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     runner._build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert torch.all(pool.feedback_embeds[row] == 0), "stranded feedback must be wiped"
+    assert int(pool.generation_steps[row]) == 3, "resume must preserve sample position"
     pool.ensure_params(row, "a", _params(seed=2))
     assert int(pool.seeds[row]) == 2, "params must be re-written on resume"
 

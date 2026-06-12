@@ -117,7 +117,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             # a frame (empty output_rows). Both are no-ops for a fresh prefill:
             # the counters are already aligned and no pool row is held.
             data.sampling_steps = int(getattr(data, "generation_steps", 0))
-            self.model._state_pool.reset_for_refill(sched_req.request_id)
+            self.model._state_pool.reset_for_refill(
+                sched_req.request_id, int(data.generation_steps)
+            )
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(
@@ -160,10 +162,11 @@ class MossTTSLocalModelRunner(ModelRunner):
                 "MOSS-TTS Local decode batch exceeds the staged decode-embedding "
                 f"rows ({batch_size} > {pool.padding_row})"
             )
-        pool_rows = [pool.acquire_row(sched_req.request_id) for sched_req in requests]
-        row_tensor = torch.tensor(pool_rows, dtype=torch.long, device=weight.device)
+        row_tensor, pool_rows = pool.prepare_active_rows(requests)
         with torch.no_grad():
             weight[:batch_size].copy_(pool.feedback_embeds[row_tensor])
+        forward_batch.moss_pool_row_t = row_tensor
+        forward_batch.moss_pool_rows = pool_rows
 
         row_ids = torch.arange(
             batch_size,
@@ -179,7 +182,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        del forward_batch
         if not requests:
             return
         rows, end_id = self._run_frame_decode(result, requests)
@@ -206,19 +208,14 @@ class MossTTSLocalModelRunner(ModelRunner):
         cfg = self.model.config
         device = hidden_states.device
         pool = self.model._state_pool
-        pool_rows = []
-        for sched_req in requests:
-            rid = sched_req.request_id
-            row = self.model.acquire_row(rid)
-            pool_rows.append(row)
-            pool.ensure_params(row, rid, sched_req.data)
         datas = [sched_req.data for sched_req in requests]
         batch_size = len(datas)
         num_channels = int(cfg.n_vq) + 1
 
-        row_t = torch.tensor(
-            pool_rows, dtype=torch.long, device=pool.feedback_embeds.device
-        )
+        row_t = getattr(forward_batch, "moss_pool_row_t", None)
+        pool_rows = getattr(forward_batch, "moss_pool_rows", None)
+        if row_t is None or pool_rows is None:
+            row_t, pool_rows = pool.prepare_active_rows(requests)
         params = {
             "text_temp": pool.text_temp[row_t],
             "text_top_p": pool.text_top_p[row_t],
@@ -243,21 +240,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             for i, sched_req in enumerate(requests)
             if not self._is_chunked_request(sched_req)
         }
-        gen_steps = torch.tensor(
-            [
-                (
-                    self._advance_sampling_position(d)
-                    if i in emit_set
-                    else max(
-                        int(getattr(d, "sampling_steps", None) or 0),
-                        int(d.generation_steps),
-                    )
-                )
-                for i, d in enumerate(datas)
-            ],
-            dtype=torch.long,
-            device=device,
-        )
+        gen_steps = pool.generation_steps[row_t].to(device=device)
         rep_penalties = [float(d.audio_repetition_penalty) for d in datas]
         rep_histories = self._gather_rep_histories(datas, rep_penalties, device)
 
@@ -490,6 +473,13 @@ class MossTTSLocalModelRunner(ModelRunner):
             for sched_req in scheduler_output.requests
             if self._is_chunked_request(sched_req)
         }
+
+    def on_generation_step_advanced(
+        self, sched_req: Any, generation_steps: int
+    ) -> None:
+        pool = getattr(self.model, "_state_pool", None)
+        if pool is not None:
+            pool.commit_generation_step(sched_req.request_id, generation_steps)
 
     def post_process_outputs(
         self,
