@@ -84,11 +84,11 @@ def read_counters(counter_file: str) -> tuple[int, int]:
     scenario that never engages lookahead leaves no file."""
     if not counter_file or not os.path.exists(counter_file):
         return 0, 0
-    try:
-        parts = open(counter_file).read().split()
-        return int(parts[0]), int(parts[1])
-    except Exception:  # noqa: BLE001
-        return 0, 0
+    with open(counter_file) as f:
+        parts = f.read().split()
+    if len(parts) != 2:
+        raise ValueError(f"invalid counter file {counter_file!r}: {parts!r}")
+    return int(parts[0]), int(parts[1])
 
 
 def counters_ok(sc: Scenario, counter_file: str) -> bool:
@@ -161,3 +161,11 @@ def test_counter_assertion_engaged_vs_sync(tmp_path):
     assert read_counters(str(f)) == (39, 0)
     assert counters_ok(s2, str(f)) is True
     assert counters_ok(s5, str(f)) is False
+
+
+def test_malformed_counter_file_fails(tmp_path):
+    f = tmp_path / "counters.txt"
+    f.write_text("39")
+
+    with pytest.raises(ValueError, match="invalid counter file"):
+        read_counters(str(f))
