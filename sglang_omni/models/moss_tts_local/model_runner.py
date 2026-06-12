@@ -457,12 +457,9 @@ class MossTTSLocalModelRunner(ModelRunner):
         active = token_presence.to(device=logits.device, dtype=torch.bool) & (
             penalties != 1.0
         ).unsqueeze(-1)
-        scale = torch.where(
-            logits < 0,
-            penalties.unsqueeze(-1),
-            torch.reciprocal(penalties).unsqueeze(-1),
-        )
-        logits.copy_(torch.where(active, logits * scale, logits))
+        penalties = penalties.unsqueeze(-1)
+        penalized = torch.where(logits < 0, logits * penalties, logits / penalties)
+        logits.copy_(torch.where(active, penalized, logits))
 
     @staticmethod
     def _is_chunked_request(sched_req: Any) -> bool:
