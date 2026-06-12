@@ -1,22 +1,52 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression test for the async-decode gate contract.
+"""Regression test for the async-decode gate, and the home of its methodology.
 
-The GPU integration driver that runs the S1-S5 ON/OFF gate lives as operational
-tooling outside the product tree (it needs a live serving stack and two GPUs, so
-it cannot run in CI). This module absorbs its CPU-testable essence: the scenario
-table that encodes the tiered verification methodology, plus the pure comparison
-and lookahead-counter logic. It locks three things a refactor must not silently
-break:
+The S1-S5 ON/OFF gate is a GPU integration harness (server launcher, dump and
+counter hooks, concurrent driver, ABAB runner): it needs a live serving stack and
+GPUs, so it cannot run in CI and lives as operational tooling off-tree. This
+module is the in-repo source of truth for the gate: it absorbs the CPU-testable
+essence (the scenario table, the comparison and counter logic) and records the
+methodology those scenarios implement.
 
-  * the criteria tiering (only the deterministic-timing scenario S1 is exact;
-    every multi-request concurrent scenario is structural, because an OFF-vs-OFF
-    control proved concurrent batching is not bit-reproducible);
-  * the rep-penalty scenario routes wholly to sync (its binding check is the
-    lookahead counter == 0, so it must actually carry a penalty request);
-  * the audio_codes comparison flags shape AND value drift, and the counter
-    assertion distinguishes "engaged" from "sync-routed".
+Methodology
+-----------
+Two-tier criteria. The gate compares the vocoder-entry ``audio_codes`` of an ON
+arm (``--async-decode on``) against an OFF arm (sync), per request, keyed by
+seed. Only S1 is checked for exact bit-identity: it is ``bs=1`` with
+``min_batch_size=1``, so it is both deterministic (a single request has no
+batch-composition variance) and lookahead-forced, which is exactly why it is the
+load-bearing anchor and the test that caught the real bs=1 stop-boundary bug. The
+multi-request scenarios (S2 steady batch, S3a/S3b finish transitions, S4
+retraction, S5 rep-penalty routing) are structural: no crash, every seed
+produces a dump, the lookahead engaged, every request finished.
 
-See docs/design/async_decode_gate.md for the methodology narrative.
+Why concurrency precludes multi-request bit-identity. Engaging the lookahead
+needs a real batch, which needs requests sent concurrently; but then per-step
+batch composition is timing-dependent, so the CUDA-graph bucket trajectory varies
+run to run, perturbing the low bits of each request's hidden states, which the
+binary stop head amplifies into different stop frames (different frame counts).
+So exact bit-identity and real-concurrency lookahead coverage are mutually
+exclusive for multi-request scenarios; only ``bs=1`` (S1) gets both.
+
+OFF-vs-OFF empirical basis. This is not a lookahead defect: an OFF-vs-OFF control
+(two pure-sync concurrent runs of the same seeds, zero lookahead) already differs
+in frame count and values (e.g. seed 1002: 49 vs 36 frames; seed 1000: same frame
+count, different values). A lookahead defect would instead show ON != OFF while
+OFF-A == OFF-B. The raw drift dumps are retained off-tree for review.
+
+Counter methodology. Concurrency is necessary but not self-evident, so every ON
+arm also asserts the lookahead hit/miss counter (written from inside
+execute_resolve): every lookahead scenario must show ``hit+miss > 0`` and the
+rep-penalty scenario must show ``0`` (its batch routes wholly to sync). A
+bit-identity match without engagement is not accepted, because a sequential
+driver kept the server at ``bs=1`` (below ``async_decode_min_batch_size`` for
+every scenario but S1), silently ran the ON arm through the sync fast path, and
+"proved" bit-identity of sync against sync.
+
+This test locks three things a refactor must not silently break: the criteria
+tiering, that the rep-penalty scenario actually carries a penalty request (else
+its ``counter == 0`` check is vacuous), and that the comparison flags shape AND
+value drift while the counter assertion distinguishes engaged from sync-routed.
 """
 from __future__ import annotations
 
