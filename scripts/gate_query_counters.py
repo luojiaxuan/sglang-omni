@@ -7,8 +7,13 @@ run to read the lookahead hit/miss rate — NOT during the clean measured ABAB
 runs, because the monkeypatch adds per-resolve overhead that would bias the ON
 arm. When MOSS_GATE_QUERY_DUMP=<file> is set, install() wraps
 ModelRunner.execute_resolve to write the cumulative ``_async_query_hit
-_async_query_miss`` to <file> every 100 resolves (amortized, tmpfs). The
-benchmark reads it after the run; rate = hit / (hit + miss).
+_async_query_miss`` to <file> on every resolve (tmpfs). The S1-S5 gate reads it
+after each ON arm to assert lookahead actually engaged (hit+miss > 0) — or, for
+the sync-routed scenario, did NOT (hit+miss == 0, file stays absent). It writes
+every resolve, not every 100th, because a gate scenario is short (tens of
+resolves) and would otherwise never flush; the extra file write does not touch
+any tensor or RNG, so it leaves the ON-arm audio bit-identical. NOT for the
+clean measured ABAB runs (the per-resolve write would bias latency there).
 """
 from __future__ import annotations
 
@@ -25,12 +30,13 @@ def install() -> bool:
     if getattr(orig, "_gate_q_wrapped", False):
         return True
 
-    state = {"n": 0}
-
     def wrapped(self, pending):
         r = orig(self, pending)
-        state["n"] += 1
-        if state["n"] % 100 == 0:
+        # Every resolve: a gate scenario is short, so amortizing would never
+        # flush. Skip the write when nothing was resolved (pending is None, the
+        # first iteration / post-drain no-op) so the counters reflect real
+        # lookahead resolves only.
+        if pending is not None:
             try:
                 with open(path, "w") as fh:
                     fh.write(

@@ -112,9 +112,14 @@ for sc in $SCENARIOS; do
   ENV_KV=$(python scripts/gate_async_decode.py --scenario "$sc" --emit-env)
   FLAGS=$(python scripts/gate_async_decode.py --scenario "$sc" --emit-flags)
   off_dir="$BENCH/${sc}_off"; on_dir="$BENCH/${sc}_on"
-  # OFF arm is always sync; ON arm carries the scenario flags/env.
+  # Lookahead hit/miss counter dump for the ON arm: removed up front so a stale
+  # file from a prior scenario can never satisfy the engagement assertion, and
+  # read by the comparison via --counter-file. Only the ON arm sets the env.
+  ctr="$LOGS/gate_${sc}_counters.txt"; rm -f "$ctr"
+  # OFF arm is always sync; ON arm carries the scenario flags/env + counter dump.
   run_arm "$sc" off "$off_dir" "" --async-decode off || continue
-  run_arm "$sc" on "$on_dir" "$ENV_KV" $FLAGS || continue
-  python scripts/gate_async_decode.py --scenario "$sc" --off-dump "$off_dir" --on-dump "$on_dir"
+  run_arm "$sc" on "$on_dir" "$ENV_KV MOSS_GATE_QUERY_DUMP=$ctr" $FLAGS || continue
+  python scripts/gate_async_decode.py --scenario "$sc" \
+    --off-dump "$off_dir" --on-dump "$on_dir" --counter-file "$ctr"
 done
 echo "=== gate done; per-scenario verdicts above ==="
