@@ -95,6 +95,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         forward_batch: Any,
         requests: list,
     ) -> torch.Tensor:
+        self._stage_repetition_penalty_state(forward_batch, requests)
         pieces = []
         for sched_req in requests:
             data = sched_req.data
@@ -162,6 +163,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 "MOSS-TTS Local decode batch exceeds the staged decode-embedding "
                 f"rows ({batch_size} > {pool.padding_row})"
             )
+        self._stage_repetition_penalty_state(forward_batch, requests)
         row_tensor, pool_rows = pool.prepare_active_rows(requests)
         with torch.no_grad():
             weight[:batch_size].copy_(pool.feedback_embeds[row_tensor])
@@ -184,14 +186,14 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         if not requests:
             return
-        rows, end_id = self._run_frame_decode(result, requests)
+        rows, end_id = self._run_frame_decode(result, forward_batch, requests)
         # Radix key is a capture-safe GPU hash: a device op, no host sync.
         next_text = rows[:, 0]
         next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
         result.next_token_ids = next_token_ids
         schedule_batch.output_ids = next_token_ids
 
-    def _run_frame_decode(self, result: Any, requests: list):
+    def _run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
         """GPU half shared by sync ``_collect_frame`` and async
         ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
         ``next_token_ids``; the caller does, because the async path keeps a
@@ -208,8 +210,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         cfg = self.model.config
         device = hidden_states.device
         pool = self.model._state_pool
-        datas = [sched_req.data for sched_req in requests]
-        batch_size = len(datas)
+        batch_size = len(requests)
         num_channels = int(cfg.n_vq) + 1
 
         row_t = getattr(forward_batch, "moss_pool_row_t", None)
@@ -241,8 +242,13 @@ class MossTTSLocalModelRunner(ModelRunner):
             if not self._is_chunked_request(sched_req)
         }
         gen_steps = pool.generation_steps[row_t].to(device=device)
-        rep_penalties = [float(d.audio_repetition_penalty) for d in datas]
-        rep_histories = self._gather_rep_histories(datas, rep_penalties, device)
+        rep_penalties = getattr(forward_batch, "moss_rep_penalties", None)
+        rep_datas = getattr(forward_batch, "moss_rep_datas", None)
+        rep_histories = (
+            None
+            if rep_datas is None or rep_penalties is None
+            else self._gather_rep_histories(rep_datas, rep_penalties, device)
+        )
 
         def sample_text(logits: torch.Tensor) -> torch.Tensor:
             return MossTTSModelRunner._sample_tokens(
@@ -341,10 +347,9 @@ class MossTTSLocalModelRunner(ModelRunner):
         the stop id and silently dropping a bs=1 eos finish (4096-frame runaway).
         The clone preserves it; resolve swaps it back.
         """
-        del forward_batch
         if not requests:
             return None
-        rows, end_id = self._run_frame_decode(result, requests)
+        rows, end_id = self._run_frame_decode(result, forward_batch, requests)
         next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
         result.next_token_ids = next_token_ids
         return next_token_ids.clone()
@@ -408,6 +413,27 @@ class MossTTSLocalModelRunner(ModelRunner):
         )
         data.sampling_steps = s + 1
         return s
+
+    @staticmethod
+    def _stage_repetition_penalty_state(forward_batch: Any, requests: list) -> None:
+        """Attach slow-path repetition state only when a penalty is active."""
+        if not requests:
+            forward_batch.moss_rep_datas = None
+            forward_batch.moss_rep_penalties = None
+            return
+        active = any(
+            float(getattr(sched_req.data, "audio_repetition_penalty", 1.0)) != 1.0
+            for sched_req in requests
+        )
+        if not active:
+            forward_batch.moss_rep_datas = None
+            forward_batch.moss_rep_penalties = None
+            return
+        forward_batch.moss_rep_datas = [sched_req.data for sched_req in requests]
+        forward_batch.moss_rep_penalties = [
+            float(getattr(sched_req.data, "audio_repetition_penalty", 1.0))
+            for sched_req in requests
+        ]
 
     @staticmethod
     def _gather_rep_histories(

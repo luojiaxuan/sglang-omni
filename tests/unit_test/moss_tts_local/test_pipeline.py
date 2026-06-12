@@ -463,6 +463,43 @@ def test_gather_rep_histories_excludes_prompt_and_inactive_rows():
     )
 
 
+def test_stage_repetition_penalty_state_only_materializes_slow_path_data():
+    from types import SimpleNamespace
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
+    no_penalty = [
+        SimpleNamespace(
+            data=SimpleNamespace(audio_repetition_penalty=1.0, output_rows=[])
+        )
+    ]
+    forward_batch = SimpleNamespace()
+
+    MossTTSLocalModelRunner._stage_repetition_penalty_state(forward_batch, no_penalty)
+
+    assert forward_batch.moss_rep_datas is None
+    assert forward_batch.moss_rep_penalties is None
+
+    active = [
+        SimpleNamespace(
+            data=SimpleNamespace(audio_repetition_penalty=1.0, output_rows=[])
+        ),
+        SimpleNamespace(
+            data=SimpleNamespace(audio_repetition_penalty=1.2, output_rows=[])
+        ),
+    ]
+
+    MossTTSLocalModelRunner._stage_repetition_penalty_state(forward_batch, active)
+
+    assert [
+        float(d.audio_repetition_penalty) for d in forward_batch.moss_rep_datas
+    ] == [
+        1.0,
+        1.2,
+    ]
+    assert forward_batch.moss_rep_penalties == [1.0, 1.2]
+
+
 def test_build_generation_kwargs_precedence():
     # Direct field names apply tts_params-then-params (params wins, matching
     # the MOSS Delay semantics); both override the explicit generic aliases.
