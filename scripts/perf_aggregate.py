@@ -37,11 +37,21 @@ def main(path):
     arms = {}
     for row in rows:
         arms.setdefault(row["arm"], []).append(row)
-    metrics = ["rtf_mean", "out_throughput", "latency_mean", "latency_p99", "qps"]
-    lower_is_faster = {"rtf_mean", "latency_mean", "latency_p99"}
+    metrics = [
+        "rtf_mean",
+        "out_throughput",
+        "latency_mean",
+        "latency_p95",
+        "latency_p99",
+        "qps",
+    ]
+    lower_is_faster = {"rtf_mean", "latency_mean", "latency_p95", "latency_p99"}
     print(f"\n{'='*70}\nPR-B perf ABAB ({path})")
+    present = set(rows[0].keys()) if rows else set()
     agg = {}
     for m in metrics:
+        if m not in present:
+            continue
         print(f"\n-- {m} --")
         agg[m] = {}
         for arm in sorted(arms):
