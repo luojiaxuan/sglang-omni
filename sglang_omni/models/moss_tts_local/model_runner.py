@@ -112,10 +112,12 @@ class MossTTSLocalModelRunner(ModelRunner):
                 # stranded by the retraction.
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
-                # Reset the launch-side counter to generation_steps so resume
-                # re-samples at the right RNG position (no-op on the sync path).
-                data.sampling_steps = int(getattr(data, "generation_steps", 0))
-                self.model._state_pool.reset_for_refill(sched_req.request_id)
+            # Realign the launch-side counter and clear the stranded pool row on
+            # any retraction re-prefill, including one retracted before it emitted
+            # a frame (empty output_rows). Both are no-ops for a fresh prefill:
+            # the counters are already aligned and no pool row is held.
+            data.sampling_steps = int(getattr(data, "generation_steps", 0))
+            self.model._state_pool.reset_for_refill(sched_req.request_id)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(
@@ -181,7 +183,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         if not requests:
             return
         rows, end_id = self._run_frame_decode(result, requests)
-        # Radix key is a capture-safe GPU hash (#745): a device op, no host sync.
+        # Radix key is a capture-safe GPU hash: a device op, no host sync.
         next_text = rows[:, 0]
         next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
         result.next_token_ids = next_token_ids
@@ -190,8 +192,8 @@ class MossTTSLocalModelRunner(ModelRunner):
     def _run_frame_decode(self, result: Any, requests: list):
         """GPU half shared by sync ``_collect_frame`` and async
         ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
-        ``next_token_ids``; the caller does, because async must publish on the
-        pinned snapshot in resolve.
+        ``next_token_ids``; the caller does, because the async path keeps a
+        private device snapshot of the published ids for resolve to restore.
         """
         hidden_states = getattr(result.logits_output, "hidden_states", None)
         if not isinstance(hidden_states, torch.Tensor):

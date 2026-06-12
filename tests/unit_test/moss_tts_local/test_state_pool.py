@@ -518,6 +518,44 @@ def test_resume_resets_sampling_steps_to_generation_steps():
     ), "resume must reset sampling_steps to generation_steps"
 
 
+def test_resume_with_empty_output_rows_still_resets_sampling_steps():
+    """A request retracted before it emitted any frame has output_rows == [] but
+    still holds a pool row and may carry a launch-advanced sampling_steps. The
+    refill reset must fire off the held row, not off output_rows, so the resumed
+    frame samples at generation_steps, not the stale launch position.
+    """
+    model = _model(max_running_requests=4)
+    model.hidden_size = _HIDDEN
+    model.dtype = torch.bfloat16
+    model._prepare_multi_modal_inputs = lambda rows: torch.zeros(
+        (rows.shape[0], _HIDDEN), dtype=torch.bfloat16
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    pool.acquire_row("a")  # launched once, so it holds a row
+
+    width = 13
+    data = SimpleNamespace(
+        req=SimpleNamespace(extend_input_len=2, prefix_indices=[], rid="a"),
+        prompt_rows=torch.zeros((2, width), dtype=torch.long),
+        output_rows=[],  # retracted before emitting any frame
+        generation_steps=0,
+        sampling_steps=1,  # one launch advanced it; resolve never ran
+    )
+    sched_req = SimpleNamespace(request_id="a", data=data)
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(2, dtype=torch.long))
+
+    runner._build_prefill_input_embeds(forward_batch, [sched_req])
+
+    assert data.sampling_steps == 0, "empty-output_rows resume must still reset"
+    # The next collect then samples the resumed frame at position 0, not stale 1.
+    assert MossTTSLocalModelRunner._advance_sampling_position(data) == 0
+    assert data.sampling_steps == 1
+
+
 def test_journal_rid_assertion_fires():
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = SimpleNamespace(config=SimpleNamespace(audio_end_token_id=1001))

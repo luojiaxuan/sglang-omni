@@ -14,8 +14,6 @@ logger = logging.getLogger(__name__)
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
-# Set-ized (was a single Higgs constant) so the --async-decode CLI gate can
-# admit more than one model runner (#695 form).
 _ASYNC_DECODE_FACTORIES = frozenset(
     {
         "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",

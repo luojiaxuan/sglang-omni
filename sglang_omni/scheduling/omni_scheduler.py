@@ -1011,10 +1011,8 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        # A request retracted at step S (KV freed) is still in step S+1's lagged
-        # batch; without dropping it, process_batch_result would re-free its KV
-        # (the upstream enable_overlap guard is off here). Treat it like a
-        # prior-step finish: drop it from this resolve batch.
+        # A request retracted at step S is still in step S+1's lagged batch;
+        # drop it like a prior-step finish so its KV is not re-freed.
         pre_finished = [
             r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
