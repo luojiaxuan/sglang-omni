@@ -513,7 +513,9 @@ def test_resume_resets_sampling_steps_to_generation_steps():
 
     runner._build_prefill_input_embeds(forward_batch, [sched_req])
 
-    assert data.sampling_steps == 3, "resume must reset sampling_steps to generation_steps"
+    assert (
+        data.sampling_steps == 3
+    ), "resume must reset sampling_steps to generation_steps"
 
 
 def test_journal_rid_assertion_fires():

@@ -1024,8 +1024,7 @@ class OmniScheduler:
         # this resolve batch (suppress stream emit + exclude from keep) so
         # process_batch_result never touches it.
         pre_finished = [
-            r.finished() or bool(getattr(r, "is_retracted", False))
-            for r in batch.reqs
+            r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
         # rids finished/retracted in a PRIOR step (overrun) — suppress their emit
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
