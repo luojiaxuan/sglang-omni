@@ -565,6 +565,118 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active():
     assert bool(pool.audio_token_presence[row, 0, 7])
 
 
+def test_cached_pool_rows_drive_collect_and_batched_step_commit():
+    hidden_size = 4
+    weight = torch.zeros(4, hidden_size, dtype=torch.bfloat16)
+    embedding = SimpleNamespace(weight=weight)
+    model = SimpleNamespace(
+        _decode_input_embedding=embedding,
+        _state_pool=None,
+        config=SimpleNamespace(
+            n_vq=12,
+            audio_vocab_size=1024,
+            audio_assistant_slot_token_id=1000,
+            audio_end_token_id=1001,
+        ),
+        frame_graph_max_bs=4,
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    runner.output_processor = SimpleNamespace(
+        process=lambda batch_result, scheduler_output: {
+            req.request_id: SimpleNamespace(data=1000, extra=None)
+            for req in scheduler_output.requests
+        }
+    )
+
+    def data(step, seed):
+        return SimpleNamespace(
+            req=SimpleNamespace(is_chunked=0),
+            text_temperature=1.0,
+            text_top_p=1.0,
+            text_top_k=50,
+            audio_temperature=1.0,
+            audio_top_p=1.0,
+            audio_top_k=50,
+            sampling_seed=seed,
+            generation_steps=step,
+            audio_repetition_penalty=1.0,
+            output_rows=[],
+            extra_model_outputs={},
+        )
+
+    requests = [
+        SimpleNamespace(request_id="a", data=data(step=4, seed=11)),
+        SimpleNamespace(request_id="b", data=data(step=8, seed=22)),
+    ]
+
+    forward_batch = SimpleNamespace(input_ids=torch.full((2,), -1, dtype=torch.long))
+    runner._write_decode_input_embedding(forward_batch, requests)
+
+    row_t = forward_batch.moss_pool_row_t.clone()
+    row_a, row_b = int(row_t[0]), int(row_t[1])
+    assert [row_a, row_b] != [0, 1]
+    assert forward_batch.moss_pool_rows == [row_a, row_b]
+    assert torch.equal(forward_batch.input_ids, torch.tensor([0, 1]))
+
+    def fail_prepare_active_rows(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("collect path must reuse cached moss_pool_row_t")
+
+    pool.prepare_active_rows = fail_prepare_active_rows
+    pool.commit_generation_steps(row_t, torch.tensor([4, 8], dtype=torch.long))
+    captured = {}
+
+    def decode_frame_graphed(hidden_states, **kwargs):
+        del hidden_states
+        captured["base_positions"] = kwargs["base_positions"].detach().clone()
+        return (
+            torch.zeros(2, dtype=torch.long),
+            torch.stack(
+                [
+                    torch.full((12,), 7, dtype=torch.long),
+                    torch.full((12,), 9, dtype=torch.long),
+                ],
+                dim=0,
+            ),
+            torch.tensor(
+                [[3, 3, 3, 3], [5, 5, 5, 5]],
+                dtype=torch.bfloat16,
+            ),
+        )
+
+    model.decode_frame_graphed = decode_frame_graphed
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(2, hidden_size)),
+        can_run_cuda_graph=False,
+    )
+    schedule_batch = SimpleNamespace(is_prefill_only=False, output_ids=None)
+    scheduler_output = SimpleNamespace(requests=requests)
+
+    runner._collect_frame(result, forward_batch, schedule_batch, requests)
+
+    assert torch.equal(captured["base_positions"], torch.tensor([4 * 13, 8 * 13]))
+    assert result.moss_journal.pool_rows == [row_a, row_b]
+    assert torch.equal(pool.feedback_embeds[row_a], torch.full((4,), 3).bfloat16())
+    assert torch.equal(pool.feedback_embeds[row_b], torch.full((4,), 5).bfloat16())
+
+    runner._finalize(
+        result,
+        forward_batch,
+        schedule_batch,
+        SimpleNamespace(seq_lens=[1, 1], input_ids=torch.zeros(2, dtype=torch.long)),
+        scheduler_output,
+    )
+
+    assert requests[0].data.generation_steps == 5
+    assert requests[1].data.generation_steps == 9
+    assert int(pool.generation_steps[row_a]) == 5
+    assert int(pool.generation_steps[row_b]) == 9
+
+
 def test_finalize_commits_generation_steps_to_pool():
     model = _model(max_running_requests=2)
     pool = MossTTSLocalDecodeStatePool(model)
