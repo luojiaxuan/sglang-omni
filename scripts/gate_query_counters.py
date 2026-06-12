@@ -15,6 +15,7 @@ resolves) and would otherwise never flush; the extra file write does not touch
 any tensor or RNG, so it leaves the ON-arm audio bit-identical. NOT for the
 clean measured ABAB runs (the per-resolve write would bias latency there).
 """
+
 from __future__ import annotations
 
 import os

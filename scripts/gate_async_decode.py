@@ -55,6 +55,7 @@ scenario's flags and point the driver at each, OR pass --manage to let it manage
 both. The criteria/configs live in SCENARIOS below — the single source of truth
 the gate matrix doc mirrors.
 """
+
 from __future__ import annotations
 
 import argparse
