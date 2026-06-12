@@ -382,28 +382,33 @@ def test_result_adapter_empty_generation():
 # ---------------------------------------------------------------------------
 
 
-def test_audio_repetition_penalty_matches_upstream_semantics():
+def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 
     logits = torch.tensor(
         [[2.0, -1.0, 0.5, 3.0], [1.0, 1.0, 1.0, 1.0]], dtype=torch.float32
     )
-    history_row0 = torch.tensor([[0, 9], [2, 9]], dtype=torch.long)  # channel 0: {0, 2}
-    histories = [history_row0, None]
+    token_presence = torch.tensor(
+        [
+            [True, False, True, False],
+            [True, True, False, False],
+        ],
+        dtype=torch.bool,
+    )
     expected = logits.clone()
     penalty = 1.5
     expected[0, 0] = expected[0, 0] / penalty  # positive -> divide
     expected[0, 2] = expected[0, 2] / penalty
 
-    MossTTSLocalModelRunner._apply_audio_repetition_penalty(
-        logits, histories, [penalty, 1.0], channel=0
+    MossTTSLocalModelRunner._apply_audio_repetition_penalty_mask(
+        logits, token_presence, torch.tensor([penalty, 1.0])
     )
     torch.testing.assert_close(logits, expected)
 
     # Negative scores multiply.
     logits2 = torch.tensor([[-2.0, 1.0]], dtype=torch.float32)
-    MossTTSLocalModelRunner._apply_audio_repetition_penalty(
-        logits2, [torch.tensor([[0]], dtype=torch.long)], [2.0], channel=0
+    MossTTSLocalModelRunner._apply_audio_repetition_penalty_mask(
+        logits2, torch.tensor([[True, False]]), torch.tensor([2.0])
     )
     torch.testing.assert_close(
         logits2, torch.tensor([[-4.0, 1.0]], dtype=torch.float32)
@@ -435,69 +440,30 @@ def test_row_radix_token_ids_hash_rows_and_keep_eos():
     assert all(0 <= int(v) < 151936 for v in out)
 
 
-def test_gather_rep_histories_excludes_prompt_and_inactive_rows():
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-
-    class _Data:
-        def __init__(self, rows):
-            self.output_rows = rows
-
-    row = torch.cat([torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)])
-    active = _Data([row, row + 0])
-    inactive = _Data([row])
-    empty = _Data([])
-
-    histories = MossTTSLocalModelRunner._gather_rep_histories(
-        [active, inactive, empty], [1.5, 1.0, 1.5], torch.device("cpu")
-    )
-    assert histories is not None
-    assert histories[0].shape == (2, N_VQ)  # generated frames only, channel cols
-    assert histories[1] is None  # unit penalty -> skipped
-    assert histories[2] is None  # no frames yet
-    # All penalties at 1.0 -> no history gathering at all.
-    assert (
-        MossTTSLocalModelRunner._gather_rep_histories(
-            [active], [1.0], torch.device("cpu")
-        )
-        is None
-    )
-
-
-def test_stage_repetition_penalty_state_only_materializes_slow_path_data():
+def test_audio_history_presence_mask_excludes_prompt_rows():
     from types import SimpleNamespace
 
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
-    no_penalty = [
-        SimpleNamespace(
-            data=SimpleNamespace(audio_repetition_penalty=1.0, output_rows=[])
-        )
-    ]
-    forward_batch = SimpleNamespace()
-
-    MossTTSLocalModelRunner._stage_repetition_penalty_state(forward_batch, no_penalty)
-
-    assert forward_batch.moss_rep_datas is None
-    assert forward_batch.moss_rep_penalties is None
-
-    active = [
-        SimpleNamespace(
-            data=SimpleNamespace(audio_repetition_penalty=1.0, output_rows=[])
+    model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(
+            weight=torch.zeros(2, 4, dtype=torch.bfloat16)
         ),
-        SimpleNamespace(
-            data=SimpleNamespace(audio_repetition_penalty=1.2, output_rows=[])
-        ),
-    ]
+        config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    row = pool.acquire_row("rid")
+    prompt_row = torch.cat(
+        [torch.tensor([151656]), torch.full((N_VQ,), 99, dtype=torch.long)]
+    )
+    generated_row = torch.cat(
+        [torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)]
+    )
 
-    MossTTSLocalModelRunner._stage_repetition_penalty_state(forward_batch, active)
+    pool.update_audio_history(torch.tensor([row]), generated_row.reshape(1, -1))
 
-    assert [
-        float(d.audio_repetition_penalty) for d in forward_batch.moss_rep_datas
-    ] == [
-        1.0,
-        1.2,
-    ]
-    assert forward_batch.moss_rep_penalties == [1.0, 1.2]
+    assert bool(pool.audio_token_presence[row, 0, 0])
+    assert not bool(pool.audio_token_presence[row, 0, int(prompt_row[1])])
 
 
 def test_build_generation_kwargs_precedence():

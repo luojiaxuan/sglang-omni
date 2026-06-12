@@ -29,10 +29,13 @@ def _model(max_running_requests: int = 4) -> SimpleNamespace:
     """Fake model exposing only what the pool reads."""
     weight = torch.zeros(max_running_requests, _HIDDEN, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
-    return SimpleNamespace(_decode_input_embedding=embedding)
+    return SimpleNamespace(
+        _decode_input_embedding=embedding,
+        config=SimpleNamespace(n_vq=12, audio_vocab_size=1024),
+    )
 
 
-def _params(seed: int = 7) -> SimpleNamespace:
+def _params(seed: int = 7, audio_repetition_penalty: float = 1.0) -> SimpleNamespace:
     return SimpleNamespace(
         text_temperature=0.5,
         text_top_p=0.9,
@@ -41,6 +44,7 @@ def _params(seed: int = 7) -> SimpleNamespace:
         audio_top_p=0.8,
         audio_top_k=25,
         sampling_seed=seed,
+        audio_repetition_penalty=audio_repetition_penalty,
     )
 
 
@@ -60,6 +64,10 @@ def test_pool_dims_derive_from_embedding_weight():
         assert getattr(pool, name).dtype == torch.int64
     assert pool.generation_steps.shape == (5,)
     assert pool.generation_steps.dtype == torch.int64
+    assert pool.audio_repetition_penalty.shape == (5,)
+    assert pool.audio_repetition_penalty.dtype == torch.float32
+    assert pool.audio_token_presence.shape == (5, 12, 1024)
+    assert pool.audio_token_presence.dtype == torch.bool
 
 
 def test_acquire_is_idempotent_by_rid():
@@ -123,6 +131,8 @@ def test_release_resets_row_fields():
     assert pool.audio_top_k[row] == 0
     assert pool.seeds[row] == 0
     assert pool.generation_steps[row] == 0
+    assert pool.audio_repetition_penalty[row] == 0.0
+    assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
 
 
 def test_reset_row_zeroes_all_fields():
@@ -141,14 +151,16 @@ def test_reset_row_zeroes_all_fields():
         "audio_top_k",
         "seeds",
         "generation_steps",
+        "audio_repetition_penalty",
     ):
         assert getattr(pool, name)[row] == 0
+    assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
 
 
 def test_write_params_writes_request_static_fields():
     pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
-    pool.write_params(row, _params(seed=555))
+    pool.write_params(row, _params(seed=555, audio_repetition_penalty=1.25))
     assert pool.text_temp[row].item() == torch.tensor(0.5, dtype=torch.float32).item()
     assert pool.text_top_p[row].item() == torch.tensor(0.9, dtype=torch.float32).item()
     assert pool.audio_temp[row].item() == torch.tensor(1.7, dtype=torch.float32).item()
@@ -156,6 +168,11 @@ def test_write_params_writes_request_static_fields():
     assert int(pool.text_top_k[row]) == 40
     assert int(pool.audio_top_k[row]) == 25
     assert int(pool.seeds[row]) == 555
+    assert (
+        pool.audio_repetition_penalty[row].item()
+        == torch.tensor(1.25, dtype=torch.float32).item()
+    )
+    assert pool.rows_have_audio_repetition_penalty([row]) is True
 
 
 def test_write_params_does_not_touch_other_rows():
@@ -216,10 +233,12 @@ def test_reset_for_refill_clears_active_row():
     pool.ensure_params(row, "a", _params(seed=1))
     pool.commit_generation_step("a", 4)
     pool.feedback_embeds[row] = 1.0
+    pool.audio_token_presence[row, 0, 7] = True
 
     assert pool.reset_for_refill("a", generation_steps=4) is True
     assert int(pool.seeds[row]) == 0
     assert int(torch.count_nonzero(pool.feedback_embeds[row])) == 0
+    assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
     assert int(pool.generation_steps[row]) == 4
     # params were invalidated, so the next ensure_params re-writes them.
     pool.ensure_params(row, "a", _params(seed=2))
@@ -244,12 +263,61 @@ def test_prepare_active_rows_gathers_rows_and_params():
         SimpleNamespace(request_id="b", data=_params(seed=22)),
     ]
 
-    row_t, rows = pool.prepare_active_rows(reqs)
+    row_t, rows, has_audio_repetition_penalty = pool.prepare_active_rows(reqs)
 
     assert row_t.dtype == torch.long
     assert row_t.device == pool.device
     assert rows == [pool.row_for("a"), pool.row_for("b")]
     assert torch.equal(pool.seeds[row_t], torch.tensor([11, 22], dtype=torch.long))
+    assert has_audio_repetition_penalty is False
+
+
+def test_prepare_active_rows_reports_audio_repetition_penalty_from_pool():
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
+    reqs = [
+        SimpleNamespace(request_id="a", data=_params(seed=11)),
+        SimpleNamespace(
+            request_id="b", data=_params(seed=22, audio_repetition_penalty=1.2)
+        ),
+    ]
+
+    _, rows, has_audio_repetition_penalty = pool.prepare_active_rows(reqs)
+
+    assert has_audio_repetition_penalty is True
+    assert pool.rows_have_audio_repetition_penalty(rows) is True
+
+
+def test_audio_history_updates_pool_presence_mask():
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
+    row_a = pool.acquire_row("a")
+    row_b = pool.acquire_row("b")
+    rows = torch.full((2, 13), 999, dtype=torch.long)
+    rows[:, 1:] = torch.arange(24, dtype=torch.long).reshape(2, 12)
+    rows[1, 2] = 2048
+
+    pool.update_audio_history(torch.tensor([row_a, row_b]), rows)
+
+    assert bool(pool.audio_token_presence[row_a, 0, 0])
+    assert bool(pool.audio_token_presence[row_a, 11, 11])
+    assert bool(pool.audio_token_presence[row_b, 0, 12])
+    assert not bool(pool.audio_token_presence[row_b, 1, 2047 % 1024])
+
+
+def test_rebuild_audio_history_clears_stale_presence():
+    pool = MossTTSLocalDecodeStatePool(_model())
+    row = pool.acquire_row("a")
+    pool.audio_token_presence[row, 0, 99] = True
+    rows = []
+    for token in (3, 5):
+        row_t = torch.full((13,), 0, dtype=torch.long)
+        row_t[1:] = token
+        rows.append(row_t)
+
+    assert pool.rebuild_audio_history("a", rows) is True
+
+    assert not bool(pool.audio_token_presence[row, 0, 99])
+    assert bool(pool.audio_token_presence[row, 0, 3])
+    assert bool(pool.audio_token_presence[row, 0, 5])
 
 
 def test_journal_holds_fields():
@@ -431,6 +499,72 @@ def test_collect_frame_reads_generation_steps_from_pool():
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
 
 
+def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active():
+    hidden_size = 4
+    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+    embedding = SimpleNamespace(weight=weight)
+    model = SimpleNamespace(
+        _decode_input_embedding=embedding,
+        _state_pool=None,
+        config=SimpleNamespace(
+            n_vq=12,
+            audio_vocab_size=1024,
+            audio_assistant_slot_token_id=1000,
+            audio_end_token_id=1001,
+        ),
+        frame_graph_max_bs=1,
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    called = {"eager": False}
+
+    def decode_frame_graphed(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("penalty-enabled frames must not use graph replay")
+
+    def decode_frame(hidden_states, *, sample_text, sample_audio):
+        del hidden_states, sample_text, sample_audio
+        called["eager"] = True
+        return (
+            torch.zeros(1, dtype=torch.long),
+            torch.full((1, 12), 7, dtype=torch.long),
+        )
+
+    model.decode_frame_graphed = decode_frame_graphed
+    model.decode_frame = decode_frame
+    model._prepare_multi_modal_inputs = lambda rows: torch.ones(
+        (rows.shape[0], hidden_size), dtype=torch.bfloat16
+    )
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    data = SimpleNamespace(
+        req=SimpleNamespace(is_chunked=0),
+        text_temperature=1.0,
+        text_top_p=1.0,
+        text_top_k=50,
+        audio_temperature=1.0,
+        audio_top_p=1.0,
+        audio_top_k=50,
+        sampling_seed=0,
+        generation_steps=0,
+        audio_repetition_penalty=1.2,
+        output_rows=[],
+    )
+    request = SimpleNamespace(request_id="rid", data=data)
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
+    )
+
+    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+
+    assert called["eager"] is True
+    row = pool.row_for("rid")
+    assert row is not None
+    assert bool(pool.audio_token_presence[row, 0, 7])
+
+
 def test_finalize_commits_generation_steps_to_pool():
     model = _model(max_running_requests=2)
     pool = MossTTSLocalDecodeStatePool(model)
@@ -490,12 +624,17 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     pool.commit_generation_step("a", 3)
     # Feedback stranded by the retraction (must be wiped by the resume).
     pool.feedback_embeds[row].fill_(5.0)
+    pool.audio_token_presence[row, 0, 99] = True
 
     # prompt_rows (2 frames) + already-generated output_rows (3 frames); the
     # resume re-prefills the whole span, so extend_input_len = 2 + 3.
     width = 13
     prompt_rows = torch.zeros((2, width), dtype=torch.long)
-    generated = [torch.zeros(width, dtype=torch.long) for _ in range(3)]
+    generated = []
+    for token in (4, 5, 6):
+        row_t = torch.zeros(width, dtype=torch.long)
+        row_t[1:] = token
+        generated.append(row_t)
     data = SimpleNamespace(
         req=SimpleNamespace(extend_input_len=5, prefix_indices=[], rid="a"),
         prompt_rows=prompt_rows,
@@ -512,6 +651,10 @@ def test_resume_reprefill_overwrites_stranded_feedback():
 
     assert torch.all(pool.feedback_embeds[row] == 0), "stranded feedback must be wiped"
     assert int(pool.generation_steps[row]) == 3, "resume must preserve sample position"
+    assert not bool(pool.audio_token_presence[row, 0, 99])
+    assert bool(pool.audio_token_presence[row, 0, 4])
+    assert bool(pool.audio_token_presence[row, 0, 5])
+    assert bool(pool.audio_token_presence[row, 0, 6])
     pool.ensure_params(row, "a", _params(seed=2))
     assert int(pool.seeds[row]) == 2, "params must be re-written on resume"
 
@@ -596,6 +739,8 @@ def test_collect_frame_skips_chunked_feedback_and_journal():
     assert result.moss_journal.rids == ["normal"]
     assert result.moss_journal.pool_rows == [normal_row]
     assert result.moss_journal.rows.shape == (1, 13)
+    assert int(torch.count_nonzero(pool.audio_token_presence[chunked_row])) == 0
+    assert int(torch.count_nonzero(pool.audio_token_presence[normal_row])) == 0
 
 
 def test_sampling_position_floor_is_sync_noop():

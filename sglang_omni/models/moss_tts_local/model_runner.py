@@ -95,7 +95,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         forward_batch: Any,
         requests: list,
     ) -> torch.Tensor:
-        self._stage_repetition_penalty_state(forward_batch, requests)
         pieces = []
         for sched_req in requests:
             data = sched_req.data
@@ -105,6 +104,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS Local prefill requires prompt_rows")
             req_len = int(req.extend_input_len)
             prefix_len = len(req.prefix_indices)
+            pool = self.model._state_pool
             if data.output_rows:
                 # KV-pressure retraction re-prefills with an extend region
                 # spanning already-generated frames; their rows live in
@@ -118,9 +118,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             # a frame (empty output_rows). Both are no-ops for a fresh prefill:
             # the counters are already aligned and no pool row is held.
             data.sampling_steps = int(getattr(data, "generation_steps", 0))
-            self.model._state_pool.reset_for_refill(
-                sched_req.request_id, int(data.generation_steps)
-            )
+            pool.reset_for_refill(sched_req.request_id, int(data.generation_steps))
+            if data.output_rows:
+                pool.rebuild_audio_history(sched_req.request_id, data.output_rows)
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(
@@ -163,12 +163,14 @@ class MossTTSLocalModelRunner(ModelRunner):
                 "MOSS-TTS Local decode batch exceeds the staged decode-embedding "
                 f"rows ({batch_size} > {pool.padding_row})"
             )
-        self._stage_repetition_penalty_state(forward_batch, requests)
-        row_tensor, pool_rows = pool.prepare_active_rows(requests)
+        row_tensor, pool_rows, has_audio_repetition_penalty = pool.prepare_active_rows(
+            requests
+        )
         with torch.no_grad():
             weight[:batch_size].copy_(pool.feedback_embeds[row_tensor])
         forward_batch.moss_pool_row_t = row_tensor
         forward_batch.moss_pool_rows = pool_rows
+        forward_batch.moss_has_audio_repetition_penalty = has_audio_repetition_penalty
 
         row_ids = torch.arange(
             batch_size,
@@ -216,7 +218,17 @@ class MossTTSLocalModelRunner(ModelRunner):
         row_t = getattr(forward_batch, "moss_pool_row_t", None)
         pool_rows = getattr(forward_batch, "moss_pool_rows", None)
         if row_t is None or pool_rows is None:
-            row_t, pool_rows = pool.prepare_active_rows(requests)
+            row_t, pool_rows, has_audio_repetition_penalty = pool.prepare_active_rows(
+                requests
+            )
+        else:
+            has_audio_repetition_penalty = getattr(
+                forward_batch, "moss_has_audio_repetition_penalty", None
+            )
+            if has_audio_repetition_penalty is None:
+                has_audio_repetition_penalty = pool.rows_have_audio_repetition_penalty(
+                    pool_rows
+                )
         params = {
             "text_temp": pool.text_temp[row_t],
             "text_top_p": pool.text_top_p[row_t],
@@ -242,12 +254,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             if not self._is_chunked_request(sched_req)
         }
         gen_steps = pool.generation_steps[row_t].to(device=device)
-        rep_penalties = getattr(forward_batch, "moss_rep_penalties", None)
-        rep_datas = getattr(forward_batch, "moss_rep_datas", None)
-        rep_histories = (
-            None
-            if rep_datas is None or rep_penalties is None
-            else self._gather_rep_histories(rep_datas, rep_penalties, device)
+        rep_penalties = pool.audio_repetition_penalty[row_t].to(
+            device=device, dtype=torch.float32
         )
 
         def sample_text(logits: torch.Tensor) -> torch.Tensor:
@@ -261,9 +269,16 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
 
         def sample_audio(logits: torch.Tensor, channel: int) -> torch.Tensor:
-            if rep_histories is not None:
-                self._apply_audio_repetition_penalty(
-                    logits, rep_histories, rep_penalties, channel
+            if has_audio_repetition_penalty:
+                presence = pool.audio_token_presence[row_t, channel].to(
+                    device=logits.device
+                )
+                if int(presence.shape[-1]) != int(logits.shape[-1]):
+                    presence = presence[:, : logits.shape[-1]]
+                self._apply_audio_repetition_penalty_mask(
+                    logits,
+                    presence,
+                    rep_penalties.to(device=logits.device, dtype=logits.dtype),
                 )
             return MossTTSModelRunner._sample_tokens(
                 logits,
@@ -274,7 +289,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 positions=gen_steps * num_channels + channel + 1,
             )
 
-        use_graph = rep_histories is None and batch_size <= getattr(
+        use_graph = not has_audio_repetition_penalty and batch_size <= getattr(
             self.model, "frame_graph_max_bs", 0
         )
         if use_graph:
@@ -324,6 +339,22 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
             emit_pool_rows = [pool_rows[i] for i in emit_indices]
             emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
+            emit_rows = rows.index_select(0, emit_index_t)
+            if has_audio_repetition_penalty:
+                keep_history = (
+                    next_text.index_select(0, emit_index_t.to(device=next_text.device))
+                    != end_id
+                )
+                emit_penalty_active = (
+                    pool.audio_repetition_penalty[emit_row_t]
+                    .to(device=keep_history.device)
+                    .ne(1.0)
+                )
+                keep_history = keep_history & emit_penalty_active
+                pool.update_audio_history(
+                    emit_row_t[keep_history.to(device=emit_row_t.device)],
+                    emit_rows[keep_history.to(device=emit_rows.device)],
+                )
             emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
             pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
                 device=pool.feedback_embeds.device,
@@ -332,7 +363,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             result.moss_journal = MossTTSLocalDecodeJournal(
                 rids=[requests[i].request_id for i in emit_indices],
                 pool_rows=emit_pool_rows,
-                rows=rows.index_select(0, emit_index_t),
+                rows=emit_rows,
             )
         # Always return rows so both the sync inline path and the async launch
         # publish next_token_ids; an all-chunked batch just attaches no journal.
@@ -415,70 +446,23 @@ class MossTTSLocalModelRunner(ModelRunner):
         return s
 
     @staticmethod
-    def _stage_repetition_penalty_state(forward_batch: Any, requests: list) -> None:
-        """Attach slow-path repetition state only when a penalty is active."""
-        if not requests:
-            forward_batch.moss_rep_datas = None
-            forward_batch.moss_rep_penalties = None
-            return
-        active = any(
-            float(getattr(sched_req.data, "audio_repetition_penalty", 1.0)) != 1.0
-            for sched_req in requests
-        )
-        if not active:
-            forward_batch.moss_rep_datas = None
-            forward_batch.moss_rep_penalties = None
-            return
-        forward_batch.moss_rep_datas = [sched_req.data for sched_req in requests]
-        forward_batch.moss_rep_penalties = [
-            float(getattr(sched_req.data, "audio_repetition_penalty", 1.0))
-            for sched_req in requests
-        ]
-
-    @staticmethod
-    def _gather_rep_histories(
-        datas: list,
-        rep_penalties: list[float],
-        device: torch.device,
-    ) -> list[torch.Tensor | None] | None:
-        """Per-request generated-code history, only when a penalty is active.
-
-        Upstream v1.5 applies the audio repetition penalty over each channel's
-        previously *generated* frames only (the prompt's reference codes are
-        excluded), so the history snapshot is taken from ``output_rows``.
-        """
-        if all(penalty == 1.0 for penalty in rep_penalties):
-            return None
-        histories: list[torch.Tensor | None] = []
-        for data, penalty in zip(datas, rep_penalties):
-            if penalty == 1.0 or not data.output_rows:
-                histories.append(None)
-                continue
-            stacked = torch.stack(data.output_rows, dim=0)[:, 1:]
-            histories.append(stacked.to(device=device, dtype=torch.long))
-        return histories
-
-    @staticmethod
-    def _apply_audio_repetition_penalty(
+    def _apply_audio_repetition_penalty_mask(
         logits: torch.Tensor,
-        histories: list[torch.Tensor | None],
-        penalties: list[float],
-        channel: int,
+        token_presence: torch.Tensor,
+        penalties: torch.Tensor,
     ) -> None:
         """In-place penalty on fp32 logits, matching upstream order (before
         temperature scaling)."""
-        vocab = logits.shape[-1]
-        for row, (history, penalty) in enumerate(zip(histories, penalties)):
-            if history is None or penalty == 1.0:
-                continue
-            tokens = torch.unique(history[:, channel])
-            tokens = tokens[(tokens >= 0) & (tokens < vocab)]
-            if tokens.numel() == 0:
-                continue
-            scores = logits[row, tokens]
-            logits[row, tokens] = torch.where(
-                scores < 0, scores * penalty, scores / penalty
-            )
+        penalties = penalties.to(device=logits.device, dtype=logits.dtype)
+        active = token_presence.to(device=logits.device, dtype=torch.bool) & (
+            penalties != 1.0
+        ).unsqueeze(-1)
+        scale = torch.where(
+            logits < 0,
+            penalties.unsqueeze(-1),
+            torch.reciprocal(penalties).unsqueeze(-1),
+        )
+        logits.copy_(torch.where(active, logits * scale, logits))
 
     @staticmethod
     def _is_chunked_request(sched_req: Any) -> bool:
