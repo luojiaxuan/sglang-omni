@@ -4,12 +4,25 @@
 (the async-decode speedup). For latency/rtf, ON faster = lower; for throughput,
 ON faster = higher."""
 from __future__ import annotations
+
 import csv
 import math
 import sys
 
-_T = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-      8: 2.306, 9: 2.262, 10: 2.228, 15: 2.131, 20: 2.086}
+_T = {
+    1: 12.706,
+    2: 4.303,
+    3: 3.182,
+    4: 2.776,
+    5: 2.571,
+    6: 2.447,
+    7: 2.365,
+    8: 2.306,
+    9: 2.262,
+    10: 2.228,
+    15: 2.131,
+    20: 2.086,
+}
 
 
 def t975(df):
@@ -72,7 +85,11 @@ def main(path):
             sep = ""
             if not (math.isnan(oh) or math.isnan(nh)):
                 disjoint = (om + oh < nm - nh) or (nm + nh < om - oh)
-                sep = " [CIs disjoint -> significant]" if disjoint else " [CIs overlap -> within noise]"
+                sep = (
+                    " [CIs disjoint -> significant]"
+                    if disjoint
+                    else " [CIs overlap -> within noise]"
+                )
             print(f"  => delta {delta:+.2f}% ({direction}){sep}")
     print(f"{'='*70}")
 

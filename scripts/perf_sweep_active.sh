@@ -4,13 +4,16 @@
 # does NOT touch #758 (which goes ready on the correctness gate). The numbers are
 # the post-merge flag-flip evidence.
 #
-# Active acquisition (cluster ownership rule): a card with util ~0 across several
-# samples but resident memory is stale -> kill its non-claim PIDs and reclaim it.
-# A card with util > 0 (or util that jumps across samples) is an active job ->
-# never touched. Prefer 2 same-node cards (AR+codec split, examples config); fall
-# back to 1 card colocate (annotated). Self-protect: hold a claim on the cards
-# between rounds (killed during each timed run; see perf_abab.sh). Resumable: each
-# concurrency CSV is append-only and re-skips completed (arm,round) rows.
+# Acquisition is constrained by the container's pid namespace: nvidia-smi shows
+# HOST pids that this container cannot signal, so a co-tenant's stale card cannot
+# be reclaimed from in here (and killing nvidia-smi pids would be unsafe). We
+# therefore only clean our OWN leaks by name, then take cards that are genuinely
+# free (util ~0 across samples AND < 2 GB resident); a card with util > 0 or jumpy
+# util is an active job and is never touched. Prefer 2 same-node cards (AR+codec
+# split, examples config); fall back to 1 card colocate (annotated). Self-protect:
+# hold a claim on the cards between rounds (killed during each timed run; see
+# perf_abab.sh). Resumable: each concurrency CSV is append-only and re-skips
+# completed (arm,round) rows.
 set -uo pipefail
 REPO=/data/moss-v15-ar/sglang-omni-prb
 ARCHIVE=/data/moss-v15-ar/bench/perf-sweep
@@ -33,28 +36,35 @@ umax() {  # $1=card -> max util over 4 samples (~3s); catches intermittent jobs
 }
 mem_of() { nvidia-smi -i "$1" --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null; }
 
-try_reclaim() {  # $1=card -> 0 if free/reclaimed
-  local c=$1 m u pids cp p killed=0
-  m=$(mem_of "$c"); [ "${m:-0}" -lt 2000 ] && return 0          # already free
-  u=$(umax "$c"); [ "${u:-100}" -ge 5 ] && return 1            # active (or jumpy) -> skip
-  pids=$(nvidia-smi -i "$c" --query-compute-apps=pid --format=csv,noheader 2>/dev/null)
-  [ -z "$pids" ] && { m=$(mem_of "$c"); [ "${m:-9999}" -lt 2000 ] && return 0 || return 1; }
-  cp=" $(pgrep -f claim_gpu | tr '\n' ' ') "
-  for p in $pids; do case "$cp" in *" $p "*) continue;; esac; kill -9 "$p" 2>/dev/null; killed=1; done
-  [ "$killed" = 1 ] && sleep 3
-  m=$(mem_of "$c"); [ "${m:-9999}" -lt 2000 ]
+# IMPORTANT: nvidia-smi reports HOST pids, but this runs in a container with its
+# own pid namespace, so those pids are not ours to signal (kill -9 of a host pid
+# either no-ops or, worse, hits a coincidental container pid). So we never kill
+# by nvidia-smi pid. We only (a) clean our OWN leaks by process name (container
+# pids, done once up front) and (b) take a card that is then GENUINELY free
+# (util ~0 across samples AND < 2 GB resident). A co-tenant's stale card we
+# cannot reclaim from in here; we wait for it instead.
+free_card() {  # $1=card -> 0 if genuinely free
+  local u m
+  u=$(umax "$1"); [ "${u:-100}" -ge 5 ] && return 1   # active or jumpy -> skip
+  m=$(mem_of "$1"); [ "${m:-9999}" -lt 2000 ]
 }
 
-acquire() {  # $1=min cards. echo same-node cards (2 preferred); empty if < min
+acquire() {  # $1=min cards. echo same-node free cards (2 preferred); empty if < min
   local min=${1:-1} got=()
   for grp in "4 5 6 7" "0 1 2 3"; do      # try node1 then node0, keep same-node
     local g=()
-    for c in $grp; do [ ${#g[@]} -ge 2 ] && break; try_reclaim "$c" && g+=("$c"); done
+    for c in $grp; do [ ${#g[@]} -ge 2 ] && break; free_card "$c" && g+=("$c"); done
     if [ ${#g[@]} -ge 2 ]; then echo "${g[0]} ${g[1]}"; return; fi
     [ ${#g[@]} -gt ${#got[@]} ] && got=("${g[@]}")
   done
   if [ ${#got[@]} -ge "$min" ]; then echo "${got[0]}"; else echo ""; fi
 }
+
+# Clean only our OWN leaks (container pids, safe) so a leaked server/claim of ours
+# does not block a card; never touches co-tenant processes.
+pkill -9 -f scripts/gate_serve.py 2>/dev/null || true
+pkill -9 -f "label perfsweepclaim" 2>/dev/null || true
+sleep 3
 
 # --- wait for cards, then pin config/cores by node. Prefer 2 (AR+codec split)
 # for the first ~30 min; only then settle for a 1-card colocate run. ---
