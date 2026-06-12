@@ -364,18 +364,28 @@ class MossTTSLocalModelRunner(ModelRunner):
         """Async-decode GPU half of ``post_decode``: run the frame micro-decode,
         scatter feedback + attach the journal (``_run_frame_decode``), and publish
         the real radix token ids computed on device. The generated-row key is a
-        capture-safe GPU hash (#745), so the launch has no host sync and needs no
-        D2H snapshot: it produces the final ``next_token_ids`` directly, and resolve
-        carries no host hash. The base records a CUDA event right after, so
-        ``event.query()`` means the launched step's GPU work is done. Returns None
-        (no host buffer for resolve to read).
+        capture-safe GPU hash (#745), so the launch has no host sync. The base
+        records a CUDA event right after, so ``event.query()`` means the launched
+        step's GPU work is done.
+
+        Returns a private device snapshot of the published ids for resolve. The
+        base aliases ``result.next_token_ids`` onto ``schedule_batch.output_ids``,
+        and the NEXT decode step folds that tensor into ``forward_batch.input_ids``
+        and overwrites it in place (``_write_decode_input_embedding``). Under
+        lookahead that next launch runs BEFORE this step's lagged resolve, so by
+        resolve time the published tensor no longer holds the stop id
+        (``== end_id``) and the eos finish is silently lost — a bs=1 request then
+        never stops (4096-frame runaway). The snapshot is taken now, before any
+        clobber, and resolve swaps it back. GPU->GPU clone keeps the launch
+        host-sync-free (the radix key stays on device).
         """
         del forward_batch
         if not requests:
             return None
         rows, end_id = self._run_frame_decode(result, requests)
-        result.next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
-        return None
+        next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
+        result.next_token_ids = next_token_ids
+        return next_token_ids.clone()
 
     def post_decode_resolve(
         self,
@@ -385,15 +395,19 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        """Async-decode host half. The generated-row radix key is now a GPU hash
-        (#745), so the launch already published the real ``next_token_ids`` on
-        device and there is no host hash to recompute here: this hook is a no-op.
-        The host work the lookahead overlaps with the next step's forward is the
-        shared ``_finalize`` tail (the journal-apply into ``output_rows`` and the
-        ``next_token_ids`` host read) plus the finished/retracted ``skip_rids`` the
-        base recomputes; none of it needs a pinned rows snapshot.
+        """Async-decode host half: restore the launch-time ``next_token_ids``
+        snapshot so the shared ``_finalize`` tail / ``process_batch_result`` read
+        the real radix ids — most importantly the stop id (``== end_id``), which
+        the next step's in-place ``output_ids``/``input_ids`` write clobbered out
+        of the aliased published tensor before this lagged resolve. The key is a
+        GPU hash (#745) so there is no host hash to recompute; this is a pointer
+        swap. The host work the lookahead overlaps with the next step's forward is
+        the journal-apply into ``output_rows``, the ``next_token_ids`` host read,
+        and the finished/retracted ``skip_rids`` the base recomputes.
         """
-        del host_buf, result, forward_batch, schedule_batch, requests
+        del forward_batch, schedule_batch, requests
+        if host_buf is not None and result is not None:
+            result.next_token_ids = host_buf
 
     @staticmethod
     def _row_radix_token_ids(

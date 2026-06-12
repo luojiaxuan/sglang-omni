@@ -1304,9 +1304,10 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
 
 def test_async_launch_resolve_matches_sync_collect():
     """post_decode_launch + post_decode_resolve must yield the same published
-    next_token_ids and the same output_rows append as synchronous _collect_frame
-    (the async path defers only the radix hash to the pinned snapshot). CPU stub:
-    eager decode (no CUDA graph), pinned staging mocked to a plain clone.
+    next_token_ids and the same output_rows append as synchronous _collect_frame.
+    The launch hands resolve a device snapshot of the published ids so they
+    survive the next step clobbering the aliased output_ids tensor in place; CPU
+    stub: eager decode (no CUDA graph).
     """
     pytest.importorskip("sglang")
     import types
@@ -1373,11 +1374,16 @@ def test_async_launch_resolve_matches_sync_collect():
     ra = _make_runner()
     req_a, res_a = _sched_req(), _result()
     host_buf = ra.post_decode_launch(res_a, None, [req_a])
-    assert host_buf is None  # GPU hash at launch leaves no snapshot for resolve
-    ra.post_decode_resolve(host_buf, res_a, None, None, [req_a])  # no-op
+    # Launch hands resolve a private device snapshot of the published ids.
+    assert host_buf is not None
+    assert torch.equal(host_buf, res_a.next_token_ids)
+    # Simulate the next decode step overwriting the aliased published tensor in
+    # place (the output_ids -> input_ids clobber): resolve must still recover the
+    # real ids from the snapshot.
+    res_a.next_token_ids.zero_()
+    ra.post_decode_resolve(host_buf, res_a, None, None, [req_a])
 
-    # The launch publishes the real radix ids on device (GPU hash); resolve is a
-    # no-op, so async and sync yield identical published ids.
+    # Resolve restored the snapshot, so async and sync yield identical ids.
     assert torch.equal(res_s.next_token_ids, res_a.next_token_ids)
     assert torch.equal(sb_s.output_ids, res_s.next_token_ids)  # sync still publishes
 
@@ -1394,6 +1400,75 @@ def test_async_launch_resolve_matches_sync_collect():
     )
     assert len(req_s.data.output_rows) == len(req_a.data.output_rows) == 1
     assert torch.equal(req_s.data.output_rows[0], req_a.data.output_rows[0])
+
+
+def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
+    """bs=1 stop-boundary regression. A stop frame publishes end_id as
+    next_token_ids; the base aliases it onto schedule_batch.output_ids, which the
+    next decode step overwrites in place. Under lookahead that clobber races ahead
+    of this step's resolve, so post_decode_launch must snapshot the ids and resolve
+    must restore them — otherwise the eos finish never reaches process_batch_result
+    and a bs=1 request never stops (the 4096-frame runaway)."""
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+
+    hidden_size = 4
+    end_id = 1001
+
+    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+    model = types.SimpleNamespace(
+        _decode_input_embedding=types.SimpleNamespace(weight=weight),
+        _state_pool=None,
+        config=types.SimpleNamespace(
+            n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=end_id
+        ),
+        frame_graph_max_bs=0,  # eager path
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    model.acquire_row = pool.acquire_row
+    model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
+        torch.ones(1, dtype=torch.long),  # stop_choice=1 -> stop (end_id)
+        torch.arange(12, dtype=torch.long).reshape(1, 12),
+    )
+    model._prepare_multi_modal_inputs = lambda rows: torch.full(
+        (1, hidden_size), 3, dtype=torch.bfloat16
+    )
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+
+    data = types.SimpleNamespace(
+        req=None,
+        text_temperature=1.0,
+        text_top_p=1.0,
+        text_top_k=50,
+        audio_temperature=1.0,
+        audio_top_p=1.0,
+        audio_top_k=50,
+        sampling_seed=0,
+        generation_steps=0,
+        audio_repetition_penalty=1.0,
+        output_rows=[],
+    )
+    req = types.SimpleNamespace(request_id="rid", data=data)
+    res = types.SimpleNamespace(
+        logits_output=types.SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
+    )
+
+    host_buf = runner.post_decode_launch(res, None, [req])
+    # The stop frame's published id is the raw end_id (eos detection keys on it).
+    assert int(res.next_token_ids[0]) == end_id
+    assert host_buf is not None
+    # The next step clobbers the aliased published tensor in place.
+    res.next_token_ids.zero_()
+    assert int(res.next_token_ids[0]) != end_id
+    # Resolve must restore the stop id so the eos finish still fires.
+    runner.post_decode_resolve(host_buf, res, None, None, [req])
+    assert int(res.next_token_ids[0]) == end_id
 
 
 def test_chunked_rows_do_not_advance_sampling_steps():
