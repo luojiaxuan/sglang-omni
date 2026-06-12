@@ -481,6 +481,33 @@ class MossTTSLocalModelRunner(ModelRunner):
         if pool is not None:
             pool.commit_generation_step(sched_req.request_id, generation_steps)
 
+    def on_generation_steps_advanced(
+        self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
+    ) -> None:
+        pool = getattr(self.model, "_state_pool", None)
+        if pool is None or not advanced_steps:
+            return
+        steps = [int(generation_steps) for _, generation_steps in advanced_steps]
+        row_t = getattr(forward_batch, "moss_pool_row_t", None)
+        if row_t is not None and int(row_t.numel()) == len(steps):
+            step_t = torch.tensor(steps, dtype=torch.long, device=row_t.device)
+            pool.commit_generation_steps(row_t, step_t)
+            return
+        rows = []
+        row_steps = []
+        for sched_req, generation_steps in advanced_steps:
+            row = pool.row_for(sched_req.request_id)
+            if row is None:
+                continue
+            rows.append(row)
+            row_steps.append(int(generation_steps))
+        if not rows:
+            return
+        device = pool.generation_steps.device
+        row_t = torch.tensor(rows, dtype=torch.long, device=device)
+        step_t = torch.tensor(row_steps, dtype=torch.long, device=device)
+        pool.commit_generation_steps(row_t, step_t)
+
     def post_process_outputs(
         self,
         result: Any,

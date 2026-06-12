@@ -148,6 +148,16 @@ class MossTTSLocalDecodeStatePool:
             return
         self.generation_steps[row_idx] = int(generation_steps)
 
+    def commit_generation_steps(
+        self, row_t: torch.Tensor, generation_steps: torch.Tensor
+    ) -> None:
+        """Mirror committed generation steps into active pool rows in one write."""
+        if row_t.numel() == 0:
+            return
+        self.generation_steps[row_t] = generation_steps.to(
+            device=self.device, dtype=torch.int64
+        )
+
     def reset_for_refill(self, rid: str, generation_steps: int = 0) -> bool:
         """Invalidate params and zero ``rid``'s row for a retraction re-prefill.
 

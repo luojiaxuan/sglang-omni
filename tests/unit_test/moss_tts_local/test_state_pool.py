@@ -196,6 +196,20 @@ def test_commit_generation_step_updates_active_row():
     assert int(pool.generation_steps[row]) == 7
 
 
+def test_commit_generation_steps_updates_active_rows():
+    pool = MossTTSLocalDecodeStatePool(_model())
+    row_a = pool.acquire_row("a")
+    row_b = pool.acquire_row("b")
+
+    pool.commit_generation_steps(
+        torch.tensor([row_a, row_b], dtype=torch.long),
+        torch.tensor([7, 9], dtype=torch.long),
+    )
+
+    assert int(pool.generation_steps[row_a]) == 7
+    assert int(pool.generation_steps[row_b]) == 9
+
+
 def test_reset_for_refill_clears_active_row():
     pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")

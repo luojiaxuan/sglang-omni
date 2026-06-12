@@ -329,6 +329,14 @@ class ModelRunner:
         """Hook after ``generation_steps`` is committed on request data."""
         return None
 
+    def on_generation_steps_advanced(
+        self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
+    ) -> None:
+        """Batch hook after ``generation_steps`` are committed on request data."""
+        del forward_batch
+        for sched_req, generation_steps in advanced_steps:
+            self.on_generation_step_advanced(sched_req, generation_steps)
+
     def _finalize(
         self,
         batch_result,
@@ -372,16 +380,19 @@ class ModelRunner:
         outputs = self.output_processor.process(batch_result, scheduler_output)
         self.post_process_outputs(batch_result, scheduler_output, outputs)
         skip_rids = (skip_rids or set()) | self.finalize_skip_rids(scheduler_output)
+        advanced_steps = []
         for sched_req in scheduler_output.requests:
             if sched_req.request_id in skip_rids:
                 continue
             data = sched_req.data
             data.generation_steps = int(data.generation_steps) + 1
-            self.on_generation_step_advanced(sched_req, data.generation_steps)
+            advanced_steps.append((sched_req, data.generation_steps))
             req_output = outputs[sched_req.request_id]
             extra = req_output.extra
             if isinstance(extra, dict) and extra:
                 data.extra_model_outputs.update(extra)
+        if advanced_steps:
+            self.on_generation_steps_advanced(advanced_steps, forward_batch)
         req_ids = [req.request_id for req in scheduler_output.requests]
         req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
 
