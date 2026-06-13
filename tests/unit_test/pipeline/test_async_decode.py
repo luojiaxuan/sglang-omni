@@ -64,10 +64,10 @@ class _StubRunner(ModelRunner):
         return f"hostbuf-{self.launch_calls}"
 
     def post_decode_resolve(
-        self, host_buf, result, forward_batch, schedule_batch, requests
+        self, launch_buf, result, forward_batch, schedule_batch, requests
     ):
         self.resolve_calls += 1
-        self.last_resolved_buf = host_buf
+        self.last_resolved_buf = launch_buf
 
     def _finalize(
         self,
@@ -140,12 +140,12 @@ def test_two_launches_return_distinct_handles():
     with _patch_event(ready=True):
         s1 = r.execute_launch(_sched_output(1))
         s2 = r.execute_launch(_sched_output(1))
-        assert s1 is not s2 and s1.host_buf != s2.host_buf
+        assert s1 is not s2 and s1.launch_buf != s2.launch_buf
         # resolve in order N-1 then N
         r.execute_resolve(s1)
-        assert r.last_resolved_buf == s1.host_buf
+        assert r.last_resolved_buf == s1.launch_buf
         r.execute_resolve(s2)
-        assert r.last_resolved_buf == s2.host_buf
+        assert r.last_resolved_buf == s2.launch_buf
 
 
 def test_resolve_none_returns_none():

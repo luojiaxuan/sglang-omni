@@ -332,6 +332,42 @@ def test_omni_scheduler_resolve_drops_retracted_req() -> None:
     assert captured["ntids"] == [10]  # retracted row trimmed from next_token_ids
 
 
+def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
+    """The synchronous fast path runs after _resolve_pending_async, whose drain can
+    retract a req still present in the stale batch. The fast path must drop finished
+    AND retracted reqs (not only finished) before run_batch, or a retracted req is
+    forwarded/finalized again and re-frees its already-freed KV.
+    """
+    captured: dict = {}
+
+    class FakeBatch:
+        def __init__(self, reqs):
+            self.reqs = reqs
+
+        def filter_batch(self, keep_indices=None):
+            captured["keep_indices"] = keep_indices
+            self.reqs = [self.reqs[i] for i in keep_indices]
+
+    scheduler = object.__new__(OmniScheduler)
+    keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
+    retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
+
+    # retracted (not finished) must be dropped from the stale batch
+    out = scheduler._drop_stale_overrun(FakeBatch([keep, retr]))
+    assert captured["keep_indices"] == [0]
+    assert [r.rid for r in out.reqs] == ["keep"]
+
+    # all dropped -> None so run_batch is skipped
+    fin = SimpleNamespace(rid="fin", finished=lambda: True, is_retracted=False)
+    assert scheduler._drop_stale_overrun(FakeBatch([retr, fin])) is None
+
+    # nothing stale -> batch returned unchanged, filter_batch never called
+    captured.clear()
+    clean = FakeBatch([keep])
+    assert scheduler._drop_stale_overrun(clean) is clean
+    assert "keep_indices" not in captured
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:

@@ -1050,6 +1050,25 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
 
+    def _drop_stale_overrun(self, batch):
+        """Drop reqs finished OR retracted by the just-completed drain from the
+        stale fast-path batch, so run_batch does not forward/finalize them again
+        (double-free of already-freed KV). Returns the filtered batch, or None if
+        it empties. Mirrors the finished/is_retracted pre-drop in
+        _resolve_and_process; the fast path previously dropped only finished.
+        """
+        if batch is None or not batch.reqs:
+            return batch
+        drop = [
+            r.finished() or bool(getattr(r, "is_retracted", False))
+            for r in batch.reqs
+        ]
+        if not any(drop):
+            return batch
+        keep = [i for i, d in enumerate(drop) if not d]
+        batch.filter_batch(keep_indices=keep)
+        return batch if batch.reqs else None
+
     def _event_loop_async_decode(self) -> None:
         """One-step-lookahead decode loop (single stream + CUDA event).
 
@@ -1108,24 +1127,12 @@ class OmniScheduler:
                 if self._async_pending is not None:
                     self._resolve_pending_async()
                     # Stale-batch overrun: `batch` was built (get_next_batch_to_run,
-                    # top of loop) BEFORE this drain. The drain can finish reqs that
-                    # are still present in `batch` (the live running batch); running
-                    # them again double-frees their committed KV cache
-                    # (process_batch_result_decode -> release_kv_cache ->
-                    # pop_committed_kv_cache asserts "already freed"). Drop them —
-                    # the fast-path analogue of the _resolve_and_process pre_finished
-                    # drop. Higgs marks EOC finishes in the sampler so they leave the
-                    # running set a step earlier; a model that marks no early finish
-                    # (e.g. the Qwen talker) lands every finish in this window.
-                    if (
-                        batch is not None
-                        and batch.reqs
-                        and any(r.finished() for r in batch.reqs)
-                    ):
-                        batch.filter_batch()
-                        if not batch.reqs:
-                            batch = None
-                        self.cur_batch = batch
+                    # top of loop) BEFORE this drain, which can finish OR retract reqs
+                    # still present in it. Drop them before run_batch so they are not
+                    # forwarded/finalized a second time (double-free of already-freed
+                    # KV). Fast-path analogue of the _resolve_and_process drop.
+                    batch = self._drop_stale_overrun(batch)
+                    self.cur_batch = batch
                 if batch:
                     result = self.run_batch(batch)
                     if result is not _FAILED_BATCH_RESULT:

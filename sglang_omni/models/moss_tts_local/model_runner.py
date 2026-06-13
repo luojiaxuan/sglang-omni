@@ -368,7 +368,7 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def post_decode_resolve(
         self,
-        host_buf: Any,
+        launch_buf: Any,
         result: Any,
         forward_batch: Any,
         schedule_batch: Any,
@@ -380,8 +380,8 @@ class MossTTSLocalModelRunner(ModelRunner):
         tensor before this lagged resolve.
         """
         del forward_batch, schedule_batch, requests
-        if host_buf is not None and result is not None:
-            result.next_token_ids = host_buf
+        if launch_buf is not None and result is not None:
+            result.next_token_ids = launch_buf
 
     @staticmethod
     def _row_radix_token_ids(
