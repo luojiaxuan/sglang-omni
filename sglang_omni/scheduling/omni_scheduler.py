@@ -1060,8 +1060,7 @@ class OmniScheduler:
         if batch is None or not batch.reqs:
             return batch
         drop = [
-            r.finished() or bool(getattr(r, "is_retracted", False))
-            for r in batch.reqs
+            r.finished() or bool(getattr(r, "is_retracted", False)) for r in batch.reqs
         ]
         if not any(drop):
             return batch
