@@ -1539,21 +1539,27 @@ def test_chunked_rows_do_not_advance_sampling_steps():
             output_rows=[],
         )
 
+    def _pool_sampling_steps(runner, rid):
+        pool = runner.model._state_pool
+        row = pool.row_for(rid)
+        assert row is not None
+        return int(pool.sampling_steps[row])
+
     # Single-shot prefill: the only chunk is final, advances sampling_steps to 1.
     r = _make_runner()
     single = types.SimpleNamespace(request_id="r", data=_data(is_chunked=0))
-    r._run_frame_decode(_result(), [single])
-    assert single.data.sampling_steps == 1
+    r._run_frame_decode(_result(), types.SimpleNamespace(), [single])
+    assert _pool_sampling_steps(r, "r") == 1
 
     # Three-chunk prefill on the same request: the mid chunks do not advance, the
     # final chunk does, so the end state matches the single-shot path.
     r = _make_runner()
     data = _data(is_chunked=2)
     sched = types.SimpleNamespace(request_id="r", data=data)
-    for is_chunked in (2, 1, 0):
+    for is_chunked, expected_steps in ((2, 0), (1, 0), (0, 1)):
         data.req.is_chunked = is_chunked
-        r._run_frame_decode(_result(), [sched])
-    assert data.sampling_steps == 1
+        r._run_frame_decode(_result(), types.SimpleNamespace(), [sched])
+        assert _pool_sampling_steps(r, "r") == expected_steps
 
 
 def test_async_decode_cli_accepts_moss_local():

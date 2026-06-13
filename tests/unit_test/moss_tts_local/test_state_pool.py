@@ -65,6 +65,8 @@ def test_pool_dims_derive_from_embedding_weight():
         assert field.dtype == torch.int64
     assert pool.generation_steps.shape == (5,)
     assert pool.generation_steps.dtype == torch.int64
+    assert pool.sampling_steps.shape == (5,)
+    assert pool.sampling_steps.dtype == torch.int64
     assert pool.audio_repetition_penalty.shape == (5,)
     assert pool.audio_repetition_penalty.dtype == torch.float32
     assert pool.audio_token_presence.shape == (5, 12, 1024)
@@ -132,6 +134,7 @@ def test_release_resets_row_fields():
     assert pool.audio_top_k[row] == 0
     assert pool.seeds[row] == 0
     assert pool.generation_steps[row] == 0
+    assert pool.sampling_steps[row] == 0
     assert pool.audio_repetition_penalty[row] == 0.0
     assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
 
@@ -152,6 +155,7 @@ def test_reset_row_zeroes_all_fields():
         pool.audio_top_k,
         pool.seeds,
         pool.generation_steps,
+        pool.sampling_steps,
         pool.audio_repetition_penalty,
     ):
         assert field[row] == 0
@@ -212,6 +216,7 @@ def test_commit_generation_step_updates_active_row():
     pool.commit_generation_step("ghost", 3)
 
     assert int(pool.generation_steps[row]) == 7
+    assert int(pool.sampling_steps[row]) == 7
 
 
 def test_commit_generation_steps_updates_active_rows():
@@ -226,6 +231,8 @@ def test_commit_generation_steps_updates_active_rows():
 
     assert int(pool.generation_steps[row_a]) == 7
     assert int(pool.generation_steps[row_b]) == 9
+    assert int(pool.sampling_steps[row_a]) == 7
+    assert int(pool.sampling_steps[row_b]) == 9
 
 
 def test_reset_for_refill_clears_active_row():
@@ -241,6 +248,7 @@ def test_reset_for_refill_clears_active_row():
     assert int(torch.count_nonzero(pool.feedback_embeds[row])) == 0
     assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
     assert int(pool.generation_steps[row]) == 4
+    assert int(pool.sampling_steps[row]) == 4
     # params were invalidated, so the next ensure_params re-writes them.
     pool.ensure_params(row, "a", _params(seed=2))
     assert int(pool.seeds[row]) == 2
@@ -498,6 +506,68 @@ def test_collect_frame_reads_generation_steps_from_pool():
     runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
 
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
+    assert int(pool.sampling_steps[row]) == 5
+
+
+def test_pool_sampling_position_leads_unresolved_lookahead_launches():
+    hidden_size = 4
+    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
+    embedding = SimpleNamespace(weight=weight)
+    model = SimpleNamespace(
+        _decode_input_embedding=embedding,
+        _state_pool=None,
+        config=SimpleNamespace(
+            n_vq=12,
+            audio_assistant_slot_token_id=1000,
+            audio_end_token_id=1001,
+        ),
+        frame_graph_max_bs=1,
+        device=torch.device("cpu"),
+    )
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    captured = []
+
+    def decode_frame_graphed(hidden_states, **kwargs):
+        del hidden_states
+        captured.append(kwargs["base_positions"].detach().clone())
+        return (
+            torch.zeros(1, dtype=torch.long),
+            torch.full((1, 12), 7, dtype=torch.long),
+            torch.ones((1, hidden_size), dtype=torch.bfloat16),
+        )
+
+    model.decode_frame_graphed = decode_frame_graphed
+
+    runner = object.__new__(MossTTSLocalModelRunner)
+    runner.model = model
+    data = SimpleNamespace(
+        req=SimpleNamespace(is_chunked=0),
+        text_temperature=1.0,
+        text_top_p=1.0,
+        text_top_k=50,
+        audio_temperature=1.0,
+        audio_top_p=1.0,
+        audio_top_k=50,
+        sampling_seed=0,
+        generation_steps=0,
+        audio_repetition_penalty=1.0,
+        output_rows=[],
+    )
+    request = SimpleNamespace(request_id="rid", data=data)
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
+    )
+
+    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+
+    row = pool.row_for("rid")
+    assert row is not None
+    assert torch.equal(captured[0], torch.tensor([0]))
+    assert torch.equal(captured[1], torch.tensor([13]))
+    assert int(pool.generation_steps[row]) == 0
+    assert int(pool.sampling_steps[row]) == 2
 
 
 def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
@@ -690,6 +760,8 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     assert result.moss_journal.pool_rows == [row_a, row_b]
     assert torch.equal(pool.feedback_embeds[row_a], torch.full((4,), 3).bfloat16())
     assert torch.equal(pool.feedback_embeds[row_b], torch.full((4,), 5).bfloat16())
+    assert int(pool.sampling_steps[row_a]) == 5
+    assert int(pool.sampling_steps[row_b]) == 9
 
     runner._finalize(
         result,
@@ -926,7 +998,8 @@ def test_resume_resets_sampling_steps_to_generation_steps():
     )
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
-    pool.acquire_row("a")
+    row = pool.acquire_row("a")
+    pool.sampling_steps[row] = 99
 
     width = 13
     data = SimpleNamespace(
@@ -947,6 +1020,7 @@ def test_resume_resets_sampling_steps_to_generation_steps():
     assert (
         data.sampling_steps == 3
     ), "resume must reset sampling_steps to generation_steps"
+    assert int(pool.sampling_steps[row]) == 3
 
 
 def test_resume_with_empty_output_rows_still_resets_sampling_steps():
@@ -963,7 +1037,8 @@ def test_resume_with_empty_output_rows_still_resets_sampling_steps():
     )
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
-    pool.acquire_row("a")  # launched once, so it holds a row
+    row = pool.acquire_row("a")  # launched once, so it holds a row
+    pool.sampling_steps[row] = 1
 
     width = 13
     data = SimpleNamespace(
@@ -982,6 +1057,7 @@ def test_resume_with_empty_output_rows_still_resets_sampling_steps():
     runner._build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert data.sampling_steps == 0, "empty-output_rows resume must still reset"
+    assert int(pool.sampling_steps[row]) == 0
     # The next collect then samples the resumed frame at position 0, not stale 1.
     assert MossTTSLocalModelRunner._advance_sampling_position(data) == 0
     assert data.sampling_steps == 1

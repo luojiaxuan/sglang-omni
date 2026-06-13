@@ -82,15 +82,29 @@ class MossTTSLocalModelRunner(ModelRunner):
         rep-history gather lags one frame under lookahead and would diverge from
         sync) or ``bs > frame_graph_max_bs``.
         """
-        reqs = getattr(batch, "reqs", None) or []
-        if len(reqs) > int(getattr(self.model, "frame_graph_max_bs", 0)):
+        try:
+            reqs = batch.reqs
+        except AttributeError:
+            reqs = None
+        reqs = reqs or []
+        try:
+            frame_graph_max_bs = self.model.frame_graph_max_bs
+        except AttributeError:
+            frame_graph_max_bs = 0
+        if len(reqs) > int(frame_graph_max_bs):
             return False
         for req in reqs:
-            data = getattr(req, "_omni_data", None)
-            if (
-                data is not None
-                and float(getattr(data, "audio_repetition_penalty", 1.0)) != 1.0
-            ):
+            try:
+                data = req._omni_data
+            except AttributeError:
+                data = None
+            if data is None:
+                continue
+            try:
+                audio_repetition_penalty = data.audio_repetition_penalty
+            except AttributeError:
+                audio_repetition_penalty = 1.0
+            if float(audio_repetition_penalty) != 1.0:
                 return False
         return True
 
@@ -121,8 +135,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             # any retraction re-prefill, including one retracted before it emitted
             # a frame (empty output_rows). Both are no-ops for a fresh prefill:
             # the counters are already aligned and no pool row is held.
-            data.sampling_steps = int(getattr(data, "generation_steps", 0))
-            pool.reset_for_refill(sched_req.request_id, int(data.generation_steps))
+            generation_steps = int(data.generation_steps)
+            data.sampling_steps = generation_steps
+            pool.reset_for_refill(sched_req.request_id, generation_steps)
             if data.output_rows:
                 pool.rebuild_audio_history(sched_req.request_id, data.output_rows)
             current_rows = rows[prefix_len : prefix_len + req_len]
@@ -264,7 +279,10 @@ class MossTTSLocalModelRunner(ModelRunner):
             for i, sched_req in enumerate(requests)
             if not self._is_chunked_request(sched_req)
         }
-        gen_steps = pool.generation_steps[row_t].to(device=device)
+        gen_steps = torch.maximum(
+            pool.sampling_steps[row_t].to(device=device),
+            pool.generation_steps[row_t].to(device=device),
+        )
         rep_penalties = pool.audio_repetition_penalty[row_t].to(
             device=device, dtype=torch.float32
         )
@@ -355,6 +373,12 @@ class MossTTSLocalModelRunner(ModelRunner):
             emit_pool_rows = [pool_rows[i] for i in emit_indices]
             emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
             emit_rows = rows.index_select(0, emit_index_t)
+            emit_steps = gen_steps.index_select(
+                0, emit_index_t.to(device=gen_steps.device)
+            )
+            pool.sampling_steps[emit_row_t] = (emit_steps + 1).to(
+                device=pool.sampling_steps.device, dtype=torch.int64
+            )
             if has_audio_repetition_penalty:
                 keep_history = (
                     next_text.index_select(0, emit_index_t.to(device=next_text.device))
@@ -454,9 +478,11 @@ class MossTTSLocalModelRunner(ModelRunner):
         under lookahead generation_steps lags, so the floor lifts launch(N+1) off
         the stale N.
         """
-        s = max(
-            int(getattr(data, "sampling_steps", None) or 0), int(data.generation_steps)
-        )
+        try:
+            sampling_steps = data.sampling_steps
+        except AttributeError:
+            sampling_steps = None
+        s = max(int(sampling_steps or 0), int(data.generation_steps))
         data.sampling_steps = s + 1
         return s
 
@@ -590,10 +616,15 @@ class MossTTSLocalModelRunner(ModelRunner):
             # output_rows / the vocoder. No-op on the sync path.
             req = sched_req.data.req
             if req is not None:
-                finished_fn = getattr(req, "finished", None)
-                if (callable(finished_fn) and finished_fn()) or bool(
-                    getattr(req, "is_retracted", False)
-                ):
+                try:
+                    finished_fn = req.finished
+                except AttributeError:
+                    finished_fn = None
+                try:
+                    is_retracted = req.is_retracted
+                except AttributeError:
+                    is_retracted = False
+                if (callable(finished_fn) and finished_fn()) or bool(is_retracted):
                     continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:

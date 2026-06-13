@@ -84,6 +84,9 @@ class MossTTSLocalDecodeStatePool:
         self.generation_steps = torch.zeros(
             self.num_rows, device=self.device, dtype=torch.int64
         )
+        self.sampling_steps = torch.zeros(
+            self.num_rows, device=self.device, dtype=torch.int64
+        )
         self.audio_repetition_penalty = torch.zeros(
             self.num_rows, device=self.device, dtype=torch.float32
         )
@@ -141,6 +144,7 @@ class MossTTSLocalDecodeStatePool:
         self.audio_top_k[row_idx] = 0
         self.seeds[row_idx] = 0
         self.generation_steps[row_idx] = 0
+        self.sampling_steps[row_idx] = 0
         self.audio_repetition_penalty[row_idx] = 0.0
         self.audio_token_presence[row_idx].zero_()
         self._audio_repetition_penalty_rows.discard(int(row_idx))
@@ -184,7 +188,12 @@ class MossTTSLocalDecodeStatePool:
         row_idx = self.row_for(rid)
         if row_idx is None:
             return
-        self.generation_steps[row_idx] = int(generation_steps)
+        step = int(generation_steps)
+        self.generation_steps[row_idx] = step
+        self.sampling_steps[row_idx] = torch.maximum(
+            self.sampling_steps[row_idx],
+            torch.tensor(step, device=self.device, dtype=torch.int64),
+        )
 
     def commit_generation_steps(
         self, row_t: torch.Tensor, generation_steps: torch.Tensor
@@ -192,9 +201,10 @@ class MossTTSLocalDecodeStatePool:
         """Mirror committed generation steps into active pool rows in one write."""
         if row_t.numel() == 0:
             return
-        self.generation_steps[row_t] = generation_steps.to(
-            device=self.device, dtype=torch.int64
-        )
+        steps = generation_steps.to(device=self.device, dtype=torch.int64)
+        row_t = row_t.to(device=self.device, dtype=torch.long)
+        self.generation_steps[row_t] = steps
+        self.sampling_steps[row_t] = torch.maximum(self.sampling_steps[row_t], steps)
 
     def reset_for_refill(self, rid: str, generation_steps: int = 0) -> bool:
         """Invalidate params and zero ``rid``'s row for a retraction re-prefill.
@@ -207,6 +217,7 @@ class MossTTSLocalDecodeStatePool:
         self.invalidate_params(rid)
         self.reset_row(row_idx)
         self.generation_steps[row_idx] = int(generation_steps)
+        self.sampling_steps[row_idx] = int(generation_steps)
         return True
 
     def rows_have_audio_repetition_penalty(self, pool_rows: list[int]) -> bool:
