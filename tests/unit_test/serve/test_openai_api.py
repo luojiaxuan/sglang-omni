@@ -129,6 +129,23 @@ class SuccessfulTranscriptionClient:
         return CompletionResult(request_id="transcription-1", text="hello world")
 
 
+class OverloadedClient:
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(self, *args, **kwargs):
+        del args, kwargs
+        from sglang_omni.client.types import ClientError
+
+        raise ClientError("Admission rejected: scheduler waiting queue is full")
+
+    async def speech(self, *args, **kwargs):
+        del args, kwargs
+        from sglang_omni.client.types import ClientError
+
+        raise ClientError("Admission rejected: scheduler waiting queue is full")
+
+
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
 def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     client = TestClient(create_app(_fault_client(model_name), model_name=model_name))
@@ -155,6 +172,33 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     )
     assert speech_resp.status_code == 500
     assert "cuda out of memory" in speech_resp.json()["detail"]
+
+
+def test_non_streaming_admission_rejection_returns_429() -> None:
+    client = TestClient(create_app(OverloadedClient(), model_name="qwen3-omni"))
+
+    chat_resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+        },
+    )
+    assert chat_resp.status_code == 429
+    assert "Admission rejected" in chat_resp.json()["detail"]
+
+    speech_resp = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "qwen3-omni",
+            "input": "hello",
+            "stream": False,
+            "response_format": "wav",
+        },
+    )
+    assert speech_resp.status_code == 429
+    assert "Admission rejected" in speech_resp.json()["detail"]
 
 
 def test_chat_stream_failure_closes_without_done_sentinel() -> None:

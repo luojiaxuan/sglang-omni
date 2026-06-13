@@ -71,10 +71,19 @@ _BAD_REQUEST_MARKERS = (
     "Requested token count exceeds the model's maximum context length",
 )
 
+_OVERLOAD_MARKERS = (
+    "Admission rejected:",
+)
+
 
 def _is_bad_request_error(exc: Exception) -> bool:
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS)
+
+
+def _is_overload_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(marker in message for marker in _OVERLOAD_MARKERS)
 
 
 def create_app(
@@ -221,11 +230,15 @@ async def _chat_non_stream(
     except ClientError as exc:
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if _is_overload_error(exc):
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Error generating response for request %s", request_id)
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if _is_overload_error(exc):
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     requested_modalities = req.modalities or ["text"]
@@ -544,9 +557,13 @@ def _register_speech(app: FastAPI) -> None:
                 speed=req.speed,
             )
         except ClientError as exc:
+            if _is_overload_error(exc):
+                raise HTTPException(status_code=429, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("Error generating speech for request %s", request_id)
+            if _is_overload_error(exc):
+                raise HTTPException(status_code=429, detail=str(exc)) from exc
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         headers = {

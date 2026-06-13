@@ -580,6 +580,90 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     assert scheduler._abort_on_queued_limit(object()) is False
 
 
+def test_omni_scheduler_admission_rejects_full_waiting_queue() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.inbox = Queue()
+    scheduler.waiting_queue = [SimpleNamespace(rid="already-waiting")]
+    scheduler.running_batch = None
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler._async_pending = None
+    scheduler._pending_stream_chunks = {}
+    scheduler._pending_stream_done = set()
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._abort_callback = None
+    scheduler.is_entry_rank = True
+    scheduler.gpu_id = None
+    scheduler.server_args = SimpleNamespace(mem_fraction_static=None)
+    scheduler.max_req_len = 128
+    scheduler.max_total_num_tokens = 1024
+    scheduler.max_prefill_tokens = 128
+    scheduler.max_running_requests = 4
+    scheduler.max_queued_requests = 1
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 512)
+    scheduler._admission_max_waiting = 1
+    scheduler._admission_min_free_gpu_memory_bytes = None
+    scheduler._admission_token_headroom = 1.0
+
+    req = SimpleNamespace(
+        rid="new-req",
+        origin_input_ids=[1, 2, 3],
+        sampling_params=SimpleNamespace(max_new_tokens=4),
+        output_ids=[],
+    )
+    scheduler._request_builder = lambda payload: SimpleNamespace(
+        req=req,
+        enforce_request_limits=False,
+    )
+
+    scheduler.process_input_requests([SimpleNamespace(request_id="new-req")])
+
+    assert [req.rid for req in scheduler.waiting_queue] == ["already-waiting"]
+    out = scheduler.outbox.get_nowait()
+    assert out.request_id == "new-req"
+    assert out.type == "error"
+    assert "waiting queue is full" in str(out.data)
+
+
+def test_omni_scheduler_telemetry_snapshot_reports_queue_and_kv() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.inbox = Queue()
+    scheduler.outbox = Queue()
+    scheduler.inbox.put(IncomingMessage("req", "new_request", object()))
+    scheduler.waiting_queue = [object(), object()]
+    scheduler.running_batch = SimpleNamespace(reqs=[object()])
+    scheduler.cur_batch = None
+    scheduler.last_batch = SimpleNamespace(reqs=[object(), object(), object()])
+    scheduler._deferred_request_payloads = {"deferred": object()}
+    scheduler._pending_stream_chunks = {"stream": [object()]}
+    scheduler._pending_stream_done = {"done"}
+    scheduler.max_running_requests = 8
+    scheduler.max_queued_requests = 16
+    scheduler.max_total_num_tokens = 100
+    scheduler.max_req_len = 64
+    scheduler.max_prefill_tokens = 32
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 25)
+    scheduler.gpu_id = None
+    scheduler._admission_max_waiting = 16
+    scheduler._admission_min_free_gpu_memory_bytes = 1 << 30
+
+    snapshot = scheduler._scheduler_telemetry_snapshot()
+
+    assert snapshot["inbox_qsize"] == 1
+    assert snapshot["outbox_qsize"] == 0
+    assert snapshot["waiting_queue"] == 2
+    assert snapshot["running_batch"] == 1
+    assert snapshot["last_batch"] == 3
+    assert snapshot["kv_available_tokens"] == 25
+    assert snapshot["kv_used_tokens"] == 75
+    assert snapshot["cuda_allocated_bytes"] is None
+
+
 def test_stage_output_cache_eviction_uses_lru_order() -> None:
     cache = StageOutputCache(max_size=2)
 

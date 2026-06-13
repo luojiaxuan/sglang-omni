@@ -232,6 +232,41 @@ python examples/run_qwen3_omni_speech_server.py \
 the global value for that stage. Values must be greater than `0` and less than
 `1`.
 
+### Rollout Stress Diagnostics
+
+For RL-style workloads, first measure same-prompt rollout pressure before
+changing memory fractions. The stress runner sends the same MMMU image prompt
+with `N={1,2,4,8,16}` concurrent rollouts, keeps Thinker and Talker online by
+default, and records request-level queue, CUDA memory, and KV-pool telemetry
+through the event profiler.
+
+```bash
+python benchmarks/eval/qwen3_omni_rollout_stress.py \
+  --base-url http://localhost:8008 \
+  --rollout-counts 1,2,4,8,16 \
+  --max-tokens 256 \
+  --output-dir results/rollout_stress
+```
+
+The result summary is written to
+`results/rollout_stress/rollout_stress_results.json`; profiler events are under
+`results/rollout_stress/events` unless `--profile-event-dir` is set.
+
+Set conservative overload guards when running near the memory limit:
+
+```bash
+SGLANG_OMNI_ADMISSION_MAX_WAITING=32 \
+SGLANG_OMNI_ADMISSION_MIN_FREE_GPU_MEMORY_MB=4096 \
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate \
+  --port 8008
+```
+
+When the guard rejects a request, the client receives a controlled error
+instead of a worker OOM or router 500.
+
 ## Single-GPU FP8 on H100/H20
 
 SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses
