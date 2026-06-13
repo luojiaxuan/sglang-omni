@@ -714,7 +714,10 @@ class Stage:
                     message="stage does not support admin operations",
                     data={"skipped": True, "unsupported": True},
                 )
-            outcome = handler(operation.action, dict(operation.payload))
+            action = operation.action
+            payload = dict(operation.payload)
+            loop = asyncio.get_running_loop()
+            outcome = await loop.run_in_executor(None, lambda: handler(action, payload))
             if inspect.isawaitable(outcome):
                 outcome = await outcome
             return self._admin_result_from_outcome(operation, outcome)
