@@ -382,28 +382,33 @@ def test_result_adapter_empty_generation():
 # ---------------------------------------------------------------------------
 
 
-def test_audio_repetition_penalty_matches_upstream_semantics():
+def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 
     logits = torch.tensor(
         [[2.0, -1.0, 0.5, 3.0], [1.0, 1.0, 1.0, 1.0]], dtype=torch.float32
     )
-    history_row0 = torch.tensor([[0, 9], [2, 9]], dtype=torch.long)  # channel 0: {0, 2}
-    histories = [history_row0, None]
+    token_presence = torch.tensor(
+        [
+            [True, False, True, False],
+            [True, True, False, False],
+        ],
+        dtype=torch.bool,
+    )
     expected = logits.clone()
     penalty = 1.5
     expected[0, 0] = expected[0, 0] / penalty  # positive -> divide
     expected[0, 2] = expected[0, 2] / penalty
 
-    MossTTSLocalModelRunner._apply_audio_repetition_penalty(
-        logits, histories, [penalty, 1.0], channel=0
+    MossTTSLocalModelRunner._apply_audio_repetition_penalty_mask(
+        logits, token_presence, torch.tensor([penalty, 1.0])
     )
     torch.testing.assert_close(logits, expected)
 
     # Negative scores multiply.
     logits2 = torch.tensor([[-2.0, 1.0]], dtype=torch.float32)
-    MossTTSLocalModelRunner._apply_audio_repetition_penalty(
-        logits2, [torch.tensor([[0]], dtype=torch.long)], [2.0], channel=0
+    MossTTSLocalModelRunner._apply_audio_repetition_penalty_mask(
+        logits2, torch.tensor([[True, False]]), torch.tensor([2.0])
     )
     torch.testing.assert_close(
         logits2, torch.tensor([[-4.0, 1.0]], dtype=torch.float32)
@@ -435,32 +440,30 @@ def test_row_radix_token_ids_hash_rows_and_keep_eos():
     assert all(0 <= int(v) < 151936 for v in out)
 
 
-def test_gather_rep_histories_excludes_prompt_and_inactive_rows():
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+def test_audio_history_presence_mask_excludes_prompt_rows():
+    from types import SimpleNamespace
 
-    class _Data:
-        def __init__(self, rows):
-            self.output_rows = rows
+    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
-    row = torch.cat([torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)])
-    active = _Data([row, row + 0])
-    inactive = _Data([row])
-    empty = _Data([])
-
-    histories = MossTTSLocalModelRunner._gather_rep_histories(
-        [active, inactive, empty], [1.5, 1.0, 1.5], torch.device("cpu")
+    model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(
+            weight=torch.zeros(2, 4, dtype=torch.bfloat16)
+        ),
+        config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
     )
-    assert histories is not None
-    assert histories[0].shape == (2, N_VQ)  # generated frames only, channel cols
-    assert histories[1] is None  # unit penalty -> skipped
-    assert histories[2] is None  # no frames yet
-    # All penalties at 1.0 -> no history gathering at all.
-    assert (
-        MossTTSLocalModelRunner._gather_rep_histories(
-            [active], [1.0], torch.device("cpu")
-        )
-        is None
+    pool = MossTTSLocalDecodeStatePool(model)
+    row = pool.acquire_row("rid")
+    prompt_row = torch.cat(
+        [torch.tensor([151656]), torch.full((N_VQ,), 99, dtype=torch.long)]
     )
+    generated_row = torch.cat(
+        [torch.tensor([151656]), torch.arange(N_VQ, dtype=torch.long)]
+    )
+
+    pool.update_audio_history(torch.tensor([row]), generated_row.reshape(1, -1))
+
+    assert bool(pool.audio_token_presence[row, 0, 0])
+    assert not bool(pool.audio_token_presence[row, 0, int(prompt_row[1])])
 
 
 def test_build_generation_kwargs_precedence():
@@ -1536,21 +1539,27 @@ def test_chunked_rows_do_not_advance_sampling_steps():
             output_rows=[],
         )
 
+    def _pool_sampling_steps(runner, rid):
+        pool = runner.model._state_pool
+        row = pool.row_for(rid)
+        assert row is not None
+        return int(pool.sampling_steps[row])
+
     # Single-shot prefill: the only chunk is final, advances sampling_steps to 1.
     r = _make_runner()
     single = types.SimpleNamespace(request_id="r", data=_data(is_chunked=0))
-    r._run_frame_decode(_result(), [single])
-    assert single.data.sampling_steps == 1
+    r._run_frame_decode(_result(), types.SimpleNamespace(), [single])
+    assert _pool_sampling_steps(r, "r") == 1
 
     # Three-chunk prefill on the same request: the mid chunks do not advance, the
     # final chunk does, so the end state matches the single-shot path.
     r = _make_runner()
     data = _data(is_chunked=2)
     sched = types.SimpleNamespace(request_id="r", data=data)
-    for is_chunked in (2, 1, 0):
+    for is_chunked, expected_steps in ((2, 0), (1, 0), (0, 1)):
         data.req.is_chunked = is_chunked
-        r._run_frame_decode(_result(), [sched])
-    assert data.sampling_steps == 1
+        r._run_frame_decode(_result(), types.SimpleNamespace(), [sched])
+        assert _pool_sampling_steps(r, "r") == expected_steps
 
 
 def test_async_decode_cli_accepts_moss_local():
