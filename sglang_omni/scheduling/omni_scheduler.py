@@ -36,6 +36,7 @@ from sglang_omni.scheduling.observability import (
     allocator_available_tokens,
     batch_size,
     cuda_memory_snapshot,
+    env_flag,
     env_float,
     env_int,
     safe_qsize,
@@ -343,6 +344,60 @@ class OmniScheduler:
             ),
             0.0,
         )
+        # --- Prefill batching knobs (issue #760) -----------------------------
+        # All default to CURRENT behavior; opt in via env for benchmarking
+        # before any default is flipped (the Qwen3-Omni CI thresholds are
+        # tight). Coalesce window: on the idle->prefill transition, briefly
+        # wait for more queued requests so the first prefill batch is not
+        # size-1. See _coalesce_prefill_window for the TP-safety argument.
+        self._prefill_coalesce_window_s = (
+            max(env_float("SGLANG_OMNI_PREFILL_COALESCE_MS", default=0.0), 0.0)
+            / 1000.0
+        )
+        self._prefill_coalesce_poll_s = (
+            max(env_float("SGLANG_OMNI_PREFILL_COALESCE_POLL_MS", default=1.0), 0.1)
+            / 1000.0
+        )
+        _coalesce_target = env_int("SGLANG_OMNI_PREFILL_COALESCE_TARGET")
+        self._prefill_coalesce_target = (
+            _coalesce_target
+            if _coalesce_target and _coalesce_target > 0
+            else getattr(self, "max_running_requests", None)
+        )
+        # Minimum waiting-queue depth before the window engages, so a lone
+        # request never pays the idle wait (avoids the low-concurrency latency
+        # tax measured in the issue #760 audio A/B).
+        self._prefill_coalesce_min = max(
+            env_int("SGLANG_OMNI_PREFILL_COALESCE_MIN") or 2, 1
+        )
+        # Token budget: never coalesce a prefill larger than the engine will run
+        # in one (chunked) step. Bounds the transient activation/broadcast
+        # memory that caused a multimodal thinker-TP OOM at high concurrency
+        # (issue #760). Default: chunked_prefill_size, else max_prefill_tokens.
+        _coalesce_max_tokens = env_int("SGLANG_OMNI_PREFILL_COALESCE_MAX_TOKENS")
+        if _coalesce_max_tokens and _coalesce_max_tokens > 0:
+            self._prefill_coalesce_max_tokens = _coalesce_max_tokens
+        else:
+            self._prefill_coalesce_max_tokens = (
+                getattr(self, "chunked_prefill_size", None)
+                or getattr(self, "max_prefill_tokens", 0)
+                or 0
+            )
+        # Cheap int-broadcast fast path so idle TP loops skip the pyobj pickle.
+        self._tp_idle_broadcast_skip = env_flag(
+            "SGLANG_OMNI_TP_IDLE_BROADCAST_SKIP", default=False
+        )
+        # Periodic prefill-batch-size summary to quantify fragmentation.
+        self._log_prefill_stats = env_flag(
+            "SGLANG_OMNI_LOG_PREFILL_STATS", default=False
+        )
+        self._prefill_stats_interval_s = max(
+            env_float("SGLANG_OMNI_PREFILL_STATS_INTERVAL_S", default=10.0), 1.0
+        )
+        self._prefill_stats_last_log = 0.0
+        self._prefill_stats_batches = 0
+        self._prefill_stats_reqs = 0
+        self._prefill_stats_max = 0
 
     def _resolve_admission_max_waiting(self) -> int | None:
         override = env_int("SGLANG_OMNI_ADMISSION_MAX_WAITING")
@@ -363,6 +418,135 @@ class OmniScheduler:
         if value is None or value <= 0:
             return None
         return value * 1024 * 1024
+
+    def _waiting_prefill_tokens(self) -> int:
+        """Best-effort sum of prefill tokens currently in the waiting queue.
+
+        Deterministic function of the (TP-replicated) waiting queue, so every
+        rank computes the same value and the coalesce loop stays in lockstep.
+        Guarded so a missing attribute never aborts the scheduler.
+        """
+        total = 0
+        for req in getattr(self, "waiting_queue", []) or []:
+            ids = getattr(req, "origin_input_ids", None)
+            if ids is not None:
+                try:
+                    total += len(ids)
+                except TypeError:
+                    continue
+        return total
+
+    def _coalesce_prefill_window(self) -> None:
+        """Briefly wait to group newly-arrived requests into one prefill batch.
+
+        Engages only on the idle->prefill transition (no decode batch running
+        and no in-flight async-decode step) and only while fewer than the target
+        number of requests are queued, so it never stalls active decode. Uses a
+        FIXED iteration count (not wall-clock) and a replicated break condition
+        (``waiting_queue`` length, which is identical across TP ranks after the
+        broadcast in ``recv_requests``) so every rank issues the same number of
+        broadcast collectives and stays in lockstep. No-op unless
+        ``SGLANG_OMNI_PREFILL_COALESCE_MS`` > 0.
+        """
+        window_s = getattr(self, "_prefill_coalesce_window_s", 0.0)
+        if window_s <= 0.0:
+            return
+        target = getattr(self, "_prefill_coalesce_target", None)
+        if not target or target <= 1:
+            return
+        if getattr(self, "_async_pending", None) is not None:
+            return
+        # Overlap loop: a finished prefill result waits one iteration in
+        # result_queue (running_batch still 0) before its decode starts; don't
+        # stall that transition. Attribute only exists in _event_loop_overlap.
+        if getattr(self, "result_queue", None):
+            return
+        if batch_size(getattr(self, "running_batch", None)) > 0:
+            return
+        coalesce_min = getattr(self, "_prefill_coalesce_min", 2)
+        if not coalesce_min <= len(self.waiting_queue) < target:
+            return
+        # Token budget bounds the coalesced prefill (and its transient
+        # activation/broadcast memory) to one chunk-worth; prevents the
+        # multimodal thinker-TP OOM seen at high concurrency (issue #760).
+        budget = getattr(self, "_prefill_coalesce_max_tokens", 0) or 0
+        if budget and self._waiting_prefill_tokens() >= budget:
+            return
+        poll_s = getattr(self, "_prefill_coalesce_poll_s", 0.001) or 0.001
+        iterations = max(int(window_s / poll_s), 1)
+        for _ in range(iterations):
+            if len(self.waiting_queue) >= target:
+                break
+            if budget and self._waiting_prefill_tokens() >= budget:
+                break
+            time.sleep(poll_s)
+            more = self.recv_requests()
+            more.extend(self._take_deferred_request_payloads())
+            if more:
+                self.process_input_requests(more)
+
+    def _record_prefill_stats(self, batch: Any) -> None:
+        """Accumulate prefill (extend) batch sizes and log a periodic summary.
+
+        No-op unless ``SGLANG_OMNI_LOG_PREFILL_STATS`` is set. Cheap: a few
+        integer updates per batch plus one log line per interval. Lets us
+        quantify prefill fragmentation (avg/max batch size) before/after a fix.
+        """
+        if not getattr(self, "_log_prefill_stats", False):
+            return
+        if not getattr(self, "is_entry_rank", True):
+            return
+        if batch is None or self._batch_is_decode(batch):
+            return
+        n = batch_size(batch)
+        if n <= 0:
+            return
+        now = time.monotonic()
+        if self._prefill_stats_last_log == 0.0:
+            self._prefill_stats_last_log = now
+        self._prefill_stats_batches += 1
+        self._prefill_stats_reqs += n
+        self._prefill_stats_max = max(self._prefill_stats_max, n)
+        elapsed = now - self._prefill_stats_last_log
+        if elapsed < self._prefill_stats_interval_s:
+            return
+        avg = self._prefill_stats_reqs / max(self._prefill_stats_batches, 1)
+        logger.info(
+            "[prefill-stats] window=%.1fs prefill_batches=%d reqs=%d "
+            "avg_batch=%.2f max_batch=%d waiting=%d running=%d",
+            elapsed,
+            self._prefill_stats_batches,
+            self._prefill_stats_reqs,
+            avg,
+            self._prefill_stats_max,
+            len(getattr(self, "waiting_queue", []) or []),
+            batch_size(getattr(self, "running_batch", None)),
+        )
+        self._prefill_stats_last_log = now
+        self._prefill_stats_batches = 0
+        self._prefill_stats_reqs = 0
+        self._prefill_stats_max = 0
+
+    def _tp_inbox_is_idle_collective(self, local_count: int) -> bool:
+        """Agree across all TP ranks whether the entry rank's inbox was empty,
+        via a single cheap int broadcast, so idle loops can skip the (pickling)
+        ``broadcast_pyobj`` path.
+
+        TP-safe: every rank issues exactly one int broadcast here in lockstep,
+        and the boolean result is derived from the broadcast value (identical on
+        all ranks). Any failure returns False so the caller falls back to the
+        always-correct ``broadcast_pyobj``.
+        """
+        try:
+            import torch
+
+            flag = torch.tensor([int(local_count)], dtype=torch.int64)
+            torch.distributed.broadcast(
+                flag, src=self.tp_group.ranks[0], group=self.tp_cpu_group
+            )
+            return int(flag.item()) == 0
+        except Exception:
+            return False
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
@@ -476,6 +660,10 @@ class OmniScheduler:
             return self._drain_local_inbox()
 
         recv_msgs = self._drain_local_inbox() if self.is_entry_rank else []
+        if getattr(self, "_tp_idle_broadcast_skip", False) and (
+            self._tp_inbox_is_idle_collective(len(recv_msgs))
+        ):
+            return []
         return broadcast_pyobj(
             recv_msgs,
             self.tp_group.rank,
@@ -764,6 +952,7 @@ class OmniScheduler:
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
         self._emit_prefill_start_for_batch(batch)
+        self._record_prefill_stats(batch)
         self._emit_scheduler_telemetry(
             "scheduler_batch_start",
             extra={"batch_size": batch_size(batch)},
@@ -1086,6 +1275,7 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
+            self._coalesce_prefill_window()
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
@@ -1116,6 +1306,7 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
+            self._coalesce_prefill_window()
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
             disable_overlap_for_batch = self.is_disable_overlap_for_batch(batch)
@@ -1258,6 +1449,7 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
+            self._coalesce_prefill_window()
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 

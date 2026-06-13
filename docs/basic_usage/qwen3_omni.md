@@ -464,3 +464,73 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `audio` | dict | `null` | Speech response format configuration, e.g. `{"format": "wav"}` |
 | `stage_sampling` | dict | `null` | Per-stage sampling overrides, e.g. `{"thinker": {"temperature": 0.8}}` |
+
+## Concurrency / prefill batching tuning (issue #760)
+
+Under many concurrent streaming sessions the thinker can fragment prefill into
+many tiny batches (size 1-2) instead of coalescing toward the running/token
+budget the way vLLM continuous batching does. The knobs below (all **off by
+default**, so existing behavior and CI thresholds are unchanged) help close the
+gap. They are most relevant to a TP>1 thinker serving prefill-heavy streaming
+workloads (e.g. live speech translation). See issue #760.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `SGLANG_OMNI_PREFILL_COALESCE_MS` | `0` (off) | On the idle->prefill transition, wait up to this many ms for more queued requests before scheduling the first prefill, so it is not size-1. Never stalls active decode (only engages when no decode batch / async step is in flight). |
+| `SGLANG_OMNI_PREFILL_COALESCE_POLL_MS` | `1.0` | Poll granularity for the coalesce wait. The window runs a fixed `window/poll` iteration count, so all TP ranks stay in lockstep. |
+| `SGLANG_OMNI_PREFILL_COALESCE_TARGET` | `max_running_requests` | Stop waiting early once this many requests are queued. |
+| `SGLANG_OMNI_PREFILL_COALESCE_MIN` | `2` | Minimum queue depth before the window engages, so a lone request never pays the idle wait (avoids a low-concurrency latency tax). |
+| `SGLANG_OMNI_PREFILL_COALESCE_MAX_TOKENS` | `chunked_prefill_size`, else `max_prefill_tokens` | Token budget: stop coalescing once queued prefill tokens reach this, so the coalesced batch never exceeds one (chunked) step. **Bounds the transient activation/broadcast memory — required to avoid a multimodal thinker-TP OOM at high concurrency (see Audio note below).** |
+| `SGLANG_OMNI_CHUNKED_PREFILL_SIZE` | unset (chunking off) | Enable chunked prefill for the thinker so long audio prefills interleave with decode instead of blocking a whole step. The talker (projected-embeds) path is unaffected (chunking is force-disabled there). |
+| `SGLANG_OMNI_TP_IDLE_BROADCAST_SKIP` | `false` | For TP>1, replace the per-loop `broadcast_pyobj` with a cheap int broadcast on idle loops (skips the pickle path when the inbox is empty). |
+| `SGLANG_OMNI_LOG_PREFILL_STATS` | `false` | Periodically log average/max prefill batch size and queue depth, to quantify fragmentation before/after tuning. |
+| `SGLANG_OMNI_PREFILL_STATS_INTERVAL_S` | `10` | Interval (seconds) for the prefill-stats log line. |
+
+### Suggested starting point (2x A6000, thinker TP=2, ~32 streaming sessions)
+
+```bash
+export SGLANG_OMNI_PREFILL_COALESCE_MS=8
+export SGLANG_OMNI_PREFILL_COALESCE_TARGET=32
+export SGLANG_OMNI_CHUNKED_PREFILL_SIZE=4096
+export SGLANG_OMNI_TP_IDLE_BROADCAST_SKIP=1
+export SGLANG_OMNI_LOG_PREFILL_STATS=1
+```
+
+### Measuring before/after
+
+```bash
+# Concurrency sweep (records throughput_qps / latency / rtf)
+python -m benchmarks.eval.qwen3_omni_rollout_stress \
+  --base-url http://127.0.0.1:<port> \
+  --rollout-counts 1,2,4,8,16,32 --max-tokens 256
+
+# Streaming TTFT / time-to-first-chunk
+python benchmarks/eval/benchmark_omni_streaming_ttft.py \
+  --base-url http://127.0.0.1:<port> --label tp2 --repeats 5
+```
+
+Watch the `[prefill-stats]` log lines: `avg_batch` should rise toward
+`max_running_requests` (and away from ~1) once coalescing is enabled.
+
+### Audio / multimodal note (measured: 2x A6000, thinker TP=2, 30B base)
+
+A **text** concurrency sweep shows coalescing lifts `avg_batch` from ~N/2 to ~N
+with throughput/latency unchanged (text prefill is cheap / decode-bound). On a
+**prefill-bound audio** sweep (~30s clips, ~400 prefill tokens/req) the trade-off
+is different and worth knowing:
+
+- coalescing also lifts `avg_batch` (~N/3 -> ~N), but throughput does **not**
+  improve, because baseline continuous batching already saturates the thinker
+  prefill (~12k prefill-tok/s on this hardware);
+- with a count-only target and **no** token budget, coalescing accumulated 32
+  audio requests (each carrying multimodal CUDA feature tensors that move through
+  `broadcast_pyobj`) and **OOM-crashed `thinker_tp1`** at N=32;
+- `SGLANG_OMNI_PREFILL_COALESCE_MAX_TOKENS` (default = `chunked_prefill_size`)
+  fixes the crash (0 failures, throughput == baseline) and
+  `SGLANG_OMNI_PREFILL_COALESCE_MIN` removes the low-concurrency latency tax.
+
+Net: treat the coalesce window as **experimental**, most useful for bursty
+arrival at or above the target concurrency. The always-safe wins are the thinker
+TP `disable_custom_all_reduce` auto-fix, chunked prefill, the idle broadcast
+skip, and the `[prefill-stats]` instrumentation (which is what surfaced the OOM
+above).

@@ -877,6 +877,58 @@ def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None
     assert _stage(config, "thinker").runtime.resources.total_gpu_memory_fraction is None
 
 
+def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
+    """TP>1 thinker must drop the custom all-reduce kernel (parity w/ MingOmni).
+
+    Regression guard for issue #760: a ``sglang_omni serve`` launch (not just the
+    example script) must auto-inject ``disable_custom_all_reduce`` for the
+    multi-process thinker TP path.
+    """
+    for cls in (
+        Qwen3OmniPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+    ):
+        assert cls.tensor_parallel_server_args_overrides(
+            stage_name="thinker", tp_size=2
+        ) == {"disable_custom_all_reduce": True}
+        # TP==1 and non-thinker stages stay untouched.
+        assert (
+            cls.tensor_parallel_server_args_overrides(stage_name="thinker", tp_size=1)
+            == {}
+        )
+        for stage_name in ("audio_encoder", "image_encoder", "talker_ar", "code2wav"):
+            assert (
+                cls.tensor_parallel_server_args_overrides(
+                    stage_name=stage_name, tp_size=4
+                )
+                == {}
+            )
+
+
+def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args() -> None:
+    """End-to-end: the CLI TP pass writes disable_custom_all_reduce into the
+    thinker stage server args when TP>1 is configured (issue #760)."""
+    from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
+
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=2,
+        thinker_gpus="0,1",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+    _apply_tensor_parallel_server_args_overrides(config)
+
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
+    )
+    assert "disable_custom_all_reduce" not in _server_args_overrides(
+        config, "audio_encoder"
+    )
+
+
 def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
     server_args = SimpleNamespace(mem_fraction_static=0.929)
 
