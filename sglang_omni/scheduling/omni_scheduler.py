@@ -1139,11 +1139,7 @@ class OmniScheduler:
         action = str(payload.get("action") or "checksum")
         with self._admin_lock:
             data = self.model_worker.weights_checker(action)
-        return {
-            "success": bool(data.get("matched", True)),
-            "message": "ok",
-            "data": data,
-        }
+        return {"success": True, "message": "ok", "data": data}
 
     def _abort_all_requests(self) -> int:
         request_ids = self._active_request_ids()

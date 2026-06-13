@@ -147,6 +147,24 @@ def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> N
     assert update_calls == []
 
 
+def test_omni_scheduler_weights_checker_compare_change_is_success() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._admin_lock = threading.Lock()
+    scheduler.model_worker = SimpleNamespace(
+        weights_checker=lambda action: {
+            "action": action,
+            "matched": False,
+            "changed": ["weight"],
+        }
+    )
+    result = OmniScheduler._admin_weights_checker(scheduler, {"action": "compare"})
+    assert result["success"] is True
+    assert result["data"]["matched"] is False
+    assert result["data"]["changed"] == ["weight"]
+
+
 def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
