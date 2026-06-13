@@ -25,9 +25,10 @@ class _PendingStep:
     forward + on-GPU sample + collect enqueued and ``event`` recorded right
     after, so ``event.query()`` true means the launched step's GPU work is
     published. ``launch_buf`` is whatever ``post_decode_launch`` returns for
-    resolve to consume: a device snapshot of the published ids (MOSS-TTS-Local,
-    no host copy), or a pinned host staging buffer an async D2H wrote into
-    (Higgs). ``execute_resolve`` later waits on ``event`` and reads ``launch_buf``.
+    resolve to consume: a device-side correctness snapshot of the published ids
+    (MOSS-TTS-Local, no host copy), or a pinned host staging buffer an async host
+    copy filled (Higgs); only the latter provides host-D2H overlap.
+    ``execute_resolve`` later waits on ``event`` and reads ``launch_buf``.
 
     Invariant: at most one ``_PendingStep`` is live at a time (see
     ``ModelRunner._pending``). When the launch uses host staging it is pinned
@@ -63,18 +64,23 @@ class ModelRunner:
         self._async_enabled: bool = False
         self._staging_slot: int = 0
         self._host_staging_buffers: list[torch.Tensor] = []
-        # Observability: how often resolve found the event already done
-        # (overlap worked) vs had to block on synchronize().
+        # Observability: how often resolve found the launched step's event
+        # already done (no blocking) vs had to block on synchronize(). This
+        # counts whether the launched step's GPU work was published in time; it
+        # does NOT measure host-D2H overlap (only host-staging runners like Higgs
+        # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
-        """Return a pinned host buffer mirroring ``device_staging``'s full
-        shape, ping-ponging between two buffers on each call.
+        """Return a pinned host staging buffer mirroring ``device_staging``'s
+        full shape, ping-ponging between two buffers on each call. Only runners
+        that stage the collect to host (Higgs) call this; device-snapshot
+        runners (MOSS-TTS-Local) never do.
 
         Two buffers are required: resolve(N) reads one on the host while
-        launch(N+1)'s async D2H writes the other. That CPU-read vs GPU-write
-        overlap is not protected by single-stream ordering (design.md §1.4).
+        launch(N+1)'s async host copy writes the other. That CPU-read vs
+        GPU-write overlap is not protected by single-stream ordering.
         Buffers are allocated lazily on first use (the base runner does not
         know the model-specific staging shape at construction time).
         """
@@ -126,10 +132,14 @@ class ModelRunner:
         )
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
-        """Enqueue a decode step's forward + on-GPU sample, snapshot its
-        collect state into a pinned host buffer (``post_decode_launch``), and
-        record a CUDA event right after that async D2H. Does NOT wait on the
-        GPU. Decode batches only.
+        """Enqueue a decode step's forward + on-GPU sample, call
+        ``post_decode_launch`` to publish a model-specific resolve payload
+        (returned as ``launch_buf``), and record a CUDA event right after
+        publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
+        is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
+        staging (Higgs); only the latter overlaps a host copy with the next
+        forward, and ``event.query()`` proves the launched step's GPU work is
+        done, not that any host overlap happened.
 
         Returns the ``_PendingStep`` handle (or None if there was no batch).
         The CALLER owns the handle and passes it to ``execute_resolve`` later.
@@ -447,10 +457,11 @@ class ModelRunner:
         self, result: Any, forward_batch: Any, requests: list
     ) -> Any:
         """Async-decode GPU half of ``post_decode``: run the step's collect,
-        publish ``result.next_token_ids``, and return the launch buffer for
-        resolve, either a device snapshot of the published state (no host copy)
-        or a pinned host staging buffer an async D2H wrote into. The caller
-        records a CUDA event immediately after.
+        publish ``result.next_token_ids``, and return the resolve payload
+        (``launch_buf``), either a device-side correctness snapshot of the
+        published state (no host copy) or a pinned host staging buffer an async
+        host copy filled; only the latter provides host-D2H overlap. The caller
+        records a CUDA event immediately after publication.
 
         Default raises: a model must implement this together with
         ``post_decode_resolve`` to be async-decode-safe. The synchronous

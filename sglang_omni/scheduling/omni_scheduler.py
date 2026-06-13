@@ -683,9 +683,9 @@ class OmniScheduler:
 
     def _run_batch_launch(self, batch):
         """Async: build SchedulerOutput and launch the decode step on the GPU
-        (forward + sample + async D2H of the collect snapshot), without waiting.
-        Returns ``(sched_output, pending_step)``; the caller holds the pending
-        step (launch-first keeps two steps momentarily in flight)."""
+        (forward + sample, then ``post_decode_launch`` publishes the resolve
+        payload), without waiting. Returns ``(sched_output, pending_step)``; the
+        caller holds the pending step (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
         # One forward per launch; mirror upstream run_batch's per-forward
         # counter (the matching resolve does no forward, so it must not count).
@@ -1072,11 +1072,11 @@ class OmniScheduler:
         """One-step-lookahead decode loop (single stream + CUDA event).
 
         Each iteration LAUNCHES the current decode step (GPU forward + on-GPU
-        sample + async D2H of the collect snapshot, no GPU wait) and THEN
-        RESOLVES the previous step's host-side collect — so ~1.1ms of per-step
-        CPU work overlaps the current step's GPU forward (launch-first, D1 in
-        design.md §1.3). Prefill / empty batches flush any in-flight decode
-        first and run synchronously (the in-flight step is never stranded).
+        sample, then ``post_decode_launch`` publishes the resolve payload, no GPU
+        wait) and THEN RESOLVES the previous step's host-side collect, so the
+        resolve host work overlaps the current step's GPU forward (launch-first,
+        D1 in design.md section 1.3). Prefill / empty batches flush any in-flight
+        decode first and run synchronously (the in-flight step is never stranded).
         """
         while self._running:
             recv_reqs = self.recv_requests()

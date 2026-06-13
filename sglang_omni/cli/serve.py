@@ -1025,9 +1025,11 @@ def serve(
             "--async_decode",
             help=(
                 "One-step-lookahead async decode for the tts_engine stage: "
-                "default|on|off. When on, per-step host collect overlaps the "
-                "next GPU forward. 'default' uses the pipeline config default "
-                "(on for Higgs TTS). Currently supported by Higgs TTS."
+                "default|on|off. When on, the launch-first lookahead defers each "
+                "step's host-side collect by one iteration; on runners that stage "
+                "the collect to host (Higgs) this overlaps a host copy with the "
+                "next GPU forward. 'default' uses the pipeline config default. "
+                "Available for Higgs TTS and MOSS-TTS-Local."
             ),
         ),
     ] = "default",
