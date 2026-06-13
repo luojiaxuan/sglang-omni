@@ -59,7 +59,11 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        if bool(getattr(schedule_batch, "is_prefill_only", False)):
+        try:
+            is_prefill_only = schedule_batch.is_prefill_only
+        except AttributeError:
+            is_prefill_only = False
+        if bool(is_prefill_only):
             return
         self._collect_frame(result, forward_batch, schedule_batch, requests)
 
@@ -201,7 +205,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         ``next_token_ids``; the caller does, because the async path keeps a
         private device snapshot of the published ids for resolve to restore.
         """
-        hidden_states = getattr(result.logits_output, "hidden_states", None)
+        try:
+            hidden_states = result.logits_output.hidden_states
+        except AttributeError as exc:
+            raise RuntimeError(
+                "MOSS-TTS Local model output did not include hidden states"
+            ) from exc
         if not isinstance(hidden_states, torch.Tensor):
             raise RuntimeError(
                 "MOSS-TTS Local model output did not include hidden states"
@@ -215,17 +224,19 @@ class MossTTSLocalModelRunner(ModelRunner):
         batch_size = len(requests)
         num_channels = int(cfg.n_vq) + 1
 
-        row_t = getattr(forward_batch, "moss_pool_row_t", None)
-        pool_rows = getattr(forward_batch, "moss_pool_rows", None)
-        if row_t is None or pool_rows is None:
+        try:
+            row_t = forward_batch.moss_pool_row_t
+            pool_rows = forward_batch.moss_pool_rows
+        except AttributeError:
             row_t, pool_rows, has_audio_repetition_penalty = pool.prepare_active_rows(
                 requests
             )
         else:
-            has_audio_repetition_penalty = getattr(
-                forward_batch, "moss_has_audio_repetition_penalty", None
-            )
-            if has_audio_repetition_penalty is None:
+            try:
+                has_audio_repetition_penalty = (
+                    forward_batch.moss_has_audio_repetition_penalty
+                )
+            except AttributeError:
                 has_audio_repetition_penalty = pool.rows_have_audio_repetition_penalty(
                     pool_rows
                 )
@@ -289,8 +300,12 @@ class MossTTSLocalModelRunner(ModelRunner):
                 positions=gen_steps * num_channels + channel + 1,
             )
 
-        use_graph = not has_audio_repetition_penalty and batch_size <= getattr(
-            self.model, "frame_graph_max_bs", 0
+        try:
+            frame_graph_max_bs = int(self.model.frame_graph_max_bs)
+        except AttributeError:
+            frame_graph_max_bs = 0
+        use_graph = (
+            not has_audio_repetition_penalty and batch_size <= frame_graph_max_bs
         )
         if use_graph:
             stop_choice, codes, feedback = self.model.decode_frame_graphed(
@@ -463,8 +478,17 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     @staticmethod
     def _is_chunked_request(sched_req: Any) -> bool:
-        req = getattr(sched_req.data, "req", None)
-        return req is not None and getattr(req, "is_chunked", 0) > 0
+        try:
+            req = sched_req.data.req
+        except AttributeError:
+            return False
+        if req is None:
+            return False
+        try:
+            is_chunked = req.is_chunked
+        except AttributeError:
+            return False
+        return int(is_chunked) > 0
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
         """Non-final chunked-prefill rows must not advance ``generation_steps``.
@@ -484,18 +508,27 @@ class MossTTSLocalModelRunner(ModelRunner):
     def on_generation_step_advanced(
         self, sched_req: Any, generation_steps: int
     ) -> None:
-        pool = getattr(self.model, "_state_pool", None)
+        try:
+            pool = self.model._state_pool
+        except AttributeError:
+            return
         if pool is not None:
             pool.commit_generation_step(sched_req.request_id, generation_steps)
 
     def on_generation_steps_advanced(
         self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
     ) -> None:
-        pool = getattr(self.model, "_state_pool", None)
+        try:
+            pool = self.model._state_pool
+        except AttributeError:
+            return
         if pool is None or not advanced_steps:
             return
         steps = [int(generation_steps) for _, generation_steps in advanced_steps]
-        row_t = getattr(forward_batch, "moss_pool_row_t", None)
+        try:
+            row_t = forward_batch.moss_pool_row_t
+        except AttributeError:
+            row_t = None
         if row_t is not None and int(row_t.numel()) == len(steps):
             step_t = torch.tensor(steps, dtype=torch.long, device=row_t.device)
             pool.commit_generation_steps(row_t, step_t)
@@ -525,7 +558,10 @@ class MossTTSLocalModelRunner(ModelRunner):
         # collection. A missing journal means no frame was produced this step
         # (e.g. a prefill-only batch), which is the synchronous-baseline early
         # return.
-        journal = getattr(result, "moss_journal", None)
+        try:
+            journal = result.moss_journal
+        except AttributeError:
+            return
         if journal is None:
             return
 

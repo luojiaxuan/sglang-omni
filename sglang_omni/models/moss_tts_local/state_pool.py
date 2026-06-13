@@ -38,9 +38,20 @@ class MossTTSLocalDecodeStatePool:
         self.hidden_size = int(weight.shape[1])
         self.device = weight.device
         self.dtype = weight.dtype
-        config = getattr(model, "config", None)
-        self.n_vq = int(getattr(config, "n_vq", 12) or 12)
-        self.audio_vocab_size = int(getattr(config, "audio_vocab_size", 1024) or 1024)
+        try:
+            config = model.config
+        except AttributeError:
+            config = None
+        try:
+            n_vq = config.n_vq
+        except AttributeError:
+            n_vq = 12
+        try:
+            audio_vocab_size = config.audio_vocab_size
+        except AttributeError:
+            audio_vocab_size = 1024
+        self.n_vq = int(n_vq or 12)
+        self.audio_vocab_size = int(audio_vocab_size or 1024)
 
         # Feedback embedding for the next decode step; bf16 matches the staging
         # table dtype so before_decode's gather is a plain copy (#736).
@@ -148,7 +159,10 @@ class MossTTSLocalDecodeStatePool:
         self.text_top_k[row_idx] = int(data.text_top_k)
         self.audio_top_k[row_idx] = int(data.audio_top_k)
         self.seeds[row_idx] = int(data.sampling_seed)
-        audio_repetition_penalty = float(getattr(data, "audio_repetition_penalty", 1.0))
+        try:
+            audio_repetition_penalty = float(data.audio_repetition_penalty)
+        except AttributeError:
+            audio_repetition_penalty = 1.0
         self.audio_repetition_penalty[row_idx] = audio_repetition_penalty
         if audio_repetition_penalty == 1.0:
             self._audio_repetition_penalty_rows.discard(int(row_idx))

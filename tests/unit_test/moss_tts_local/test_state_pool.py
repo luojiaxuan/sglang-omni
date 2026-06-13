@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import torch
 
+from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 from sglang_omni.models.moss_tts_local.request_builders import (
     MossTTSLocalSGLangRequestData,
@@ -56,12 +57,12 @@ def test_pool_dims_derive_from_embedding_weight():
     assert pool.hidden_size == _HIDDEN
     assert pool.feedback_embeds.shape == (5, _HIDDEN)
     assert pool.feedback_embeds.dtype == torch.bfloat16
-    for name in ("text_temp", "text_top_p", "audio_temp", "audio_top_p"):
-        assert getattr(pool, name).shape == (5,)
-        assert getattr(pool, name).dtype == torch.float32
-    for name in ("text_top_k", "audio_top_k", "seeds"):
-        assert getattr(pool, name).shape == (5,)
-        assert getattr(pool, name).dtype == torch.int64
+    for field in (pool.text_temp, pool.text_top_p, pool.audio_temp, pool.audio_top_p):
+        assert field.shape == (5,)
+        assert field.dtype == torch.float32
+    for field in (pool.text_top_k, pool.audio_top_k, pool.seeds):
+        assert field.shape == (5,)
+        assert field.dtype == torch.int64
     assert pool.generation_steps.shape == (5,)
     assert pool.generation_steps.dtype == torch.int64
     assert pool.audio_repetition_penalty.shape == (5,)
@@ -142,18 +143,18 @@ def test_reset_row_zeroes_all_fields():
     pool.feedback_embeds[row].fill_(2.0)
     pool.reset_row(row)
     assert torch.all(pool.feedback_embeds[row] == 0)
-    for name in (
-        "text_temp",
-        "text_top_p",
-        "audio_temp",
-        "audio_top_p",
-        "text_top_k",
-        "audio_top_k",
-        "seeds",
-        "generation_steps",
-        "audio_repetition_penalty",
+    for field in (
+        pool.text_temp,
+        pool.text_top_p,
+        pool.audio_temp,
+        pool.audio_top_p,
+        pool.text_top_k,
+        pool.audio_top_k,
+        pool.seeds,
+        pool.generation_steps,
+        pool.audio_repetition_penalty,
     ):
-        assert getattr(pool, name)[row] == 0
+        assert field[row] == 0
     assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
 
 
@@ -499,7 +500,9 @@ def test_collect_frame_reads_generation_steps_from_pool():
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
 
 
-def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active():
+def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
+    monkeypatch,
+):
     hidden_size = 4
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
@@ -518,17 +521,35 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active():
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
     called = {"eager": False}
+    sampled_audio_logits = []
+
+    def sample_tokens(logits, *, temperature, top_p, top_k, seeds, positions):
+        del temperature, top_p, top_k, seeds, positions
+        sampled_audio_logits.append(logits.detach().clone())
+        return torch.argmax(logits, dim=-1)
+
+    monkeypatch.setattr(
+        MossTTSModelRunner,
+        "_sample_tokens",
+        staticmethod(sample_tokens),
+    )
 
     def decode_frame_graphed(*args, **kwargs):
         del args, kwargs
         raise AssertionError("penalty-enabled frames must not use graph replay")
 
     def decode_frame(hidden_states, *, sample_text, sample_audio):
-        del hidden_states, sample_text, sample_audio
+        del hidden_states, sample_text
         called["eager"] = True
+        audio_logits = torch.zeros(1, 1024, dtype=torch.float32)
+        audio_logits[0, 7] = 10.0
+        audio_logits[0, 8] = 6.0
+        channel0 = sample_audio(audio_logits, 0)
+        codes = torch.full((1, 12), 99, dtype=torch.long)
+        codes[:, 0] = channel0
         return (
             torch.zeros(1, dtype=torch.long),
-            torch.full((1, 12), 7, dtype=torch.long),
+            codes,
         )
 
     model.decode_frame_graphed = decode_frame_graphed
@@ -549,10 +570,13 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active():
         audio_top_k=50,
         sampling_seed=0,
         generation_steps=0,
-        audio_repetition_penalty=1.2,
+        audio_repetition_penalty=2.0,
         output_rows=[],
     )
     request = SimpleNamespace(request_id="rid", data=data)
+    row = pool.acquire_row("rid")
+    pool.ensure_params(row, "rid", data)
+    pool.audio_token_presence[row, 0, 7] = True
     result = SimpleNamespace(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
@@ -560,9 +584,13 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active():
     runner._collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
 
     assert called["eager"] is True
-    row = pool.row_for("rid")
-    assert row is not None
+    assert len(sampled_audio_logits) == 1
+    assert sampled_audio_logits[0][0, 7].item() == 5.0
+    assert sampled_audio_logits[0][0, 8].item() == 6.0
+    assert pool.row_for("rid") == row
     assert bool(pool.audio_token_presence[row, 0, 7])
+    assert bool(pool.audio_token_presence[row, 0, 8])
+    assert not bool(pool.audio_token_presence[row, 1, 8])
 
 
 def test_cached_pool_rows_drive_collect_and_batched_step_commit():
