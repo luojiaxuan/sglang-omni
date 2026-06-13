@@ -266,6 +266,21 @@ class Qwen3OmniPipelineConfig(PipelineConfig):
     def encoder_mem_reserve_role_to_stage(cls) -> dict[str, str]:
         return {"thinker": "thinker"}
 
+    @classmethod
+    def tensor_parallel_server_args_overrides(
+        cls,
+        *,
+        stage_name: str,
+        tp_size: int,
+    ) -> dict[str, object]:
+        # Multi-process thinker TP requires the NCCL all-reduce path; the custom
+        # all-reduce kernel is not wired for the disaggregated TP launch. Mirror
+        # MingOmni so a `sglang_omni serve` launch (not just the example script)
+        # is correct without a manual override. See issue #760.
+        if stage_name == "thinker" and tp_size > 1:
+            return {"disable_custom_all_reduce": True}
+        return {}
+
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
     placement: PlacementConfig = Field(
@@ -303,6 +318,19 @@ class Qwen3OmniSpeechPipelineConfig(PipelineConfig):
     @classmethod
     def code2wav_stage(cls) -> str | None:
         return "code2wav"
+
+    @classmethod
+    def tensor_parallel_server_args_overrides(
+        cls,
+        *,
+        stage_name: str,
+        tp_size: int,
+    ) -> dict[str, object]:
+        # See Qwen3OmniPipelineConfig.tensor_parallel_server_args_overrides.
+        # Inherited by Qwen3OmniSpeechColocatedPipelineConfig. See issue #760.
+        if stage_name == "thinker" and tp_size > 1:
+            return {"disable_custom_all_reduce": True}
+        return {}
 
     model_path: str
     placement_policy: str | None = _PLACEMENT_POLICY
