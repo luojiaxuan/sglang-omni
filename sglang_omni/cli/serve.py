@@ -14,8 +14,11 @@ logger = logging.getLogger(__name__)
 
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
-_HIGGS_ASYNC_DECODE_FACTORY = (
-    "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor"
+_ASYNC_DECODE_FACTORIES = frozenset(
+    {
+        "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
+        "sglang_omni.models.moss_tts_local.stages.create_sglang_tts_engine_executor",
+    }
 )
 _QWEN_PARTIAL_START_TALKER_FACTORY = (
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config"
@@ -490,6 +493,8 @@ def apply_parallelism_cli_overrides(
     *,
     thinker_tp_size: int | None,
     thinker_gpus: str | None,
+    image_encoder_tp_size: int | None = None,
+    image_encoder_gpus: str | None = None,
     talker_gpu: int | None,
     code2wav_gpu: int | None,
 ) -> PipelineConfig:
@@ -511,6 +516,29 @@ def apply_parallelism_cli_overrides(
             if thinker_gpu_override is not None:
                 stage.gpu = thinker_gpu_override
             _validate_stage_parallelism_config("thinker", stage.tp_size, stage.gpu)
+            if stage.tp_size == 1 and isinstance(stage.gpu, list):
+                stage.gpu = int(stage.gpu[0])
+
+    image_encoder_gpu_override = (
+        _parse_gpu_placement("image_encoder_gpus", image_encoder_gpus)
+        if image_encoder_gpus is not None
+        else None
+    )
+    if image_encoder_tp_size is not None or image_encoder_gpu_override is not None:
+        image_encoder_stages = _find_matching_stages(
+            pipeline_config,
+            stage_name="image_encoder",
+            reason="tensor parallel settings",
+        )
+        for stage in image_encoder_stages:
+            if image_encoder_tp_size is not None:
+                stage.tp_size = int(image_encoder_tp_size)
+                stage.parallelism.tp = stage.tp_size
+            if image_encoder_gpu_override is not None:
+                stage.gpu = image_encoder_gpu_override
+            _validate_stage_parallelism_config(
+                "image_encoder", stage.tp_size, stage.gpu
+            )
             if stage.tp_size == 1 and isinstance(stage.gpu, list):
                 stage.gpu = int(stage.gpu[0])
 
@@ -669,7 +697,7 @@ def _apply_stage_factory_args_override(
     stage_name: str,
     updates: dict[str, object],
     reason: str,
-    supported_factory: str | None = None,
+    supported_factories: frozenset[str] | None = None,
     flag_name: str | None = None,
 ) -> None:
     matching_stages = _find_matching_stages(
@@ -678,11 +706,12 @@ def _apply_stage_factory_args_override(
         reason=reason,
     )
     for stage in matching_stages:
-        if supported_factory is not None and stage.factory != supported_factory:
+        if supported_factories is not None and stage.factory not in supported_factories:
             display_flag = flag_name or reason
             raise typer.BadParameter(
-                f"{display_flag} currently supports only Higgs TTS; "
-                f"stage {stage.name!r} uses factory {stage.factory!r}"
+                f"{display_flag} currently supports only Higgs TTS and "
+                f"MOSS-TTS-Local; stage {stage.name!r} uses factory "
+                f"{stage.factory!r}"
             )
         factory_args = dict(stage.factory_args or {})
         factory_args.update(updates)
@@ -728,7 +757,7 @@ def apply_async_decode_cli_overrides(
         stage_name="tts_engine",
         updates=updates,
         reason="async decode override",
-        supported_factory=_HIGGS_ASYNC_DECODE_FACTORY,
+        supported_factories=_ASYNC_DECODE_FACTORIES,
         flag_name="--async-decode/--async-decode-min-batch-size",
     )
     return pipeline_config
@@ -883,6 +912,22 @@ def serve(
             help="GPU ids for thinker TP ranks, e.g. '0,1' or '[0, 1]'.",
         ),
     ] = None,
+    image_encoder_tp_size: Annotated[
+        int | None,
+        typer.Option(
+            "--image-encoder-tp-size",
+            "--image_encoder_tp_size",
+            help="Set tensor parallel size for image_encoder stage.",
+        ),
+    ] = None,
+    image_encoder_gpus: Annotated[
+        str | None,
+        typer.Option(
+            "--image-encoder-gpus",
+            "--image_encoder_gpus",
+            help="GPU ids for image_encoder TP ranks, e.g. '4,5' or '[4, 5]'.",
+        ),
+    ] = None,
     talker_gpu: Annotated[
         int | None,
         typer.Option(
@@ -980,9 +1025,11 @@ def serve(
             "--async_decode",
             help=(
                 "One-step-lookahead async decode for the tts_engine stage: "
-                "default|on|off. When on, per-step host collect overlaps the "
-                "next GPU forward. 'default' uses the pipeline config default "
-                "(on for Higgs TTS). Currently supported by Higgs TTS."
+                "default|on|off. When on, the launch-first lookahead defers each "
+                "step's host-side collect by one iteration; on runners that stage "
+                "the collect to host (Higgs) this overlaps a host copy with the "
+                "next GPU forward. 'default' uses the pipeline config default. "
+                "Available for Higgs TTS and MOSS-TTS-Local."
             ),
         ),
     ] = "default",
@@ -1060,6 +1107,8 @@ def serve(
         merged_config,
         thinker_tp_size=thinker_tp_size,
         thinker_gpus=thinker_gpus,
+        image_encoder_tp_size=image_encoder_tp_size,
+        image_encoder_gpus=image_encoder_gpus,
         talker_gpu=talker_gpu,
         code2wav_gpu=code2wav_gpu,
     )
