@@ -375,6 +375,11 @@ processes. That cost dominates the GIL serialization it removes. The monolithic
 host-side cost is structural; the direction that could help is FEWER stage
 boundaries (more colocation / more monolithic), not more.
 
+Caveat: client (32 SimulEval procs) and server shared the node in both arms, so
+de-GIL's extra stage processes add some host-CPU contention — the exact −46% may
+be amplified by that. The direction (de-GIL does not help; it regresses) is
+robust (same client setup both arms; stock RTT matches the taurus baseline).
+
 Repro:
 
     PER_STAGE_PROCESSES=1 GPUS=0,1 PORT=8132 bash eval/servers/serve_sglang_qwen3omni.sh
