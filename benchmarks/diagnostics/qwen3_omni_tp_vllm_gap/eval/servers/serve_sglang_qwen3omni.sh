@@ -41,6 +41,12 @@ MIXED_CHUNK_ARGS=""
 [ -n "${ENABLE_MIXED_CHUNK}" ] && MIXED_CHUNK_ARGS="--enable-mixed-chunk"
 [ "${CHUNKED_PREFILL_SIZE}" -gt 0 ] 2>/dev/null && \
   MIXED_CHUNK_ARGS="${MIXED_CHUNK_ARGS} --chunked-prefill-size ${CHUNKED_PREFILL_SIZE}"
+# M2 de-GIL experiment (#760): set PER_STAGE_PROCESSES=1 to run each non-thinker
+# stage in its own OS process (vs one shared GIL-bound "pipeline" process).
+# Default off = baseline.
+PER_STAGE_PROCESSES="${PER_STAGE_PROCESSES:-}"
+SPLIT_ARGS=""
+[ -n "${PER_STAGE_PROCESSES}" ] && SPLIT_ARGS="--per-stage-processes"
 
 mkdir -p "${SEG_TMP_DIR}"
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -100,5 +106,5 @@ exec python scripts/sglang_omni_qwen3_text_tp_server.py \
   --thinker-max-seq-len '"${THINKER_MAX_SEQ_LEN}"' \
   --max-running-requests '"${MAX_RUNNING_REQUESTS}"' \
   --max-prefill-tokens '"${MAX_PREFILL_TOKENS}"' \
-  --mem-fraction-static '"${MEM_FRACTION_STATIC}"' '"${MIXED_CHUNK_ARGS}"'
+  --mem-fraction-static '"${MEM_FRACTION_STATIC}"' '"${MIXED_CHUNK_ARGS}"' '"${SPLIT_ARGS}"'
 '

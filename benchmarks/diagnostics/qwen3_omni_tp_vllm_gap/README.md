@@ -82,3 +82,27 @@ python -m sglang_omni.profiler /path/events --format table   # stage + hop break
 | `eval/score_streamlaal.sh` | FBK `stream_laal_term.py` wrapper (BLEU/StreamLAAL) |
 | `eval/prepare_acl6060_segments.py` | cut ACL6060 dev into SimulEval inputs |
 | `eval/servers/serve_{sglang,vllm}_qwen3omni.sh` | TP=2 engine launchers |
+| `scripts/sglang_omni_qwen3_text_tp_server.py` | repo-local launcher that builds the Qwen3-Omni **text** pipeline with thinker TP (the upstream text example does not expose thinker TP on the CLI) |
+
+> Layout note: `eval/servers/serve_sglang_qwen3omni.sh` invokes
+> `scripts/sglang_omni_qwen3_text_tp_server.py` relative to `REPO_ROOT`. To run
+> from this package, set `REPO_ROOT` to this directory and `SGLANG_OMNI_SRC` to
+> your sglang-omni checkout.
+
+## The host-side lever under test: per-stage processes (de-GIL)
+
+The launcher exposes why the gap is host-side. The Qwen3-Omni **text** pipeline
+config (`sglang_omni/models/qwen3_omni/config.py`, `_text_stages`) places **all**
+six stages in a single `process="pipeline"`; the TP launcher only pulls `thinker`
+out into its own TP process group. So `preprocessing + image_encoder +
+audio_encoder + mm_aggregate + decode` share **one** OS process — one GIL for all
+32 concurrent streams (an identity `mm_aggregate` alone parked ~170 ms in pure
+queue). The **speech** pipeline already runs one process per stage
+(`_SPEECH_DEFAULT_PROCESSES`), so the fix is purely topological.
+
+`scripts/sglang_omni_qwen3_text_tp_server.py --per-stage-processes` (or
+`PER_STAGE_PROCESSES=1 bash eval/servers/serve_sglang_qwen3omni.sh`) gives every
+non-thinker stage its own process, mirroring the speech topology, at the cost of
+the measured ~2% relay-hop overhead. It targets the ~30% encoder+aggregate+decode
+GIL queue, not the 64% CPU-bound thinker, so it is expected to close part — not
+all — of the vLLM gap. A/B numbers will be appended to `COMPARISON.md`.
