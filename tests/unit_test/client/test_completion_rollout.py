@@ -53,6 +53,28 @@ def test_completion_surfaces_logprobs_and_weight_version() -> None:
     assert out.weight_version == "v7"
 
 
+def test_completion_surfaces_omni_rollout() -> None:
+    rollout = {
+        "version": 1,
+        "model_family": "qwen3_omni",
+        "stages": ["talker"],
+        "total_action_count": 1,
+        "action_streams": [],
+    }
+    result = {
+        "text": "hello",
+        "finish_reason": "stop",
+        "omni_rollout": rollout,
+    }
+    client = Client(_SubmitStubCoordinator(result))
+
+    out = asyncio.run(
+        client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
+    )
+
+    assert out.omni_rollout == rollout
+
+
 def test_completion_without_logprobs_leaves_fields_none() -> None:
     result = {"text": "hello", "finish_reason": "stop"}
     client = Client(_SubmitStubCoordinator(result))
@@ -63,6 +85,7 @@ def test_completion_without_logprobs_leaves_fields_none() -> None:
 
     assert out.output_token_logprobs is None
     assert out.weight_version is None
+    assert out.omni_rollout is None
 
 
 def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
@@ -74,6 +97,7 @@ def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
             "finish_reason": "stop",
             "output_token_logprobs": [[-0.5, 9]],
             "weight_version": "v9",
+            "omni_rollout": {"version": 1, "action_streams": []},
         },
         "code2wav": {"audio_data": [0.0, 0.1, -0.1], "sample_rate": 24000},
     }
@@ -87,6 +111,7 @@ def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
     assert out.audio is not None
     assert out.output_token_logprobs == [[-0.5, 9]]
     assert out.weight_version == "v9"
+    assert out.omni_rollout == {"version": 1, "action_streams": []}
 
 
 def test_completion_concatenates_streamed_logprobs() -> None:
@@ -112,6 +137,7 @@ def test_completion_concatenates_streamed_logprobs() -> None:
                 "output_token_logprobs": [[-0.3, 33]],
                 "finish_reason": "stop",
                 "weight_version": "v7",
+                "omni_rollout": {"version": 1, "action_streams": []},
             },
             stage_name="decode",
             modality="text",
@@ -126,3 +152,4 @@ def test_completion_concatenates_streamed_logprobs() -> None:
     assert out.text == "hello"
     assert out.output_token_logprobs == [[-0.1, 11], [-0.2, 22], [-0.3, 33]]
     assert out.weight_version == "v7"
+    assert out.omni_rollout == {"version": 1, "action_streams": []}

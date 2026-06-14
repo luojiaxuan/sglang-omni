@@ -775,6 +775,8 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
             Message(role=m.get("role", "user"), content=m.get("content"))
             for m in req.messages
         ]
+    elif req.prompt is not None:
+        messages = [Message(role="user", content=req.prompt)]
 
     stage_sampling: dict[str, SamplingParams] | None = None
     if req.stage_sampling:
@@ -794,7 +796,7 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
 
     return GenerateRequest(
         model=req.model,
-        prompt=req.prompt,
+        prompt=None,
         prompt_token_ids=req.input_ids,
         messages=messages,
         sampling=sampling,
@@ -838,6 +840,7 @@ def _build_generate_response(
         weight_version=result.weight_version or "",
         request_metadata=req.metadata,
         output_token_logprobs=result.output_token_logprobs,
+        omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
     return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 

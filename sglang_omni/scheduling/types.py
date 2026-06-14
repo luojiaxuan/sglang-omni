@@ -75,21 +75,32 @@ class ARRequestData:
     temperature: float = 0.0
 
 
-def gather_sampled_logprobs(next_token_logits: Any, sampled_ids: Any) -> list | None:
-    """Per-row log-prob of each sampled token, for RL rollout.
+def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
+    """Convert sampler-produced per-row selected-token logprobs to a list.
 
-    ``next_token_logits`` is ``[batch, vocab]`` and ``sampled_ids`` is
-    ``[batch]``; returns one ``log_softmax`` value per row (the rollout log-prob
-    of the chosen token under the post-penalty distribution), or ``None`` when
-    the inputs are unusable.
+    The sampler owns logprob semantics such as temperature and original-logprob
+    mode. Rollout code should preserve those selected-token values instead of
+    recomputing logprobs from logits.
     """
-    import torch
 
-    if next_token_logits is None or sampled_ids is None:
+    if next_token_logprobs is None:
         return None
-    logits = next_token_logits.float()
-    if logits.ndim != 2:
+    if hasattr(next_token_logprobs, "detach"):
+        values = next_token_logprobs.detach().float().cpu().tolist()
+    elif hasattr(next_token_logprobs, "tolist"):
+        values = next_token_logprobs.tolist()
+    else:
+        values = next_token_logprobs
+    if isinstance(values, (int, float)):
+        return [float(values)]
+    if not isinstance(values, (list, tuple)):
         return None
-    logprobs = torch.log_softmax(logits, dim=-1)
-    ids = sampled_ids.to(device=logits.device, dtype=torch.long).view(-1, 1)
-    return logprobs.gather(1, ids).squeeze(1).tolist()
+
+    out: list[float] = []
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            if len(value) != 1:
+                return None
+            value = value[0]
+        out.append(float(value))
+    return out

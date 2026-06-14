@@ -77,6 +77,50 @@ def test_generate_returns_miles_meta_info() -> None:
     assert meta["request_metadata"] == {"rollout_id": 42, "group_id": 1}
 
 
+def test_generate_returns_omni_rollout_when_present() -> None:
+    result = _text_result()
+    result.omni_rollout = {
+        "version": 1,
+        "model_family": "qwen3_omni",
+        "stages": ["talker"],
+        "total_action_count": 1,
+        "action_streams": [],
+    }
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "sampling_params": {},
+            "return_omni_rollout": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["meta_info"]["omni_rollout"] == result.omni_rollout
+
+
+def test_generate_omits_omni_rollout_when_not_requested() -> None:
+    result = _text_result()
+    result.omni_rollout = {"version": 1, "action_streams": []}
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "sampling_params": {},
+            "return_omni_rollout": False,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["meta_info"]["omni_rollout"] is None
+
+
 def test_generate_emits_audio_block_when_present() -> None:
     result = _text_result()
     result.audio = CompletionAudio(id="a1", data="QUJD", transcript="hello world")
@@ -142,6 +186,21 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     assert gen.sampling.max_new_tokens == 8
     assert gen.stream is False
     assert gen.extra_params["return_logprob"] is True
+
+
+def test_converter_wraps_prompt_as_user_message_for_chat_pipeline() -> None:
+    from sglang_omni.client import Client
+
+    req = RolloutRequest(prompt="hi", sampling_params={})
+    gen = _build_rollout_generate_request(req)
+    omni = Client._build_omni_request(gen)
+
+    assert gen.prompt is None
+    assert gen.prompt_token_ids is None
+    assert [msg.to_dict() for msg in gen.messages or []] == [
+        {"role": "user", "content": "hi"}
+    ]
+    assert omni.inputs == [{"role": "user", "content": "hi"}]
 
 
 def test_converter_threads_return_logprob_into_omni_params() -> None:

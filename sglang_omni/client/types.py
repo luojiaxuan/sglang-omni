@@ -133,6 +133,7 @@ class GenerateChunk:
     # RL-rollout per-token logprobs: (logprob, token_id[, text]) pairs, mirroring
     # sglang's native meta_info.output_token_logprobs.
     output_token_logprobs: list[Any] | None = None
+    omni_rollout: dict[str, Any] | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
@@ -150,6 +151,7 @@ class GenerateChunk:
             "text": self.text,
             "logprobs": self.logprobs,
             "output_token_logprobs": self.output_token_logprobs,
+            "omni_rollout": self.omni_rollout,
             "finish_reason": self.finish_reason,
             "usage": self.usage.to_dict() if self.usage else None,
             "weight_version": self.weight_version,
@@ -202,6 +204,7 @@ class CompletionResult:
     usage: UsageInfo | None = None
     # RL-rollout artifacts (populated when the stage emits them).
     output_token_logprobs: list[Any] | None = None
+    omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
 
 

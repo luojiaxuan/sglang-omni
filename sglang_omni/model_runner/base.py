@@ -15,7 +15,7 @@ import torch
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
-    gather_sampled_logprobs,
+    sampled_logprobs_to_list,
 )
 
 logger = logging.getLogger(__name__)
@@ -546,27 +546,51 @@ class ModelRunner:
     ) -> Any:
         self._apply_repetition_penalty(logits_output, requests)
         self._apply_codec_suppress_tokens(logits_output, requests)
-        # Snapshot the post-penalty logits before sampling, while they are fresh:
-        # the async lookahead reuses this buffer one step later, so RL-rollout
-        # logprobs must be read here, not in _finalize.
-        rollout_logits = None
-        if any(getattr(sr.data, "return_logprob", False) for sr in requests):
-            logits = getattr(logits_output, "next_token_logits", None)
-            if logits is not None and logits.ndim == 2:
-                rollout_logits = logits.detach().clone()
+        wants_rollout_logprob = any(
+            getattr(sr.data, "return_logprob", False) for sr in requests
+        )
+        if wants_rollout_logprob:
+            self._enable_sampler_logprobs(forward_batch, len(requests))
         next_token_ids = self.tp_worker.model_runner.sample(
             logits_output, forward_batch
         )
-        if rollout_logits is not None:
-            self._record_rollout_logprobs(rollout_logits, next_token_ids, requests)
+        if wants_rollout_logprob:
+            self._record_rollout_logprobs(
+                getattr(logits_output, "next_token_logprobs", None),
+                next_token_ids,
+                requests,
+            )
         return next_token_ids
 
-    def _record_rollout_logprobs(self, logits, next_token_ids, requests) -> None:
+    @staticmethod
+    def _enable_sampler_logprobs(forward_batch: Any, batch_size: int) -> None:
+        forward_batch.return_logprob = True
+        if getattr(forward_batch, "top_logprobs_nums", None) is None:
+            forward_batch.top_logprobs_nums = [0] * batch_size
+        if getattr(forward_batch, "token_ids_logprobs", None) is None:
+            forward_batch.token_ids_logprobs = [None] * batch_size
+
+    def _record_rollout_logprobs(
+        self, next_token_logprobs, next_token_ids, requests
+    ) -> None:
         """Append each rollout request's sampled-token logprob (one per step)."""
-        logprobs = gather_sampled_logprobs(logits, next_token_ids)
+        logprobs = sampled_logprobs_to_list(next_token_logprobs)
         if logprobs is None or next_token_ids is None:
             return
-        token_ids = [int(t) for t in next_token_ids.tolist()]
+        if hasattr(next_token_ids, "tolist"):
+            token_id_values = next_token_ids.tolist()
+        else:
+            token_id_values = next_token_ids
+        token_ids = [int(t) for t in token_id_values]
+        if len(logprobs) < len(requests) or len(token_ids) < len(requests):
+            logger.warning(
+                "Skipping rollout logprob capture due to batch-size mismatch: "
+                "logprobs=%s token_ids=%s requests=%s",
+                len(logprobs),
+                len(token_ids),
+                len(requests),
+            )
+            return
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             if getattr(data, "return_logprob", False):

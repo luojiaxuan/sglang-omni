@@ -92,6 +92,7 @@ class Client:
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
         logprobs_parts: list[Any] = []
+        omni_rollout: dict[str, Any] | None = None
         weight_version: str | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
@@ -106,6 +107,8 @@ class Client:
                 finish_reason = chunk.finish_reason
             if chunk.output_token_logprobs:
                 logprobs_parts.extend(chunk.output_token_logprobs)
+            if chunk.omni_rollout is not None:
+                omni_rollout = chunk.omni_rollout
             if chunk.weight_version is not None:
                 weight_version = chunk.weight_version
 
@@ -140,6 +143,7 @@ class Client:
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=logprobs_parts or None,
+            omni_rollout=omni_rollout,
             weight_version=weight_version,
         )
 
@@ -422,6 +426,9 @@ class Client:
                 output_token_logprobs = decode_result.get("output_token_logprobs")
                 if output_token_logprobs is not None:
                     chunk.output_token_logprobs = output_token_logprobs
+                omni_rollout = decode_result.get("omni_rollout")
+                if omni_rollout is not None:
+                    chunk.omni_rollout = omni_rollout
                 weight_version = decode_result.get("weight_version")
                 if weight_version is not None:
                     chunk.weight_version = weight_version
@@ -444,6 +451,9 @@ class Client:
             output_token_logprobs = result.get("output_token_logprobs")
             if output_token_logprobs is not None:
                 chunk.output_token_logprobs = output_token_logprobs
+            omni_rollout = result.get("omni_rollout")
+            if omni_rollout is not None:
+                chunk.omni_rollout = omni_rollout
             weight_version = result.get("weight_version")
             if weight_version is not None:
                 chunk.weight_version = weight_version
@@ -497,6 +507,9 @@ class Client:
             output_token_logprobs = data.get("output_token_logprobs")
             if output_token_logprobs is not None:
                 chunk.output_token_logprobs = output_token_logprobs
+            omni_rollout = data.get("omni_rollout")
+            if omni_rollout is not None:
+                chunk.omni_rollout = omni_rollout
             weight_version = data.get("weight_version")
             if weight_version is not None:
                 chunk.weight_version = weight_version
