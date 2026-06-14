@@ -16,7 +16,7 @@ from sglang_omni.cli.serve import (
     apply_thinker_server_args_cli_overrides,
     apply_torch_compile_cli_overrides,
 )
-from sglang_omni.config import PipelineConfig
+from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.ming_omni.config import (
     MingOmniPipelineConfig,
@@ -160,6 +160,52 @@ def test_ming_cli_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
 
     assert (
         _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False
+    )
+
+
+def test_hard_custom_all_reduce_disable_is_not_topology_relaxed(
+    monkeypatch,
+) -> None:
+    class HardDisableConfig(PipelineConfig):
+        @classmethod
+        def tensor_parallel_server_args_overrides(
+            cls,
+            *,
+            stage_name: str,
+            tp_size: int,
+        ) -> dict[str, object]:
+            if stage_name == "thinker" and tp_size > 1:
+                return {"disable_custom_all_reduce": True}
+            return {}
+
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        lambda *args, **kwargs: False,
+    )
+    config = HardDisableConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="thinker",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                gpu=[0, 1],
+                tp_size=2,
+                process="thinker",
+                terminal=True,
+            )
+        ],
+    )
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=None,
+        thinker_gpus=None,
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
     )
 
 

@@ -498,6 +498,8 @@ def _gate_custom_all_reduce_on_topology(
     The config-level overrides disable custom all-reduce for every TP thinker.
     Custom (P2P/NVLink) all-reduce is faster than NCCL and safe when the TP GPUs
     form a P2P mesh, so re-enable it in that case; otherwise keep it disabled.
+    SGLang still performs its own communicator support checks during worker
+    startup before using the custom all-reduce path.
     """
     if updates.get("disable_custom_all_reduce") is not True:
         return updates
@@ -518,6 +520,9 @@ def _apply_tensor_parallel_server_args_overrides(
     pipeline_config: PipelineConfig,
 ) -> None:
     config_cls = type(pipeline_config)
+    topology_gated_custom_ar_stages = (
+        config_cls.topology_gated_custom_all_reduce_stages()
+    )
     for stage in pipeline_config.stages:
         updates = config_cls.tensor_parallel_server_args_overrides(
             stage_name=stage.name,
@@ -525,7 +530,8 @@ def _apply_tensor_parallel_server_args_overrides(
         )
         if not updates:
             continue
-        updates = _gate_custom_all_reduce_on_topology(stage, updates)
+        if stage.name in topology_gated_custom_ar_stages:
+            updates = _gate_custom_all_reduce_on_topology(stage, updates)
         _apply_stage_server_args_override(
             pipeline_config,
             stage_name=stage.name,
