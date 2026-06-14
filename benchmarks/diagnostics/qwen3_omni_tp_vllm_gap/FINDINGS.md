@@ -21,9 +21,11 @@ vs vLLM** for *pure* `Qwen3-Omni-30B-A3B-Instruct` (no-RAG, en->zh) on the **sam
 4. **Root cause = host-side per-turn latency** in the multi-process pipeline.
    Per-turn round-trip inflates 232 ms (N=1) -> 822 ms (N=32) and that 3.5x is
    100% of the scaling gap. Per-stage profiling: **thinker stage 64%, encoder+
-   aggregate queue 30%, cross-process relay only ~2%.** The thinker is CPU-bound
-   (100% CPU, GPU 60-75%) and the shared "pipeline" process is GIL-serialized.
-   vLLM's monolithic engine avoids both.
+   aggregate queue 30%, cross-process relay only ~2%.** The shared "pipeline"
+   process is GIL-serialized; the thinker presents as 100% CPU but a step-phase
+   micro-profile (§5) shows that is a GPU-sync wait, not host compute -- the
+   thinker is **GPU-forward-bound**. vLLM's monolithic engine avoids both the
+   relay and the serialization.
 
 So #760's prefill-coalescing work is a legitimate small de-fragmentation PR, but
 it is **not** the lever that closes the vLLM gap. The gap is architectural.
@@ -118,15 +120,66 @@ relievable by de-GIL'ing into separate processes — splitting regresses (§4).*
   the GIL serialization it removes. So the host-side queue in §3 is **not**
   relievable by re-partitioning the pipeline; if anything the fix points the other
   way (fewer stage boundaries / more colocation, i.e. *more* monolithic).
-- The remaining host-side lever is the **thinker scheduler step cost** (100% CPU,
-  GPU idle headroom): broaden CUDA-graph decode coverage, leaner per-step Python,
-  faster request ingest. This is the hard, invasive one.
+- A candidate host-side lever was the **thinker scheduler step cost** (broaden
+  CUDA-graph decode coverage, leaner per-step Python, faster request ingest).
+  **A step-phase micro-profile refutes this (§5):** per decode step the host is
+  only ~5 ms (graph hit 100%, backends already flashinfer); the ~30 ms/step is the
+  GPU forward. The one cheap GPU-side win found is **custom all-reduce on NVLink
+  (+6.5%, BLEU parity)**; async-decode is the wrong lever (~3% ceiling).
 - Net: the gap looks **structural**. vLLM is monolithic (one engine, continuous
   batch, no per-stage Python hops, no payload serialization between stages) — that
   is the whole ~552 ms vs ~810 ms per-turn-RTT difference. sglang-omni's
   multi-stage design buys modularity and the full omni talker/code2wav path at a
   host-path cost that, for speech→text, is hard to claw back without making the
   text path more monolithic.
+
+## 5. Update: the thinker decode is GPU-forward-bound, not host-bound (micro-profile)
+
+The "thinker at 100% CPU" in §3 motivated an async-decode plan (overlap host
+post-processing with the next GPU forward). Before building it I added env-gated
+**per-step phase timing** to the scheduler/runner (`SGLANG_OMNI_PHASE_PROFILE`,
+and `SGLANG_OMNI_PHASE_SYNC` to force a `cuda.synchronize()` after the forward so
+GPU time lands in `forward` instead of the later `.tolist()`), N=32:
+
+| decode step (mean ms) | forward | finalize | build | recv+sched+stream+proc | step total |
+|-----------------------|---------|----------|-------|------------------------|------------|
+| no-sync (default)     | 1.1     | **25.1** | 1.9   | ~2.3                   | 30.2       |
+| **sync (true GPU)**   | **30.2**| 0.2      | 2.1   | ~2.6                   | 35.0       |
+
+Forcing the sync moves **25 ms from `finalize` into `forward`**: the 25 ms read as
+host post-processing is `.tolist()` **blocking on the in-flight decode forward**.
+True split per decode step: **~30 ms GPU forward + ~5 ms host**, of which only
+**~1 ms (`host_post`) is overlappable** by async-decode. Prefill is the same
+story: forward **72-78 ms GPU**, host ~11-17 ms (recv-dominated ingest). Config is
+already optimal -- `max_running_requests=32` lands, **100% CUDA-graph hit**
+(capture_bs=[1,2,4,8,12,16,24,32]), attention+sampling already flashinfer; mean
+decode batch ~18-20/32 (never >32, so cuda_graph_max_bs=48 is useless).
+
+**Consequences**
+- **async-decode is the wrong lever** -- ceiling ~3% (overlaps ~1 ms of a 35 ms
+  step), not the hoped ~20%. The earlier "host-side bottleneck" was the GPU-sync
+  wait misread as CPU. Cancelled.
+- A 30 ms decode forward for a 3B-active MoE is dominated by **memory-bound expert
+  weight loading** at bs~18; the only cheap GPU-side knob is the TP all-reduce.
+
+### Custom all-reduce (the one cheap GPU-side win) -- confirmed
+
+The launcher defaulted `disable_custom_all_reduce=True`, forcing NCCL for the
+per-layer all-reduces every step. Topology here is **GPU0-GPU1 = NV4 (NVLink)**,
+so custom (P2P/NVLink) all-reduce is safe. Within-node A/B on `aries`, 3 N=32
+sweeps/mode (first run cold, server warms across runs):
+
+| mode (N=32)            | seg/s runs            | mean             | BLEU  |
+|------------------------|-----------------------|------------------|-------|
+| stock (NCCL)           | 7.43 / 7.98 / 8.10    | 7.835 +/-0.293   | ~32.7 |
+| **custom-AR (NVLink)** | 7.73 / 8.72 / 8.58    | **8.343 +/-0.440** | ~32.5 |
+
+**+6.5% mean** (warm-vs-warm ~+7%, no overlap), **BLEU parity**, p50 RTT
+867->830 ms. The decode GPU forward itself barely moves (memory-bound; all-reduce
+is a small fraction) -- the gain is lower host all-reduce launch cost + faster
+prefill all-reduce. Small but real and free (flip the flag; env-gated via
+`SGLANG_OMNI_DISABLE_CUSTOM_AR`). It narrows ~11% of the aries gap to vLLM --
+**not** a gap-closer, consistent with the structural conclusion in §4.
 
 ## Reproduction
 
@@ -144,6 +197,14 @@ curl -X POST :8101/start_request_profile -H 'Content-Type: application/json' \
 #   ... run an N=32 load ...
 curl -X POST :8101/stop_request_profile -H 'Content-Type: application/json' -d '{}'
 python -m sglang_omni.profiler /path/events --format table
+
+# §5 step-phase micro-profile (env-gated, prints [step phases] per decode/prefill)
+SGLANG_OMNI_PHASE_PROFILE=1 GPUS=0,1 PORT=8101 \
+  bash eval/streaming_sst/servers/serve_sglang_qwen3omni.sh   # add SGLANG_OMNI_PHASE_SYNC=1 for true-GPU split
+
+# §5 custom all-reduce A/B (NVLink): 1=NCCL (stock), 0=custom
+SGLANG_OMNI_DISABLE_CUSTOM_AR=0 GPUS=0,1 PORT=8101 \
+  bash eval/streaming_sst/servers/serve_sglang_qwen3omni.sh
 ```
 
 Full data, all A/B runs, and analysis: `rasst_eval/runs/COMPARISON.md`.

@@ -385,3 +385,88 @@ Repro:
     PER_STAGE_PROCESSES=1 GPUS=0,1 PORT=8132 bash eval/servers/serve_sglang_qwen3omni.sh
     REMOTE_OMNI_LAT_DIR=/tmp/lat ENGINE=sglang BASE_URL=http://127.0.0.1:8132 \
       OUT_ROOT=/tmp/degil NLIST=32 bash eval/run_sweep.sh
+
+---
+
+## MICRO-PROFILE (step phase timing) — thinker decode is GPU-forward-bound  [CORRECTS the "thinker CPU-bound" read]
+
+The per-stage residency above showed the thinker at 100% CPU / GPU 60-75% and
+named "thinker scheduler step cost" as the host-side lever (and motivated an
+async-decode plan). To gate that, added env-gated per-step phase timing:
+- `SGLANG_OMNI_PHASE_PROFILE=1` — split each scheduler step into recv / sched /
+  build / forward / post / finalize / stream / proc (omni_scheduler) plus the
+  runner's build/forward/post/finalize (model_runner/base).
+- `SGLANG_OMNI_PHASE_SYNC=1` — add `cuda.synchronize()` right after the forward so
+  GPU time lands in `forward` instead of being hidden in the later `.tolist()`.
+
+N=32, aries, TP=2 (job 46178 no-sync, 46179 sync):
+
+| phase (mean ms) | DECODE no-sync | DECODE sync | PREFILL no-sync | PREFILL sync |
+|-----------------|----------------|-------------|-----------------|--------------|
+| recv            | 0.65           | 0.89        | 7.66            | 7.76         |
+| sched           | 0.68           | 0.69        | 2.33            | 2.39         |
+| build           | 1.87           | 2.11        | 0.90            | 0.91         |
+| **forward**     | **1.07**       | **30.21**   | **68.61**       | **77.99**    |
+| finalize        | **25.09**      | 0.19        | 9.03            | 0.17         |
+| stream+proc     | 0.84           | 0.96        | 0.91            | 0.89         |
+| **step total**  | **30.20**      | 35.05       | **89.44**       | 90.11        |
+
+The sync moves **25 ms decode finalize -> forward** (1.07 -> 30.21) and **9 ms
+prefill finalize -> forward**: the time read as host post-processing is the
+`.tolist()` D2H **blocking on the in-flight forward**. True split:
+- **decode: ~30 ms GPU forward + ~5 ms host** (build 2 + recv/sched/stream/proc
+  ~3 + finalize 0.2); only `host_post` ~1 ms is overlappable by async-decode.
+- **prefill: ~72-78 ms GPU forward + ~11-17 ms host ingest** (recv-dominated).
+
+Config verified optimal at the same time (job 46177/46178):
+`max_running_requests=32` lands, cuda_graph_max_bs=32, **graph_hit_rate=1.000**
+(532/532), capture_bs=[1,2,4,8,12,16,24,32], attention+sampling=flashinfer,
+eligible_rate 0.998. Decode bs_hist mean ~18-20/32 (peaks 26-29), never >32 ->
+cuda_graph_max_bs=48 would be useless.
+
+**Verdict:** decode is **GPU-compute-bound** (memory-bound 30B-MoE expert-weight
+load at bs~18), not host-bound. **async-decode is the wrong lever** (ceiling ~3%:
+overlaps ~1 ms of a 35 ms step) -> cancelled. The "thinker scheduler step cost"
+host lever is refuted: host is only ~5 ms/decode step.
+
+## CUSTOM ALL-REDUCE A/B (the one cheap GPU-side win)  [CONFIRMED +6.5%]
+
+A 30 ms decode forward for a 3B-active MoE is high; the launcher defaulted
+`disable_custom_all_reduce=True` (NCCL for the per-layer all-reduces every step).
+Made it env-gated (`SGLANG_OMNI_DISABLE_CUSTOM_AR`, default unchanged). Topology:
+**GPU0-GPU1 = NV4 (NVLink)** -> custom P2P all-reduce is safe.
+
+A/B (job 46180, single sweep each, phase profiling on):
+
+| mode       | seg/s | p50 RTT | p99 RTT | BLEU  | decode fwd+finalize | prefill fwd |
+|------------|-------|---------|---------|-------|---------------------|-------------|
+| stock NCCL | 7.168 | 867 ms  | 3513 ms | 32.85 | 1.10 + 24.85        | 63.18       |
+| custom-AR  | 7.461 | 830 ms  | 3493 ms | 32.77 | 0.48 + 27.21        | 57.02       |
+
+The decode GPU-wait (forward+finalize ~26 ms) is unchanged -> all-reduce is a
+small fraction of the memory-bound decode; what clearly drops is the host
+all-reduce launch cost (decode `forward` bucket 1.10 -> 0.48 ms; NCCL has higher
+per-call host overhead). +4% there was within run-to-run noise, so confirmed with
+repeats:
+
+Confirm (job 46182, 3 clean sweeps/mode, no profiling, one server/mode):
+
+| mode          | seg/s runs            | mean             | BLEU runs             |
+|---------------|-----------------------|------------------|-----------------------|
+| stock NCCL    | 7.426 / 7.979 / 8.100 | 7.835 +/-0.293   | 32.99 / 32.84 / 32.20 |
+| **custom-AR** | 7.726 / 8.722 / 8.582 | **8.343 +/-0.440** | 32.57 / 32.44 / 32.61 |
+
+**+6.5% mean** (first run each is cold; warm-vs-warm {7.98,8.10} vs {8.72,8.58}
+= ~+7%, no overlap), **BLEU parity**. Small, real, free win on NVLink TP. It
+narrows ~11% of the aries vLLM gap -> NOT a gap-closer; the gap stays structural
+(GPU forward + multi-stage host relay).
+
+Repro:
+
+    # stock (NCCL)    : SGLANG_OMNI_DISABLE_CUSTOM_AR=1
+    # custom (NVLink) : SGLANG_OMNI_DISABLE_CUSTOM_AR=0
+    SGLANG_OMNI_DISABLE_CUSTOM_AR=0 GPUS=0,1 PORT=8101 \
+      bash eval/streaming_sst/servers/serve_sglang_qwen3omni.sh
+    ENGINE=sglang BASE_URL=http://127.0.0.1:8101 NLIST=32 \
+      bash eval/streaming_sst/run_sweep.sh
+    # phase timing: SGLANG_OMNI_PHASE_PROFILE=1 (+ SGLANG_OMNI_PHASE_SYNC=1 for true-GPU split)
