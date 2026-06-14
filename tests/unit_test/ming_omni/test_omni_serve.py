@@ -120,7 +120,11 @@ def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
     assert config_manager.config.terminal_stages == ["decode"]
 
 
-def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce() -> None:
+def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        lambda *args, **kwargs: True,
+    )
     config = MingOmniPipelineConfig(model_path="dummy")
 
     apply_parallelism_cli_overrides(
@@ -136,6 +140,26 @@ def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce() -> None:
     assert thinker.gpu == [0, 1, 2, 3]
     assert (
         _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
+    )
+
+
+def test_ming_cli_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        lambda *args, **kwargs: False,
+    )
+    config = MingOmniPipelineConfig(model_path="dummy")
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=4,
+        thinker_gpus="0,1,2,3",
+        talker_gpu=None,
+        code2wav_gpu=None,
+    )
+
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False
     )
 
 
