@@ -717,6 +717,16 @@ class OmniScheduler:
                     "max_bs": 0,
                     "bs_hist": {},
                     "miss_bs_hist": {},
+                    # P2c attribution: on each PURE-prefill step (sglang runs
+                    # prefill xor decode), how many decode-ready reqs sat in
+                    # running_batch but were passed over. >0 => decode was
+                    # starved by prefill-priority (fusion/decode-priority is a
+                    # valid lever); ==0 => arrival/ingest-bound (no decode to do).
+                    "prefill_with_ready": 0,
+                    "prefill_no_ready": 0,
+                    "ready_decode_sum": 0,
+                    "ready_decode_hist": {},
+                    "waiting_on_prefill_sum": 0,
                     "last_log": time.time(),
                 }
                 self._decode_stats_interval = float(
@@ -727,6 +737,29 @@ class OmniScheduler:
         st = self._decode_stats
         if not self._batch_is_decode(batch):
             st["prefill_steps"] += 1
+            # When a prefill batch is chosen, running_batch still holds the
+            # decode-ready reqs (prefilled reqs only merge in next iteration),
+            # so its size == ready decodes passed over on this prefill step.
+            try:
+                rb = self.running_batch
+                ready = len(rb.reqs) if rb is not None else 0
+            except Exception:
+                ready = 0
+            try:
+                waiting = len(self.waiting_queue)
+            except Exception:
+                waiting = 0
+            st["ready_decode_sum"] += ready
+            st["ready_decode_hist"][ready] = st["ready_decode_hist"].get(ready, 0) + 1
+            st["waiting_on_prefill_sum"] += waiting
+            if ready > 0:
+                st["prefill_with_ready"] += 1
+            else:
+                st["prefill_no_ready"] += 1
+            now = time.time()
+            if now - st["last_log"] >= self._decode_stats_interval:
+                self._log_decode_stats(st)
+                st["last_log"] = now
             return
         bs = len(batch.reqs)
         st["decode_steps"] += 1
@@ -764,6 +797,23 @@ class OmniScheduler:
             dict(sorted(st["bs_hist"].items())),
             dict(sorted(st["miss_bs_hist"].items())),
         )
+        psteps = st["prefill_steps"]
+        if psteps:
+            starve_ratio = st["prefill_with_ready"] / psteps
+            mean_ready = st["ready_decode_sum"] / psteps
+            mean_wait = st["waiting_on_prefill_sum"] / psteps
+            logger.info(
+                "[prefill attribution] prefill_steps=%d with_ready_decodes=%d "
+                "(%.1f%%) no_ready_decodes=%d mean_ready_decode=%.2f "
+                "mean_waiting=%.2f ready_decode_hist=%s",
+                psteps,
+                st["prefill_with_ready"],
+                100.0 * starve_ratio,
+                st["prefill_no_ready"],
+                mean_ready,
+                mean_wait,
+                dict(sorted(st["ready_decode_hist"].items())),
+            )
 
     def _phase_profile_on(self) -> bool:
         """Cached gate for the per-step CPU-attribution micro-profile (Tier-2

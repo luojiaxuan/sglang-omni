@@ -14,10 +14,11 @@ vs vLLM** for *pure* `Qwen3-Omni-30B-A3B-Instruct` (no-RAG, en->zh) on the **sam
 2. **The gap is real and grows with concurrency:** at N=32 vLLM does **12.97
    seg/s vs sglang 8.71** (vLLM +49%), with lower computation-aware latency.
 3. **The gap is NOT prefill fragmentation, and NOT any GPU-side knob.** M1
-   prefill-coalesce, mixed-chunk, thinker CPU/GPU overlap, and even giving the
-   audio encoder its **own dedicated GPU** are all null on throughput; and
-   **splitting the pipeline into one process per stage actively regresses it
-   (−46%)** — see §2/§4.
+   prefill-coalesce, thinker CPU/GPU overlap, and even giving the audio encoder
+   its **own dedicated GPU** are all null on throughput; and **splitting the
+   pipeline into one process per stage actively regresses it (−46%)** — see
+   §2/§4. (Earlier we also filed mixed-chunk as null; that was a measurement
+   error — see point 5.)
 4. **Root cause = host-side per-turn latency** in the multi-process pipeline.
    Per-turn round-trip inflates 232 ms (N=1) -> 822 ms (N=32) and that 3.5x is
    100% of the scaling gap. Per-stage profiling: **thinker stage 64%, encoder+
@@ -26,6 +27,13 @@ vs vLLM** for *pure* `Qwen3-Omni-30B-A3B-Instruct` (no-RAG, en->zh) on the **sam
    micro-profile (§5) shows that is a GPU-sync wait, not host compute -- the
    thinker is **GPU-forward-bound**. vLLM's monolithic engine avoids both the
    relay and the serialization.
+5. **Actionable win (P2c): enable `--enable-mixed-chunk`.** The thinker runs
+   prefill *xor* decode, so ~39% of scheduler steps are prefill-only while
+   ~20 sessions sit decode-ready (`[prefill attribution]`: 98% of prefill steps
+   strand decodes). Folding those decodes into the extend step (mixed-chunk,
+   already supported, just never enabled) is **+14-18% seg/s, ~6% lower
+   computation-aware latency, quality unchanged** in a clean A/B (§6) — a pure
+   flag flip, no code change.
 
 So #760's prefill-coalescing work is a legitimate small de-fragmentation PR, but
 it is **not** the lever that closes the vLLM gap. The gap is architectural.
@@ -63,7 +71,7 @@ All at N=32, full 468, same harness:
 |--------|-------|--------------|---------|
 | stock sglang | 8.71 | 822 ms | baseline |
 | M1 prefill-coalesce (#760 PR) | 9.41 | — | +marginal, gap intact |
-| mixed-chunk (chunked_prefill) | 9.26 | — | null |
+| mixed-chunk (chunked_prefill) | 9.26 | — | ~~null~~ **see §6 (P2c): +14-18% in a clean A/B** |
 | thinker CPU/GPU overlap (`_event_loop_overlap`) | 7.76 | 916 ms | **regresses** |
 | **dedicated encoder GPU** (3-GPU) | 8.29 | 861 ms | occ 46%->62%, **tput flat** |
 | dedicated encoder GPU + overlap | 8.40 | 860 ms | null |
@@ -73,6 +81,13 @@ All at N=32, full 468, same harness:
 Key tell: a dedicated encoder GPU raised thinker decode-batch occupancy from 46%
 to 62% **yet throughput and latency did not move** — proving the thinker/GPU is
 not the constraint.
+
+**Correction (mixed-chunk).** The "null" verdict above was a measurement error:
+it judged 9.26 vs an inflated 8.71 warm baseline as noise. A later clean,
+same-node, back-to-back A/B with the `[prefill attribution]` probe (§6, P2c)
+shows mixed-chunk is actually a **+14-18% seg/s** win at quality parity — it is
+the one knob in this table that *does* move throughput, because it directly
+attacks the prefill/decode duty-cycle (not occupancy).
 
 † Within-node A/B on the idle `aries` node (RTX A6000, same GPU model). On-node
 stock baseline is **7.46 seg/s / 809 ms p50 RTT** (the 809 ms matches the 822 ms
@@ -223,6 +238,63 @@ iterations and stalls decode on ~42% of steps (decode duty cycle ~58% vs ~95%).
 The P2 lever is therefore **prefill/decode fusion / decode duty-cycle**, not
 occupancy; `--enable-mixed-chunk` was null (§3) so the thinker isn't actually
 fusing audio chunk-prefill with decode -- that is the thing to fix/verify.
+
+**P2c attribution (is the stall a real lever, or arrival-bound?).** Before
+touching fusion we instrumented each *pure-prefill* step (sglang runs prefill
+XOR decode) to count how many decode-ready reqs sat in `running_batch` but were
+passed over (`[prefill attribution]`, gated by `SGLANG_OMNI_DECODE_STATS`).
+Steady-state N=32: of **876 prefill steps, 847 (96.7%)** had ready decodes
+waiting; only **29 (3.3%)** were genuinely decode-empty (arrival/ingest-bound).
+Mean stranded decodes **~18/step** (histogram mass at bs 20-31), and
+`mean_waiting≈0.32` -> the `waiting_queue` is near-empty during prefill steps,
+so these are *small single-new-chunk* prefills, **not** an admission backlog.
+Conclusion: the workload is **not arrival-bound** -- sglang spends ~39% of
+steps (876/2261) prefill-only while ~18 sessions sit decode-ready. **Fusion /
+decode-priority is a valid throughput+RTT lever**, independent of the (caching-
+contaminated) external vLLM headline gap.
+
+**P2c result: `--enable-mixed-chunk` is the fix (clean same-node A/B, N=32).**
+SGLang already supports folding the running decodes into the extend step;
+the flag was simply never set. Flipping `--enable-mixed-chunk
+--chunked-prefill-size 8192` (no code change):
+
+| metric (N=32, cold / warm run) | baseline (mixed OFF) | mixed-chunk ON |
+|--------------------------------|----------------------|----------------|
+| seg/s                          | 7.05 / 8.21          | **8.30 / 9.37** (+18% / +14%) |
+| BLEU                           | 31.9 / 32.3          | 32.9 / 32.8 (parity) |
+| StreamLAAL (ms)                | 1315 / 1315          | 1295 / 1314 |
+| StreamLAAL_CA (ms)             | 2468 / 2241          | **2285 / 2115** (−6% / −6%) |
+| prefill steps stranding decodes| **98.1%** (~20/step) | **0.0%** |
+
+The `[prefill attribution]` probe confirms the mechanism: under mixed-chunk
+`ready_decode_hist={0: 796}` -- every prefill step now has an empty
+`running_batch` because the ~20 decode-ready reqs are merged into the extend
+batch instead of waiting (decode-only steps drop 1324 -> 816 as that work moves
+into fused steps). Net: **+14-18% throughput, ~6% lower computation-aware
+latency, quality unchanged**, from a pure flag flip. Both cold and warm runs
+improve by a similar margin, so (unlike the cross-engine vLLM headline) this win
+is robust to caching. Caveat: the *first* A/B attempt (job 46190) looked like a
+mixed-chunk hang but was a harness port-reuse race (`--network host` + sequential
+same-port containers -> the 2nd server fell back to a random port); the server
+itself came up fine.
+
+**P2c hardening (job 46192) -- the win survives every control.**
+- *Swapped order:* re-ran the A/B with **mixed brought up first**, baseline
+  second (orig was baseline-first). N=32 mixed **9.28 / 9.26** vs baseline
+  **7.83 / 8.41** seg/s = **+14%** -- ordering is not the cause (mixed's *slower*
+  run still beats baseline's *faster* run by +10%).
+- *No low-concurrency regression:* N=1 mixed 0.935 vs baseline 0.891 seg/s
+  (+5%); N=8 mixed 4.314 vs baseline 4.303 seg/s, BLEU/StreamLAAL identical.
+  The win is concentrated at high concurrency (where the decode batch is
+  contended); at low/moderate N there is little to fold, so mixed-chunk is a
+  safe no-op. Attribution is `0.0%` on every mixed server.
+- *chunked-prefill-size robust:* warm N=32 at cps **4096 / 8192 / 16384** =
+  **9.27 / 9.26 / 9.23** seg/s -- flat (per-chunk audio prefill is small, so the
+  budget never binds). 8192 is a safe default.
+
+Recommendation: **enable `--enable-mixed-chunk --chunked-prefill-size 8192` by
+default** for the streaming-SST thinker -- hardened, quality-neutral, no code
+change.
 
 **Consequences (sets P1/P2 levers):**
 - CUDA graph is **already optimal** (100% hit, capture to bs=32) -- not a lever.
