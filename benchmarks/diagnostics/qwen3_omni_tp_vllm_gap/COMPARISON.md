@@ -339,8 +339,44 @@ The per-turn path is host/CPU-bound at two places, NOT the relay:
 2. **GIL-bound "pipeline" process (~30%)** — audio_encoder + mm_aggregate carry
    ~170 ms residency each that is mostly queue (aggregate is identity yet 170 ms),
    because preprocess+encoders+aggregate+detok+HTTP for all 32 streams share one
-   process/event loop/GIL. Lever: split these into separate processes (the speech
-   pipeline config already does this) so they stop serializing.
+   process/event loop/GIL. Obvious lever = split into separate processes — but that
+   was TESTED and REGRESSES (see "de-GIL A/B" below): cross-process serialization
+   of the multimodal payloads costs more than the GIL. This ~30% is NOT relievable
+   by re-partitioning.
 
 vLLM avoids BOTH (monolithic, one optimized C++/CUDA engine, no per-stage Python
 hops), which is the entire ~552 ms vs ~822 ms per-turn-RTT difference.
+
+---
+
+## De-GIL A/B (per-stage processes) — aries, within-node, N=32  [NEGATIVE]
+
+Tested the "split the GIL-bound pipeline process" lever proposed above.
+`PER_STAGE_PROCESSES=1` gives preprocessing / image_encoder / audio_encoder /
+mm_aggregate / decode each its own OS process (the speech-pipeline topology),
+vs stock (all five in one "pipeline" process). Same idle node (`aries`, RTX
+A6000), back-to-back, thinker TP=2 on the same 2 GPUs, 468 segments, 1850 turns.
+
+| topology | wall s | seg/s | BLEU | StreamLAAL | StreamLAAL_CA | RTT mean | RTT p50 | RTT p90 |
+|----------|--------|-------|------|-----------|---------------|----------|---------|---------|
+| stock (1 pipeline proc)    | 62.7  | **7.46** | 32.0 | 1316 | 2421 | 946 ms  | 809 ms  | 1392 ms |
+| per-stage procs (de-GIL)   | 115.4 | 4.06     | 32.4 | 1328 | 3332 | 1824 ms | 1702 ms | 2766 ms |
+
+**Result: de-GIL REGRESSES −46% throughput / +2.1x per-turn RTT, quality flat.**
+On-node stock 809 ms p50 RTT matches the taurus 822 ms baseline (node comparable;
+stock 7.46 seg/s here vs 8.71 on taurus is client-CPU/measurement variance — the
+de-GIL delta is a clean within-node A/B).
+
+Why it regresses: splitting converts in-process stage handoffs into cross-process
+shm relays that serialize large multimodal payloads (audio features, encoder and
+merged thinker-input embeddings) and adds more serial single-threaded stage
+processes. That cost dominates the GIL serialization it removes. The monolithic
+"pipeline" process is already the better partition for speech->text => the
+host-side cost is structural; the direction that could help is FEWER stage
+boundaries (more colocation / more monolithic), not more.
+
+Repro:
+
+    PER_STAGE_PROCESSES=1 GPUS=0,1 PORT=8132 bash eval/servers/serve_sglang_qwen3omni.sh
+    REMOTE_OMNI_LAT_DIR=/tmp/lat ENGINE=sglang BASE_URL=http://127.0.0.1:8132 \
+      OUT_ROOT=/tmp/degil NLIST=32 bash eval/run_sweep.sh

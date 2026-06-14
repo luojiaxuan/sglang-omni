@@ -15,7 +15,9 @@ vs vLLM** for *pure* `Qwen3-Omni-30B-A3B-Instruct` (no-RAG, en->zh) on the **sam
    seg/s vs sglang 8.71** (vLLM +49%), with lower computation-aware latency.
 3. **The gap is NOT prefill fragmentation, and NOT any GPU-side knob.** M1
    prefill-coalesce, mixed-chunk, thinker CPU/GPU overlap, and even giving the
-   audio encoder its **own dedicated GPU** are all null on throughput.
+   audio encoder its **own dedicated GPU** are all null on throughput; and
+   **splitting the pipeline into one process per stage actively regresses it
+   (−46%)** — see §2/§4.
 4. **Root cause = host-side per-turn latency** in the multi-process pipeline.
    Per-turn round-trip inflates 232 ms (N=1) -> 822 ms (N=32) and that 3.5x is
    100% of the scaling gap. Per-stage profiling: **thinker stage 64%, encoder+
@@ -63,11 +65,19 @@ All at N=32, full 468, same harness:
 | thinker CPU/GPU overlap (`_event_loop_overlap`) | 7.76 | 916 ms | **regresses** |
 | **dedicated encoder GPU** (3-GPU) | 8.29 | 861 ms | occ 46%->62%, **tput flat** |
 | dedicated encoder GPU + overlap | 8.40 | 860 ms | null |
+| **per-stage processes (de-GIL split)** | 4.06† | 1702 ms† | **regresses −46% / +2× RTT** |
 | **vLLM** | **12.97** | ~552 ms | target |
 
 Key tell: a dedicated encoder GPU raised thinker decode-batch occupancy from 46%
 to 62% **yet throughput and latency did not move** — proving the thinker/GPU is
 not the constraint.
+
+† Within-node A/B on the idle `aries` node (RTX A6000, same GPU model). On-node
+stock baseline is **7.46 seg/s / 809 ms p50 RTT** (the 809 ms matches the 822 ms
+taurus baseline, confirming the node is comparable); the de-GIL split gives
+**4.06 seg/s / 1702 ms p50 RTT** at quality parity (BLEU 32.0→32.4, 1850 turns
+each). Splitting every non-thinker stage into its own process — the speech-pipeline
+topology — **doubled per-turn RTT**. See §4 for why.
 
 ## 3. Root cause: host-side per-turn latency
 
@@ -90,20 +100,33 @@ is the busy scheduler loop just *ingesting* the request, and the rest is decode
 stretched by per-step Python overhead. During load the thinker process sits at
 **100% CPU with its GPUs at 60-75%**, and the shared "pipeline" process
 (preprocess+encoders+aggregate+detok+HTTP for all 32 streams) is GIL-serialized
-(an identity aggregate stage accruing 170 ms is pure queueing).
+(an identity aggregate stage accrues 170 ms of queue). **But that queue is not
+relievable by de-GIL'ing into separate processes — splitting regresses (§4).**
 
 ## 4. Implication / corrected direction
 
 - **Relay-cutting is refuted** (~2% of the path). shm/nccl/nixl relay backend is
   not the lever (nccl/nixl also won't init on the encoder-1GPU + thinker-TP2 map).
-- The real levers are host/CPU-side and architectural:
-  1. **Thinker scheduler step cost** (100% CPU, GPU idle headroom): broaden
-     CUDA-graph decode coverage, leaner per-step Python, faster request ingest.
-  2. **De-GIL the "pipeline" process**: split preprocess/encoder/aggregate/detok
-     into separate processes (the speech pipeline config already does this) so
-     they stop serializing for 32 concurrent streams.
-- vLLM is monolithic (one optimized engine, continuous batch, no per-stage Python
-  hops), which is the entire ~552 ms vs ~822 ms per-turn-RTT difference.
+- **De-GIL by process-splitting is refuted (measured).** Giving every non-thinker
+  stage its own process — the obvious "remove the GIL" fix, and the topology the
+  speech pipeline already uses — **regressed N=32 throughput 46% (7.46→4.06 seg/s)
+  and doubled per-turn RTT (809→1702 ms p50)** at quality parity. The monolithic
+  "pipeline" process is already the better partition for this workload: splitting
+  turns cheap in-process stage handoffs into cross-process relays that must
+  serialize large multimodal payloads (audio features, encoder/merged embeddings)
+  and inserts more serial single-threaded stage processes — costing far more than
+  the GIL serialization it removes. So the host-side queue in §3 is **not**
+  relievable by re-partitioning the pipeline; if anything the fix points the other
+  way (fewer stage boundaries / more colocation, i.e. *more* monolithic).
+- The remaining host-side lever is the **thinker scheduler step cost** (100% CPU,
+  GPU idle headroom): broaden CUDA-graph decode coverage, leaner per-step Python,
+  faster request ingest. This is the hard, invasive one.
+- Net: the gap looks **structural**. vLLM is monolithic (one engine, continuous
+  batch, no per-stage Python hops, no payload serialization between stages) — that
+  is the whole ~552 ms vs ~810 ms per-turn-RTT difference. sglang-omni's
+  multi-stage design buys modularity and the full omni talker/code2wav path at a
+  host-path cost that, for speech→text, is hard to claw back without making the
+  text path more monolithic.
 
 ## Reproduction
 

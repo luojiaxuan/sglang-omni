@@ -89,20 +89,28 @@ python -m sglang_omni.profiler /path/events --format table   # stage + hop break
 > from this package, set `REPO_ROOT` to this directory and `SGLANG_OMNI_SRC` to
 > your sglang-omni checkout.
 
-## The host-side lever under test: per-stage processes (de-GIL)
+## The host-side lever we tested: per-stage processes (de-GIL) — REFUTED
 
-The launcher exposes why the gap is host-side. The Qwen3-Omni **text** pipeline
-config (`sglang_omni/models/qwen3_omni/config.py`, `_text_stages`) places **all**
-six stages in a single `process="pipeline"`; the TP launcher only pulls `thinker`
-out into its own TP process group. So `preprocessing + image_encoder +
-audio_encoder + mm_aggregate + decode` share **one** OS process — one GIL for all
-32 concurrent streams (an identity `mm_aggregate` alone parked ~170 ms in pure
-queue). The **speech** pipeline already runs one process per stage
-(`_SPEECH_DEFAULT_PROCESSES`), so the fix is purely topological.
+The Qwen3-Omni **text** pipeline config (`sglang_omni/models/qwen3_omni/config.py`,
+`_text_stages`) places **all** six stages in a single `process="pipeline"`; the TP
+launcher only pulls `thinker` out into its own TP process group. So `preprocessing
++ image_encoder + audio_encoder + mm_aggregate + decode` share **one** OS process
+— one GIL for all 32 concurrent streams. The **speech** pipeline already runs one
+process per stage (`_SPEECH_DEFAULT_PROCESSES`), so the "de-GIL" fix is purely
+topological: `scripts/sglang_omni_qwen3_text_tp_server.py --per-stage-processes`
+(or `PER_STAGE_PROCESSES=1 bash eval/servers/serve_sglang_qwen3omni.sh`).
 
-`scripts/sglang_omni_qwen3_text_tp_server.py --per-stage-processes` (or
-`PER_STAGE_PROCESSES=1 bash eval/servers/serve_sglang_qwen3omni.sh`) gives every
-non-thinker stage its own process, mirroring the speech topology, at the cost of
-the measured ~2% relay-hop overhead. It targets the ~30% encoder+aggregate+decode
-GIL queue, not the 64% CPU-bound thinker, so it is expected to close part — not
-all — of the vLLM gap. A/B numbers will be appended to `COMPARISON.md`.
+**Measured (within-node A/B on an idle node, N=32): it regresses, hard.**
+
+| topology | seg/s | per-turn RTT (p50) | BLEU |
+|----------|-------|--------------------|------|
+| one `pipeline` process (stock) | **7.46** | **809 ms** | 32.0 |
+| per-stage processes (de-GIL split) | 4.06 | 1702 ms | 32.4 |
+
+Splitting **doubled per-turn RTT and cut throughput 46%**. The monolithic pipeline
+process is already the better partition: separate processes convert cheap
+in-process stage handoffs into cross-process relays that serialize large
+multimodal payloads (audio features, encoder/merged embeddings) and add more
+serial single-threaded stages — costing far more than the GIL they remove. So the
+host-side cost is **not** relievable by re-partitioning; the gap is structural (see
+`FINDINGS.md` §4). Full log in `COMPARISON.md`.
