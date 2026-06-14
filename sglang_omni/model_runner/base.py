@@ -12,7 +12,11 @@ from typing import Any
 
 import torch
 
-from sglang_omni.scheduling.types import ModelRunnerOutput, RequestOutput
+from sglang_omni.scheduling.types import (
+    ModelRunnerOutput,
+    RequestOutput,
+    gather_sampled_logprobs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -542,7 +546,33 @@ class ModelRunner:
     ) -> Any:
         self._apply_repetition_penalty(logits_output, requests)
         self._apply_codec_suppress_tokens(logits_output, requests)
-        return self.tp_worker.model_runner.sample(logits_output, forward_batch)
+        # Snapshot the post-penalty logits before sampling, while they are fresh:
+        # the async lookahead reuses this buffer one step later, so RL-rollout
+        # logprobs must be read here, not in _finalize.
+        rollout_logits = None
+        if any(getattr(sr.data, "return_logprob", False) for sr in requests):
+            logits = getattr(logits_output, "next_token_logits", None)
+            if logits is not None and logits.ndim == 2:
+                rollout_logits = logits.detach().clone()
+        next_token_ids = self.tp_worker.model_runner.sample(
+            logits_output, forward_batch
+        )
+        if rollout_logits is not None:
+            self._record_rollout_logprobs(rollout_logits, next_token_ids, requests)
+        return next_token_ids
+
+    def _record_rollout_logprobs(self, logits, next_token_ids, requests) -> None:
+        """Append each rollout request's sampled-token logprob (one per step)."""
+        logprobs = gather_sampled_logprobs(logits, next_token_ids)
+        if logprobs is None or next_token_ids is None:
+            return
+        token_ids = [int(t) for t in next_token_ids.tolist()]
+        for row_idx, sched_req in enumerate(requests):
+            data = sched_req.data
+            if getattr(data, "return_logprob", False):
+                data.output_token_logprobs.append(
+                    [logprobs[row_idx], token_ids[row_idx]]
+                )
 
     def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
