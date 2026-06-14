@@ -470,3 +470,58 @@ Repro:
     ENGINE=sglang BASE_URL=http://127.0.0.1:8101 NLIST=32 \
       bash eval/streaming_sst/run_sweep.sh
     # phase timing: SGLANG_OMNI_PHASE_PROFILE=1 (+ SGLANG_OMNI_PHASE_SYNC=1 for true-GPU split)
+
+## P2a: vLLM ACTUAL decode-batch baseline -- gap is NOT batch occupancy
+
+Before touching the sglang scheduler, the key control: does vLLM's *internal*
+scheduled decode batch run fuller than sglang's (~18 mean / 23 steady), or also
+~18-23 but still faster? Instrumented vLLM 0.13 V1's `Scheduler.schedule()` with
+the SAME definition as the sglang `[decode stats]` probe -- a request scheduled
+with exactly 1 token == decode seq; `total - decode_seqs` == prefill tokens
+(patch: `vllm_v1_decode_stats.patch`, env-gated by `VLLM_DECODE_STATS`). Same
+workload (ACL6060, N=32). vLLM V1 also reports `run_mean` (running reqs) and the
+**mixed-step** ratio (decode seqs scheduled *alongside* prefill in one step).
+
+**Steady-state, N=32 (job 46188 vLLM vs job 46186 sglang):**
+
+| metric (steady state)                | sglang-omni      | vLLM V1          |
+|--------------------------------------|------------------|------------------|
+| scheduled decode batch (seqs/step)   | **~23/32**       | **~23/32**       |
+| running reqs/step                    | ~23              | ~27.6            |
+| steps that advance decode            | **~58%**         | **~95%**         |
+| pure-prefill steps (0 decode)        | **~42%**         | **~0.6%**        |
+| prefill+decode fused in one step     | no (separate)    | yes (~95%)       |
+| per-step wall: decode / prefill      | 33 / 88 ms (graph)| 60 / 97 ms (eager)|
+| GPU util (nvidia-smi, both GPUs)     | ~78% (timing est)| ~62% measured    |
+
+**Verdict = the user's Case 2:** vLLM's decode batch is **NOT fuller** (~23 ==
+sglang ~23). So "fill the decode batch to 32" is **not** the gap. The structural
+difference is **fusion / continuous batching**: vLLM advances decode on ~95% of
+steps by overlapping prefill+decode in the same forward, while sglang-omni runs
+prefill and decode as *separate* iterations and spends ~42% of steps prefilling
+with **zero** decode. Same batch size, but vLLM's decode **duty cycle is ~95% vs
+sglang's ~58%** (~1.6x). vLLM achieves this while being *eager* (slower per step,
+60 vs 33 ms decode) and at *lower* GPU util (~62%) -- it is not winning on raw
+batch, kernels, or utilization, but on never stalling decode for prefill.
+
+So the lever is **P2c, not P2b**: not a bigger decode batch, but reducing
+sglang's pure-prefill stall (prefill/decode fusion or decode-priority). Note
+`--enable-mixed-chunk` was null (§3) -> sglang-omni's thinker doesn't actually
+fuse audio chunk-prefill with decode; that is the thing to fix/verify.
+
+**Caveat on the seg/s gap magnitude:** this aries run is caching-contaminated --
+the N=32 x2 repeats let vLLM reuse audio (MM cache 0%->100%) and prefix cache
+(54%->76%), so run2 (10.08 seg/s) is inflated and cold run1 (6.17) is actually
+*below* sglang's ~7.9. The headline "+46%" (12.97 vs 8.71) is not reproduced
+cold here; a clean cold A/B (caching disabled, matched warmup, >=3 runs) is
+needed before trusting the gap magnitude. The decode-batch *parity* finding is
+independent of this and robust.
+
+Repro:
+
+    # vLLM with the per-step decode-batch probe (patch applied to the env's vllm)
+    VLLM_DECODE_STATS=1 GPUS=0,1 PORT=8205 \
+      bash eval/streaming_sst/servers/serve_vllm_qwen3omni.sh
+    ENGINE=vllm BASE_URL=http://127.0.0.1:8205 NLIST=32 \
+      bash eval/streaming_sst/run_sweep.sh
+    # grep '[vllm decode stats]' in the server log (or VLLM_DECODE_STATS_FILE)

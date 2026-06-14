@@ -1,0 +1,133 @@
+--- a/vllm/v1/core/sched/scheduler.py.vds_orig	2026-06-14 07:42:59.424489543 +0000
++++ a/vllm/v1/core/sched/scheduler.py	2026-06-14 07:45:14.171702201 +0000
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ import itertools
++import os
+ import time
+ from collections import defaultdict
+ from collections.abc import Iterable
+@@ -56,6 +57,114 @@
+ logger = init_logger(__name__)
+ 
+ 
++def _vllm_decode_stats(sched, out) -> None:
++    """Diagnostic (#760): per-step decode-batch attribution aligned with the
++    sglang-omni [decode stats]/[step phases] probes, so the two engines are
++    compared on INTERNAL scheduled decode seqs, not external concurrency.
++
++    A request scheduled with exactly 1 token == decode seq (no spec decode
++    here); total - decode_seqs == prefill/chunked-prefill tokens. V1 fuses
++    prefill+decode in one step, so we also count mixed steps (decode seqs that
++    run *alongside* prefill) -- the thing sglang's separate prefill/decode
++    iterations cannot do. Off unless VLLM_DECODE_STATS is set (one cached-bool
++    check otherwise)."""
++    on = getattr(sched, "_vds_on", None)
++    if on is None:
++        on = sched._vds_on = bool(os.environ.get("VLLM_DECODE_STATS"))
++        if on:
++            sched._vds = {
++                "steps": 0, "decode_steps": 0, "prefill_steps": 0,
++                "mixed_steps": 0, "pure_decode_steps": 0,
++                "bs_hist": {}, "run_hist": {},
++                "dec_tok": 0, "pre_tok": 0,
++                "wall_decode": 0.0, "wall_prefill": 0.0,
++                "n_wall_decode": 0, "n_wall_prefill": 0,
++                "t_start": time.time(), "last_log": time.time(),
++            }
++            sched._vds_interval = float(
++                os.environ.get("VLLM_DECODE_STATS_INTERVAL", "10")
++            )
++            sched._vds_prev_t = None
++            sched._vds_prev_has_prefill = None
++    if not on:
++        return
++    st = sched._vds
++    nst = out.num_scheduled_tokens
++    total = out.total_num_scheduled_tokens
++    decode_seqs = 0
++    for v in nst.values():
++        if v == 1:
++            decode_seqs += 1
++    prefill_tokens = total - decode_seqs
++    has_prefill = prefill_tokens > 0
++    st["steps"] += 1
++    st["bs_hist"][decode_seqs] = st["bs_hist"].get(decode_seqs, 0) + 1
++    try:
++        nrun = len(sched.running)
++    except Exception:
++        nrun = decode_seqs
++    st["run_hist"][nrun] = st["run_hist"].get(nrun, 0) + 1
++    st["dec_tok"] += decode_seqs
++    st["pre_tok"] += prefill_tokens
++    if decode_seqs > 0:
++        st["decode_steps"] += 1
++    if has_prefill:
++        st["prefill_steps"] += 1
++        if decode_seqs > 0:
++            st["mixed_steps"] += 1
++    else:
++        st["pure_decode_steps"] += 1
++    now = time.perf_counter()
++    if sched._vds_prev_t is not None:
++        wall = now - sched._vds_prev_t
++        if wall < 1.0:  # ignore idle gaps between load phases
++            if sched._vds_prev_has_prefill:
++                st["wall_prefill"] += wall
++                st["n_wall_prefill"] += 1
++            else:
++                st["wall_decode"] += wall
++                st["n_wall_decode"] += 1
++    sched._vds_prev_t = now
++    sched._vds_prev_has_prefill = has_prefill
++    tnow = time.time()
++    if tnow - st["last_log"] >= sched._vds_interval:
++        _vllm_decode_stats_log(st)
++        st["last_log"] = tnow
++
++
++def _vllm_decode_stats_log(st) -> None:
++    steps = st["steps"]
++
++    def _hmean(h):
++        tot = sum(h.values())
++        return (sum(k * c for k, c in h.items()) / tot) if tot else 0.0
++
++    elapsed = max(time.time() - st["t_start"], 1e-6)
++    wall_d = 1000.0 * st["wall_decode"] / st["n_wall_decode"] if st["n_wall_decode"] else 0.0
++    wall_p = 1000.0 * st["wall_prefill"] / st["n_wall_prefill"] if st["n_wall_prefill"] else 0.0
++    msg = (
++        "[vllm decode stats] steps=%d decode_bs_mean=%.2f run_mean=%.2f "
++        "prefill_step_ratio=%.3f mixed_step_ratio=%.3f pure_decode_steps=%d "
++        "prefill_steps=%d mixed_steps=%d dec_tok/s=%.1f pre_tok/s=%.1f "
++        "wall_decode_ms=%.2f wall_prefill_ms=%.2f decode_bs_hist=%s run_hist=%s"
++    ) % (
++        steps, _hmean(st["bs_hist"]), _hmean(st["run_hist"]),
++        st["prefill_steps"] / steps if steps else 0.0,
++        st["mixed_steps"] / steps if steps else 0.0,
++        st["pure_decode_steps"], st["prefill_steps"], st["mixed_steps"],
++        st["dec_tok"] / elapsed, st["pre_tok"] / elapsed, wall_d, wall_p,
++        dict(sorted(st["bs_hist"].items())), dict(sorted(st["run_hist"].items())),
++    )
++    logger.info("%s", msg)
++    sink = os.environ.get("VLLM_DECODE_STATS_FILE")
++    if sink:
++        try:
++            with open(sink, "a") as f:
++                f.write(time.strftime("%H:%M:%S ") + msg + "\n")
++        except Exception:
++            pass
++
++
+ class Scheduler(SchedulerInterface):
+     def __init__(
+         self,
+@@ -754,6 +863,7 @@
+ 
+         with record_function_or_nullcontext("schedule: update_after_schedule"):
+             self._update_after_schedule(scheduler_output)
++        _vllm_decode_stats(self, scheduler_output)
+         return scheduler_output
+ 
+     def _preempt_request(

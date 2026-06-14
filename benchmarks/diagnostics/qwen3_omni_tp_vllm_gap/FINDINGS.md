@@ -213,10 +213,16 @@ cause is **prefill stealing scheduler iterations**: the step split is **decode
 *separate* iterations -- during each prefill step no decode advances, so the
 decode batch drains. Throughput scales **4.07 (N8) -> 6.40 (N16) -> 7.76 (N24)
 -> 7.97 (N32) seg/s** -- diminishing returns well before the floor is amortized.
-Since P1 makes marginal decode tokens nearly free, raising occupancy toward 32
-(decode-priority scheduling or true prefill/decode fusion) is the live lever;
-note `--enable-mixed-chunk` was null in §3, so fusion needs deeper wiring, not
-just the flag.
+
+**P2a control (vLLM actual decode batch) reframes the lever.** Instrumenting
+vLLM V1's scheduler with the same definition (§ COMPARISON "P2a") shows vLLM's
+steady decode batch is **also ~23/32, not 32** -- *parity* with sglang. So the
+lever is **not** a bigger batch. The real difference: vLLM **fuses** prefill+
+decode (advances decode on ~95% of steps), while sglang runs them as separate
+iterations and stalls decode on ~42% of steps (decode duty cycle ~58% vs ~95%).
+The P2 lever is therefore **prefill/decode fusion / decode duty-cycle**, not
+occupancy; `--enable-mixed-chunk` was null (§3) so the thinker isn't actually
+fusing audio chunk-prefill with decode -- that is the thing to fix/verify.
 
 **Consequences (sets P1/P2 levers):**
 - CUDA graph is **already optimal** (100% hit, capture to bs=32) -- not a lever.
