@@ -41,6 +41,47 @@ class ThinkerModelRunner(ModelRunner):
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
 
+        self._log_resolved_runner_args(tp_worker)
+
+    def _log_resolved_runner_args(self, tp_worker: Any) -> None:
+        """One-time dump of the resolved SGLang ServerArgs + CUDA-graph capture
+        set for the thinker. Tier-0 diagnostics: verify max_running_requests and
+        the actual graph-captured batch sizes at runtime (not just the launcher
+        CLI). Never breaks startup."""
+        try:
+            mr = tp_worker.model_runner
+            sa = mr.server_args
+            graph_runner = getattr(mr, "cuda_graph_runner", None) or getattr(
+                mr, "graph_runner", None
+            )
+            capture_bs = None
+            if graph_runner is not None:
+                graphs = getattr(graph_runner, "graphs", None)
+                if isinstance(graphs, dict):
+                    capture_bs = sorted(graphs.keys())
+                else:
+                    cb = getattr(graph_runner, "capture_bs", None)
+                    if cb is not None:
+                        capture_bs = sorted(cb)
+            logger.info(
+                "[thinker args] max_running_requests=%s cuda_graph_max_bs=%s "
+                "disable_cuda_graph=%s attention_backend=%s sampling_backend=%s "
+                "chunked_prefill_size=%s max_prefill_tokens=%s context_length=%s "
+                "tp_size=%s capture_bs=%s",
+                sa.max_running_requests,
+                getattr(sa, "cuda_graph_max_bs", None),
+                getattr(sa, "disable_cuda_graph", None),
+                getattr(sa, "attention_backend", None),
+                getattr(sa, "sampling_backend", None),
+                getattr(sa, "chunked_prefill_size", None),
+                getattr(sa, "max_prefill_tokens", None),
+                getattr(sa, "context_length", None),
+                getattr(sa, "tp_size", None),
+                capture_bs,
+            )
+        except Exception as exc:  # diagnostics must never break startup
+            logger.warning("[thinker args] failed to log resolved args: %s", exc)
+
     def execute(self, scheduler_output: Any):
         capture_layers = getattr(self._text_model, "layers_to_capture", None)
         if capture_layers and not self._batch_should_capture_hidden(

@@ -7,6 +7,8 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +74,18 @@ class ModelRunner:
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
 
+        # Micro-profile (Tier-2 gate): when SGLANG_OMNI_PHASE_PROFILE is set,
+        # execute() stashes the last step's intra-runner phase split here
+        # (build / forward / post / finalize) for the scheduler to aggregate.
+        # Off => the only added per-step cost is one cached-bool check.
+        self._phase_on: bool = bool(os.environ.get("SGLANG_OMNI_PHASE_PROFILE"))
+        # Diagnostic only: when set (with phase profiling on), synchronize right
+        # after the forward so the `forward` bucket measures true GPU time and
+        # `finalize` measures pure host post-processing (disambiguates a
+        # host-CPU stall from a GPU-compute wait). Perturbs timing; default off.
+        self._phase_sync: bool = bool(os.environ.get("SGLANG_OMNI_PHASE_SYNC"))
+        self._last_phase: dict | None = None
+
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
         """Return a pinned host staging buffer mirroring ``device_staging``'s
         full shape, ping-ponging between two buffers on each call. Only runners
@@ -108,13 +122,19 @@ class ModelRunner:
         ``_finalize``) that ``execute_launch`` + ``execute_resolve`` also use,
         in the same order. Async decode splits this at the post-decode boundary.
         """
+        prof = self._phase_on
+        t0 = time.perf_counter() if prof else 0.0
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
         forward_batch, schedule_batch, model_worker_batch, is_prefill = built
+        t1 = time.perf_counter() if prof else 0.0
         batch_result = self._prepare_and_forward(
             forward_batch, schedule_batch, scheduler_output.requests, is_prefill
         )
+        if prof and self._phase_sync:
+            torch.cuda.synchronize(self.device)
+        t2 = time.perf_counter() if prof else 0.0
         if is_prefill:
             self.post_prefill(
                 batch_result, forward_batch, schedule_batch, scheduler_output.requests
@@ -123,13 +143,23 @@ class ModelRunner:
             self.post_decode(
                 batch_result, forward_batch, schedule_batch, scheduler_output.requests
             )
-        return self._finalize(
+        t3 = time.perf_counter() if prof else 0.0
+        out = self._finalize(
             batch_result,
             forward_batch,
             schedule_batch,
             model_worker_batch,
             scheduler_output,
         )
+        if prof:
+            self._last_phase = {
+                "build": t1 - t0,
+                "forward": t2 - t1,
+                "post": t3 - t2,
+                "finalize": time.perf_counter() - t3,
+                "is_prefill": is_prefill,
+            }
+        return out
 
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call

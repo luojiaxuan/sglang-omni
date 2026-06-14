@@ -14,6 +14,7 @@ inheriting from ``SGLangScheduler``.
 from __future__ import annotations
 
 import logging
+import os
 import queue as _queue_mod
 import threading
 import time
@@ -638,6 +639,7 @@ class OmniScheduler:
             self.forward_ct = getattr(self, "forward_ct", 0) + 1
             sched_output = self._build_sched_output(batch)
             mr_output = self._model_runner.execute(sched_output)
+            self._record_decode_stats(batch, mr_output)
             self._emit_stream_output(sched_output, mr_output)
             return self._make_batch_result(batch, mr_output)
         # Fallback: call upstream's run_batch (uses tp_worker directly)
@@ -694,6 +696,184 @@ class OmniScheduler:
             next_token_ids=next_token_ids,
             can_run_cuda_graph=mr_output.can_run_cuda_graph,
         )
+
+    def _record_decode_stats(self, batch, mr_output) -> None:
+        """Tier-0 diagnostics: accumulate the real decode batch-size
+        distribution + CUDA-graph hit/miss, logged periodically. Off unless
+        SGLANG_OMNI_DECODE_STATS is set; a single cached-bool check otherwise,
+        so the hot path is untouched when disabled."""
+        on = getattr(self, "_decode_stats_on", None)
+        if on is None:
+            on = self._decode_stats_on = bool(
+                os.environ.get("SGLANG_OMNI_DECODE_STATS")
+            )
+            if on:
+                self._decode_stats = {
+                    "decode_steps": 0,
+                    "prefill_steps": 0,
+                    "graph_hit": 0,
+                    "graph_miss": 0,
+                    "eligible": 0,
+                    "max_bs": 0,
+                    "bs_hist": {},
+                    "miss_bs_hist": {},
+                    "last_log": time.time(),
+                }
+                self._decode_stats_interval = float(
+                    os.environ.get("SGLANG_OMNI_DECODE_STATS_INTERVAL", "5")
+                )
+        if not on:
+            return
+        st = self._decode_stats
+        if not self._batch_is_decode(batch):
+            st["prefill_steps"] += 1
+            return
+        bs = len(batch.reqs)
+        st["decode_steps"] += 1
+        st["bs_hist"][bs] = st["bs_hist"].get(bs, 0) + 1
+        if bs > st["max_bs"]:
+            st["max_bs"] = bs
+        if bs >= 2:
+            st["eligible"] += 1
+        if bool(getattr(mr_output, "can_run_cuda_graph", False)):
+            st["graph_hit"] += 1
+        else:
+            st["graph_miss"] += 1
+            st["miss_bs_hist"][bs] = st["miss_bs_hist"].get(bs, 0) + 1
+        now = time.time()
+        if now - st["last_log"] >= self._decode_stats_interval:
+            self._log_decode_stats(st)
+            st["last_log"] = now
+
+    def _log_decode_stats(self, st) -> None:
+        decode_steps = st["decode_steps"]
+        total_graph = st["graph_hit"] + st["graph_miss"]
+        hit_rate = (st["graph_hit"] / total_graph) if total_graph else 0.0
+        elig_rate = (st["eligible"] / decode_steps) if decode_steps else 0.0
+        logger.info(
+            "[decode stats] decode_steps=%d prefill_steps=%d max_bs=%d "
+            "graph_hit_rate=%.3f (%d/%d) eligible_rate=%.3f bs_hist=%s "
+            "miss_bs_hist=%s",
+            decode_steps,
+            st["prefill_steps"],
+            st["max_bs"],
+            hit_rate,
+            st["graph_hit"],
+            total_graph,
+            elig_rate,
+            dict(sorted(st["bs_hist"].items())),
+            dict(sorted(st["miss_bs_hist"].items())),
+        )
+
+    def _phase_profile_on(self) -> bool:
+        """Cached gate for the per-step CPU-attribution micro-profile (Tier-2
+        gate). Enabled by SGLANG_OMNI_PHASE_PROFILE; lazily inits the
+        accumulators on first call."""
+        on = getattr(self, "_phase_prof_on", None)
+        if on is None:
+            on = self._phase_prof_on = bool(
+                os.environ.get("SGLANG_OMNI_PHASE_PROFILE")
+            )
+            if on:
+                self._phase_interval = float(
+                    os.environ.get("SGLANG_OMNI_PHASE_PROFILE_INTERVAL", "5")
+                )
+                self._phase_last_log = time.perf_counter()
+                self._phase_acc = {
+                    "decode": self._new_phase_bucket(),
+                    "prefill": self._new_phase_bucket(),
+                }
+        return on
+
+    @staticmethod
+    def _new_phase_bucket() -> dict:
+        return {
+            "steps": 0,
+            "recv": 0.0,
+            "sched": 0.0,
+            "build": 0.0,
+            "forward": 0.0,
+            "post": 0.0,
+            "finalize": 0.0,
+            "stream": 0.0,
+            "proc": 0.0,
+        }
+
+    @staticmethod
+    def _phase_ms(b, k) -> float:
+        return 1000.0 * b[k] / b["steps"] if b["steps"] else 0.0
+
+    def _record_step_phase(self, batch, t0, t1, t2, t3, t4) -> None:
+        """Aggregate one event-loop iteration's host/GPU phase split. The
+        intra-runner split (build/forward/post/finalize) is read from the model
+        runner's last-step stash; loop-level phases (recv, schedule, proc) and
+        the downstream stream cost are measured here. ``stream`` is the
+        run_batch remainder (emit + result build) after the runner's own work."""
+        recv = t1 - t0
+        sched = t2 - t1
+        run = t3 - t2
+        proc = t4 - t3
+        lp = getattr(self._model_runner, "_last_phase", None)
+        if lp is not None:
+            is_prefill = bool(lp["is_prefill"])
+            build = lp["build"]
+            forward = lp["forward"]
+            post = lp["post"]
+            finalize = lp["finalize"]
+            stream = run - (build + forward + post + finalize)
+            if stream < 0.0:
+                stream = 0.0
+        else:
+            is_prefill = not self._batch_is_decode(batch)
+            build = forward = post = finalize = 0.0
+            stream = run
+        b = self._phase_acc["prefill" if is_prefill else "decode"]
+        b["steps"] += 1
+        b["recv"] += recv
+        b["sched"] += sched
+        b["build"] += build
+        b["forward"] += forward
+        b["post"] += post
+        b["finalize"] += finalize
+        b["stream"] += stream
+        b["proc"] += proc
+        if t4 - self._phase_last_log >= self._phase_interval:
+            self._log_step_phases()
+            self._phase_last_log = t4
+
+    def _log_step_phases(self) -> None:
+        for name in ("decode", "prefill"):
+            b = self._phase_acc[name]
+            if not b["steps"]:
+                continue
+            recv = self._phase_ms(b, "recv")
+            sched = self._phase_ms(b, "sched")
+            build = self._phase_ms(b, "build")
+            forward = self._phase_ms(b, "forward")
+            post = self._phase_ms(b, "post")
+            finalize = self._phase_ms(b, "finalize")
+            stream = self._phase_ms(b, "stream")
+            proc = self._phase_ms(b, "proc")
+            step = recv + sched + build + forward + post + finalize + stream + proc
+            logger.info(
+                "[step phases] %s steps=%d mean_ms step=%.2f | recv=%.2f "
+                "sched=%.2f build=%.2f forward=%.2f post=%.2f finalize=%.2f "
+                "stream=%.2f proc=%.2f | gpu=%.2f host_pre=%.2f host_post=%.2f",
+                name,
+                b["steps"],
+                step,
+                recv,
+                sched,
+                build,
+                forward,
+                post,
+                finalize,
+                stream,
+                proc,
+                forward,
+                recv + sched + build,
+                post + finalize + stream + proc,
+            )
 
     def _run_batch_launch(self, batch):
         """Async: build SchedulerOutput and launch the decode step on the GPU
@@ -1265,6 +1445,8 @@ class OmniScheduler:
         # slows ~600x, dropping audio QPS from >10 to <0.5.
         while self._running:
             self._process_admin_requests()
+            _pp = self._phase_profile_on()
+            _t0 = time.perf_counter() if _pp else 0.0
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
@@ -1273,13 +1455,20 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
+            _t1 = time.perf_counter() if _pp else 0.0
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
+            _t2 = time.perf_counter() if _pp else 0.0
 
             if batch:
                 result = self.run_batch(batch)
+                _t3 = time.perf_counter() if _pp else 0.0
                 if result is not _FAILED_BATCH_RESULT:
                     self.process_batch_result(batch, result)
+                if _pp:
+                    self._record_step_phase(
+                        batch, _t0, _t1, _t2, _t3, time.perf_counter()
+                    )
             else:
                 self.self_check_during_idle()
                 time.sleep(0.001)
