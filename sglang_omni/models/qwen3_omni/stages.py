@@ -942,7 +942,7 @@ def create_sglang_thinker_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
 ):
     """Returns OmniScheduler for thinker."""
-    # note (luojiaxuan)
+    # note: (luojiaxuan)
     # The thinker runs prefill XOR decode per scheduler step, so under
     # concurrent streaming a large fraction of steps are prefill-only while
     # in-flight decodes stall (measured on Qwen3-Omni-30B TP=2, 32 streams:
