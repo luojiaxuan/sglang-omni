@@ -797,6 +797,11 @@ class OmniScheduler:
             "finalize": 0.0,
             "stream": 0.0,
             "proc": 0.0,
+            # bs -> [sum_forward_s, count]; the forward-vs-batch-size scaling
+            # curve. With PHASE_SYNC on, forward == true GPU time, so a flat
+            # curve => memory-bound (weight load dominates, batch nearly free),
+            # a rising curve => compute-bound.
+            "fwd_by_bs": {},
         }
 
     @staticmethod
@@ -837,6 +842,15 @@ class OmniScheduler:
         b["finalize"] += finalize
         b["stream"] += stream
         b["proc"] += proc
+        try:
+            bs = len(batch.reqs)
+        except Exception:
+            bs = 0
+        fb = b["fwd_by_bs"].get(bs)
+        if fb is None:
+            fb = b["fwd_by_bs"][bs] = [0.0, 0]
+        fb[0] += forward
+        fb[1] += 1
         if t4 - self._phase_last_log >= self._phase_interval:
             self._log_step_phases()
             self._phase_last_log = t4
@@ -874,6 +888,14 @@ class OmniScheduler:
                 recv + sched + build,
                 post + finalize + stream + proc,
             )
+            fwd_by_bs = b["fwd_by_bs"]
+            if fwd_by_bs:
+                parts = " ".join(
+                    "%d:%.1fms(n=%d)" % (bs, 1000.0 * s / c, c)
+                    for bs, (s, c) in sorted(fwd_by_bs.items())
+                    if c
+                )
+                logger.info("[fwd-by-bs] %s %s", name, parts)
 
     def _run_batch_launch(self, batch):
         """Async: build SchedulerOutput and launch the decode step on the GPU

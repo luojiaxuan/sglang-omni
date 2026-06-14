@@ -181,6 +181,51 @@ prefill all-reduce. Small but real and free (flip the flag; env-gated via
 `SGLANG_OMNI_DISABLE_CUSTOM_AR`). It narrows ~11% of the aries gap to vLLM --
 **not** a gap-closer, consistent with the structural conclusion in §4.
 
+## 6. P1: thinker forward attribution -- decode is memory-bound, prefill token-bound
+
+Following §5 (the cost is the forward, not host), I bucketed **true-GPU forward
+time by batch size** (`SGLANG_OMNI_PHASE_SYNC=1`, new `[fwd-by-bs]` log),
+sweeping N=8/16/24/32 to cover the decode-bs range in one server lifetime.
+
+**Decode forward vs bs** (at CUDA-graph-captured sizes; true GPU ms):
+
+| bs        | 1    | 2    | 4    | 8    | 16   | 24   | 32   |
+|-----------|------|------|------|------|------|------|------|
+| forward ms| 10.1 | 12.7 | 16.3 | 18.0 | 22.5 | 24.5 | 25.9 |
+
+Forward grows **10 -> 26 ms while tokens grow 1 -> 32** -- strongly **sublinear**.
+That is the signature of a **memory-bound** decode: a ~10 ms fixed per-step floor
+(30B-MoE expert-weight load + 2 all-reduce/layer + launch) with a small marginal
+token cost. Per-token efficiency is **~12x better at bs=32 than bs=1** (0.81 vs
+10.1 ms/token). So **marginal tokens in the decode batch are nearly free.**
+
+**Prefill forward is flat ~60-65 ms** regardless of request count (token-bound;
+chunked at 4096), mean 63.8 ms. Over the sweep prefill is the **larger GPU
+consumer** (2117 steps x 63.8 ms = 135 s GPU vs decode 5621 x 20.0 ms = 112 s),
+because speech-context prefill is heavy -- inherent to streaming SST.
+
+**The decode batch is under-filled (P2).** Clean N=32-only baseline (no sync,
+realistic seg/s ~7.2-7.9): mean decode bs **17.7/32** over the run, **~23/32 in
+steady state** (delta of a mid-run window) -- i.e. **~55-72% occupancy**. The
+cause is **prefill stealing scheduler iterations**: the step split is **decode
+1256 : prefill 896**, so **42% of iterations are prefill** (each ~88 ms wall:
+62-70 ms GPU forward + ingest, vs ~33 ms decode), and decode/prefill run as
+*separate* iterations -- during each prefill step no decode advances, so the
+decode batch drains. Throughput scales **4.07 (N8) -> 6.40 (N16) -> 7.76 (N24)
+-> 7.97 (N32) seg/s** -- diminishing returns well before the floor is amortized.
+Since P1 makes marginal decode tokens nearly free, raising occupancy toward 32
+(decode-priority scheduling or true prefill/decode fusion) is the live lever;
+note `--enable-mixed-chunk` was null in §3, so fusion needs deeper wiring, not
+just the flag.
+
+**Consequences (sets P1/P2 levers):**
+- CUDA graph is **already optimal** (100% hit, capture to bs=32) -- not a lever.
+- all-reduce is a **small fraction** of the floor (§5 A/B) -- already shipped (P0).
+- The memory-bound floor means the cheap throughput win is **filling the decode
+  batch (P2)**, not faster compute: P1 *proves* the batching lever. Lowering the
+  floor itself needs **FP8/weight-traffic** reduction -- a large, quality-risky
+  change, deferred.
+
 ## Reproduction
 
 ```bash
@@ -201,6 +246,11 @@ python -m sglang_omni.profiler /path/events --format table
 # §5 step-phase micro-profile (env-gated, prints [step phases] per decode/prefill)
 SGLANG_OMNI_PHASE_PROFILE=1 GPUS=0,1 PORT=8101 \
   bash eval/streaming_sst/servers/serve_sglang_qwen3omni.sh   # add SGLANG_OMNI_PHASE_SYNC=1 for true-GPU split
+
+# §6 forward-vs-batch-size curve ([fwd-by-bs]) + decode bs histogram ([decode stats])
+SGLANG_OMNI_PHASE_PROFILE=1 SGLANG_OMNI_PHASE_SYNC=1 SGLANG_OMNI_DECODE_STATS=1 \
+  GPUS=0,1 PORT=8101 bash eval/streaming_sst/servers/serve_sglang_qwen3omni.sh
+#   then sweep NLIST="8 16 24 32" to cover the decode-bs range
 
 # §5 custom all-reduce A/B (NVLink): 1=NCCL (stock), 0=custom
 SGLANG_OMNI_DISABLE_CUSTOM_AR=0 GPUS=0,1 PORT=8101 \
