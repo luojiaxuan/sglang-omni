@@ -156,6 +156,86 @@ class ChatCompletionStreamResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# RL Rollout — POST /generate (Miles-compatible, #780 §1.1.1)
+# ---------------------------------------------------------------------------
+
+
+class RolloutGenerateRequest(BaseModel):
+    """Miles-compatible RL rollout request for ``POST /generate``.
+
+    This endpoint follows the normal Miles/SGLang AR interface. It is separate
+    from the OpenAI-style serving endpoints and does not change their schemas.
+    Exactly one prompt input form (``input_ids``, ``prompt``, ``messages``)
+    must be supplied.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    model: str | None = None
+
+    # Exactly one prompt input form.
+    input_ids: list[int] | None = None  # Miles-compatible alias for prompt_token_ids
+    prompt: str | None = None
+    messages: list[dict[str, Any]] | None = None
+
+    # Generation params.
+    sampling_params: dict[str, Any] = Field(default_factory=dict)
+    stream: bool = False  # default false for RL rollout
+    stage_sampling: dict[str, dict[str, Any]] | None = None
+    stage_params: dict[str, dict[str, Any]] | None = None
+    output_modalities: list[str] | None = None  # e.g. ["audio"] or ["text", "audio"]
+
+    # Opaque rollout-side identifiers (rollout_id, group_id, ...). Echoed back
+    # in meta_info.request_metadata; not used for scheduling.
+    metadata: dict[str, Any] | None = None
+
+    # Rollout artifact controls.
+    return_logprob: bool = True  # default true for RL rollout
+    return_omni_rollout: bool = True  # default true for Miles-Omni rollout
+    return_routed_experts: bool = False
+    return_indexer_topk: bool = False
+
+
+class GenerateFinishReason(BaseModel):
+    """Finish status for a rollout generation."""
+
+    type: str  # "stop" | "length" | "abort" | "error"
+    length: int | None = None
+
+
+class GenerateAudio(BaseModel):
+    """Audio payload for a rollout generation."""
+
+    data: str | None = None  # base64 audio
+    path: str | None = None  # worker-visible/shared-fs audio_ref
+    format: str | None = None  # e.g. "wav", "pcm"
+    sample_rate: int | None = None
+
+
+class GenerateMetaInfo(BaseModel):
+    """Rollout meta_info block (#780 §1.1.1)."""
+
+    finish_reason: GenerateFinishReason
+    prompt_tokens: int | None = None
+    completion_tokens: int = 0  # primary generated length
+    cached_tokens: int | None = None
+    weight_version: str = ""
+    request_metadata: dict[str, Any] | None = None  # echo of opaque request metadata
+    # Each item is (logprob, token_id) and may include token text as a later field.
+    output_token_logprobs: list[Any] | None = None
+    # SGLang-Omni multimodal trainable actions (populated by the §1.1.2 container).
+    omni_rollout: dict[str, Any] | None = None
+
+
+class GenerateResponse(BaseModel):
+    """Response body for ``POST /generate`` (#780 §1.1.1)."""
+
+    text: str = ""
+    audio: GenerateAudio | None = None
+    meta_info: GenerateMetaInfo
+
+
+# ---------------------------------------------------------------------------
 # Speech (TTS)
 # ---------------------------------------------------------------------------
 

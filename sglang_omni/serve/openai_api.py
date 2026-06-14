@@ -41,6 +41,7 @@ from fastapi.responses import (
 from sglang_omni.client import (
     Client,
     ClientError,
+    CompletionResult,
     GenerateRequest,
     Message,
     SamplingParams,
@@ -70,9 +71,14 @@ from sglang_omni.serve.protocol import (
     ChatCompletionStreamResponse,
     ContinueGenerationRequest,
     CreateSpeechRequest,
+    GenerateAudio,
+    GenerateFinishReason,
+    GenerateMetaInfo,
+    GenerateResponse,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
+    RolloutGenerateRequest,
     TranscriptionResponse,
     UpdateWeightFromDiskRequest,
     UsageResponse,
@@ -136,6 +142,7 @@ def create_app(
     _register_models(app)
     _register_admin(app, resolved_key)
     _register_chat_completions(app)
+    _register_generate(app)
     _register_speech(app)
     _register_transcriptions(app)
     if enable_realtime:
@@ -688,6 +695,151 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         output_modalities=output_modalities,
         metadata=metadata,
     )
+
+
+def _register_generate(app: FastAPI) -> None:
+    @app.post("/generate")
+    async def generate(req: RolloutGenerateRequest) -> Response:
+        client: Client = app.state.client
+
+        provided = [
+            value is not None for value in (req.input_ids, req.prompt, req.messages)
+        ]
+        if sum(provided) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="exactly one of input_ids, prompt, or messages is required",
+            )
+
+        request_id = str(uuid.uuid4())
+        gen_req = _build_rollout_generate_request(req)
+        audio_format = "wav"
+
+        try:
+            result = await client.completion(
+                gen_req,
+                request_id=request_id,
+                audio_format=audio_format,
+            )
+        except ClientError as exc:
+            if _is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Error generating rollout for request %s", request_id)
+            if _is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        response = _build_generate_response(req, result, audio_format)
+        return JSONResponse(content=response.model_dump())
+
+
+_ROLLOUT_SAMPLING_FIELDS = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "repetition_penalty",
+    "stop_token_ids",
+    "seed",
+    "max_new_tokens",
+)
+
+
+def _rollout_sampling_from_dict(sampling_params: dict[str, Any]) -> SamplingParams:
+    kwargs: dict[str, Any] = {
+        key: sampling_params[key]
+        for key in _ROLLOUT_SAMPLING_FIELDS
+        if sampling_params.get(key) is not None
+    }
+    stop = sampling_params.get("stop")
+    if isinstance(stop, str):
+        kwargs["stop"] = [stop]
+    elif isinstance(stop, list):
+        kwargs["stop"] = list(stop)
+    if "max_new_tokens" not in kwargs and sampling_params.get("max_tokens") is not None:
+        kwargs["max_new_tokens"] = sampling_params["max_tokens"]
+    return SamplingParams(**kwargs)
+
+
+def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequest:
+    """Convert a rollout GenerateRequest into a client GenerateRequest."""
+    sampling = _rollout_sampling_from_dict(req.sampling_params or {})
+
+    messages: list[Message] | None = None
+    if req.messages is not None:
+        messages = [
+            Message(role=m.get("role", "user"), content=m.get("content"))
+            for m in req.messages
+        ]
+
+    stage_sampling: dict[str, SamplingParams] | None = None
+    if req.stage_sampling:
+        stage_sampling = {
+            name: SamplingParams(**params)
+            for name, params in req.stage_sampling.items()
+        }
+
+    # Thread rollout artifact controls into the generation params so stages can
+    # decide whether to emit logprobs / omni action streams.
+    extra_params: dict[str, Any] = {
+        "return_logprob": req.return_logprob,
+        "return_omni_rollout": req.return_omni_rollout,
+        "return_routed_experts": req.return_routed_experts,
+        "return_indexer_topk": req.return_indexer_topk,
+    }
+
+    return GenerateRequest(
+        model=req.model,
+        prompt=req.prompt,
+        prompt_token_ids=req.input_ids,
+        messages=messages,
+        sampling=sampling,
+        stage_sampling=stage_sampling,
+        stage_params=req.stage_params,
+        extra_params=extra_params,
+        stream=req.stream,
+        max_tokens=sampling.max_new_tokens,
+        output_modalities=req.output_modalities,
+        metadata=dict(req.metadata) if req.metadata else {},
+    )
+
+
+def _build_generate_response(
+    req: RolloutGenerateRequest,
+    result: CompletionResult,
+    audio_format: str,
+) -> GenerateResponse:
+    usage = result.usage
+    completion_tokens = (
+        usage.completion_tokens
+        if usage is not None and usage.completion_tokens is not None
+        else 0
+    )
+    prompt_tokens = usage.prompt_tokens if usage is not None else None
+
+    finish_type = result.finish_reason or "stop"
+    finish_reason = GenerateFinishReason(
+        type=finish_type,
+        length=completion_tokens if finish_type == "length" else None,
+    )
+
+    audio: GenerateAudio | None = None
+    if result.audio is not None:
+        audio = GenerateAudio(data=result.audio.data, format=audio_format)
+
+    meta_info = GenerateMetaInfo(
+        finish_reason=finish_reason,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        weight_version=result.weight_version or "",
+        request_metadata=req.metadata,
+        output_token_logprobs=result.output_token_logprobs,
+    )
+    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 
 
 def _register_realtime(app: FastAPI) -> None:
