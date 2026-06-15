@@ -179,17 +179,53 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
     def boom(*args, **kwargs):
         raise RuntimeError("simulated replay failure")
 
+    orig_decode = runner.decode_step
     runner.decode_step = boom
-    with pytest.raises(RuntimeError):
-        session.step({0: seq[0][:, :chunk_t]})
-    assert session._cg_runner is None, "runner must be disabled after a replay failure"
+    try:
+        with pytest.raises(RuntimeError):
+            session.step({0: seq[0][:, :chunk_t]})
+        assert (
+            session._cg_runner is None
+        ), "runner must be disabled after a replay failure"
+        # session is now eager-only -> a fresh decode must be bit-identical to the pure-eager reference
+        after = _decode_chunks(session, seq, chunk_t)[0]
+        assert torch.equal(after, eager_ref), (
+            "post-failure eager output not bit-identical to eager reference: "
+            f"max|delta|={(after - eager_ref).abs().max().item():.3e}"
+        )
+    finally:
+        # restore the module-scoped session for the remaining tests
+        runner.decode_step = orig_decode
+        session._cg_runner = runner
 
-    # session is now eager-only -> a fresh decode must be bit-identical to the pure-eager reference
-    after = _decode_chunks(session, seq, chunk_t)[0]
-    assert torch.equal(after, eager_ref), (
-        "post-failure eager output not bit-identical to eager reference: "
-        f"max|delta|={(after - eager_ref).abs().max().item():.3e}"
+
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
+def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
+    """When free VRAM is below the configured headroom, warmup skips capture (no OOM) -> empty graph set
+    -> serving uses eager. Simulated by an absurd headroom threshold so the guard always trips; this is
+    the default-on robustness gate for VRAM-tight boxes."""
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        MossVocoderCudaGraphRunner,
     )
+
+    session, n_vq, vocab, captured = session_bundle
+    old = os.environ.get("MOSS_VOCODER_CUDA_GRAPH_MIN_FREE_GB")
+    os.environ["MOSS_VOCODER_CUDA_GRAPH_MIN_FREE_GB"] = (
+        "100000"  # 100 TB headroom -> always trips
+    )
+    try:
+        guarded = MossVocoderCudaGraphRunner(
+            session._codec, batch_size=STREAM_SLOTS + OFFLINE_SLOTS, n_vq=n_vq
+        )
+        guarded.warmup([5, 25])
+        assert (
+            guarded.captured_frames() == []
+        ), "VRAM guard must skip all captures under insufficient headroom"
+    finally:
+        if old is None:
+            os.environ.pop("MOSS_VOCODER_CUDA_GRAPH_MIN_FREE_GB", None)
+        else:
+            os.environ["MOSS_VOCODER_CUDA_GRAPH_MIN_FREE_GB"] = old
 
 
 if __name__ == "__main__":

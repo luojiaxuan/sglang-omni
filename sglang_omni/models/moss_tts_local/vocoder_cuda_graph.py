@@ -33,6 +33,7 @@ eager, so correctness never depends on capture succeeding. Bit-identity vs eager
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
 
 import torch
@@ -60,12 +61,22 @@ class MossVocoderCudaGraphRunner:
         self._max_frames = int(max_frames)
         self._max_graphs = int(max_graphs)
         self._warmup_iters = int(warmup_iters)
+        # Min free VRAM to attempt a capture (each graph is multi-GB); below it we skip -> eager,
+        # so a VRAM-tight box degrades gracefully instead of OOM-ing. Env-configurable.
+        self._min_free_bytes = int(
+            float(os.environ.get("MOSS_VOCODER_CUDA_GRAPH_MIN_FREE_GB", "3"))
+            * (1024**3)
+        )
         self._graphs: dict[int, tuple] = {}
         self._pool = None
         self._sealed = False
 
     def _eligible(self, t: int) -> bool:
         return 1 <= t <= self._max_frames
+
+    def _enough_free_vram(self) -> bool:
+        free, _ = torch.cuda.mem_get_info(self._device)
+        return free >= self._min_free_bytes
 
     @torch.no_grad()
     def _reset_state(self) -> None:
@@ -147,6 +158,17 @@ class MossVocoderCudaGraphRunner:
             if len(self._graphs) >= self._max_graphs:
                 logger.warning(
                     "MOSS vocoder CG cap %d reached; skipping rest", self._max_graphs
+                )
+                break
+            # Note: (Jiaxin Deng) VRAM headroom guard -- skip capture (-> eager) rather than risk OOM on
+            # a tight box. Checked per-T because each capture allocates; free only drops through the loop.
+            if not self._enough_free_vram():
+                free, _ = torch.cuda.mem_get_info(self._device)
+                logger.warning(
+                    "MOSS vocoder CG: free VRAM %.1fGB < %.1fGB headroom; skipping T=%d+ (eager)",
+                    free / 1024**3,
+                    self._min_free_bytes / 1024**3,
+                    t,
                 )
                 break
             try:
