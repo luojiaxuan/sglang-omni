@@ -7,6 +7,10 @@ mind when working here.
 
 - Commit promptly in small, focused increments. Do not accumulate a large pile
   of unrelated changes before committing.
+- Keep changes minimal and focused. Avoid unrelated edits so the diff is easy
+  to review.
+- Prefer abstractions when there is a clear abstraction boundary. Do not keep
+  adding unstructured code that degrades code quality or maintainability.
 - Keep code, checkpoints, logs, datasets, and experiment artifacts under your
   personal persistent data directory, not inside the container filesystem.
 - Treat containers as disposable. They may be removed when machine resources are
