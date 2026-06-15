@@ -60,7 +60,6 @@ class MossVocoderCudaGraphRunner:
         self._max_frames = int(max_frames)
         self._max_graphs = int(max_graphs)
         self._warmup_iters = int(warmup_iters)
-        # T -> (graph, static_codes, static_lengths, static_audio, static_audio_lengths)
         self._graphs: dict[int, tuple] = {}
         self._pool = None
         self._sealed = False
@@ -85,14 +84,11 @@ class MossVocoderCudaGraphRunner:
         b, n = self._batch_size, self._n_vq
         device = self._device
         static_codes = torch.zeros(n, b, t, dtype=torch.long, device=device)
-        # Captured with all-T lengths + all-active mask: the graph always computes the full
-        # B_full x T width; active vs inactive is decided at replay by the live exec_mask
-        # (torch.where state gating), and only active slots' outputs are read by the caller.
+        # Capture all-active; the live exec_mask at replay decides which slots advance.
         static_lengths = torch.full((b,), t, dtype=torch.long, device=device)
         exec_mask = torch.ones(b, dtype=torch.bool, device=device)
         self._codec._set_streaming_exec_mask(exec_mask)
-        # Eager warmup on a side stream forces lazy allocations (conv algo selection / workspaces)
-        # to happen BEFORE capture so they are not pulled into the captured graph.
+        # Note: (Jiaxin Deng) side-stream warmup forces lazy allocs (conv algo / workspaces) out of the capture.
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
@@ -100,15 +96,11 @@ class MossVocoderCudaGraphRunner:
                 self._codec._decode_frame(static_codes, static_lengths)
         torch.cuda.current_stream().wait_stream(stream)
         torch.cuda.synchronize()
-        # CRITICAL: reset state to offset 0 AFTER the warmup (which advanced it) and BEFORE capture.
-        # The codec decode is bit-identical to eager only if captured at offset 0 (matching the
-        # offset-0 start of a streamed utterance); capturing at the warmup-advanced offset bakes a
-        # wrong starting state and yields ~0.4 PCM error. Re-set the mask (reset re-activates all).
+        # Note: (Jiaxin Deng) reset to offset 0 AFTER warmup, BEFORE capture -- capturing at the
+        # warmup-advanced offset bakes a wrong start state (~0.4 PCM error). reset re-activates all slots.
         self._reset_state()
         self._codec._set_streaming_exec_mask(exec_mask)
-        # Share one CUDA mempool across the captured-T graphs to bound memory (the B=16 codec decode
-        # has large intermediates). Capture largest-T first (see warmup) so the pool sizes up front
-        # and earlier graphs' addresses stay valid.
+        # Shared mempool across the T graphs to bound memory (large B=16 intermediates); capture order in warmup.
         if self._pool is None:
             self._pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
@@ -142,10 +134,8 @@ class MossVocoderCudaGraphRunner:
                 "MossVocoderCudaGraphRunner.warmup called after seal; ignoring"
             )
             return
-        # Capture LARGEST T first. The graphs share one CUDA mempool to bound memory; capturing a
-        # larger graph after a smaller one grows the pool and invalidates the earlier graph's
-        # captured addresses (replaying it then segfaults). Descending order sizes the pool to the
-        # max up front, so every smaller graph fits without growth.
+        # Note: (Jiaxin Deng) capture LARGEST T first -- the graphs share one mempool; capturing a larger
+        # graph after a smaller one grows the pool and invalidates earlier graphs' addresses (replay segfaults).
         for t in sorted(dict.fromkeys(int(x) for x in frames), reverse=True):
             if t in self._graphs:
                 continue
@@ -203,9 +193,7 @@ class MossVocoderCudaGraphRunner:
         if entry is None:
             return None
         graph, static_codes, static_lengths, static_audio, static_audio_lengths = entry
-        # Replicate the eager inputs exactly: codes, the per-slot lengths (T for active, 0 for
-        # inactive), and the exec_mask (host-side copy into the codec's fixed mask buffers). The
-        # captured graph reads all three live, so replay matches eager bit-for-bit.
+        # Replicate eager inputs exactly (codes, lengths, exec_mask) so replay is bit-for-bit identical.
         self._codec._set_streaming_exec_mask(exec_mask)
         static_codes.copy_(codes_step)
         static_lengths.copy_(codes_lengths)

@@ -98,18 +98,13 @@ class _CodecStreamSession:
         self._free_stream_slots = list(range(self._stream_slots))
         self._closed = False
         self._cg_runner: Any | None = None
-        # CUDA-graph step accounting (only populated when a runner is attached): T -> step count
-        # served by a captured graph vs fallen back to eager. Lets the perf run report capture
-        # hit-rate; host-side ints only (no GPU sync).
+        # Per-T graph-vs-eager step counts for capture-hit-rate reporting (host-side, no GPU sync).
         self._cg_graph_t: Counter = Counter()
         self._cg_eager_t: Counter = Counter()
         self._cg_total_steps = 0
-        # Enter streaming WITHOUT retaining the returned ExitStack. Retaining it (the natural
-        # ``enter_context`` form) deterministically breaks multi-step CUDA-graph replay of the codec
-        # decode: every step after the first reads stale state (~0.4 PCM error). Discarding the
-        # ExitStack is bit-identical to eager (proven). Cleanup is explicit in ``close()`` via the
-        # codec's ``_stop_streaming``; ``codec.streaming`` already allocated + entered the per-slot
-        # state at call time, so the decode path is fully set up.
+        # Note: (Jiaxin Deng) enter streaming but DON'T retain the ExitStack -- holding it
+        # deterministically breaks multi-step CUDA-graph replay (step 1+ reads stale state, ~0.4 PCM
+        # error). cleanup is explicit in close() via _stop_streaming.
         with torch.no_grad():
             codec.streaming(self._batch_size).__enter__()
 
@@ -349,10 +344,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
 
     def start(self) -> None:
         try:
-            # Capture the codec-decode CUDA graphs ONCE here, before the serving loop: the codec is
-            # loaded and the GPU is quiescent. Guarded by the env flag so the default path is
-            # unchanged (no session created until the first request). Best-effort -- a capture
-            # failure leaves the runner unused and serving falls back to eager.
+            # Note: (Jiaxin Deng) capture graphs ONCE here -- codec loaded, GPU quiescent, before the
+            # serving loop (never capture mid-serve). env-gated (default path unchanged); best-effort -> eager.
             if _vocoder_cuda_graph_enabled():
                 try:
                     captured = self.warmup_cuda_graph()
