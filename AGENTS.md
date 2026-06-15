@@ -9,6 +9,9 @@ mind when working here.
   of unrelated changes before committing.
 - Keep changes minimal and focused. Avoid unrelated edits so the diff is easy
   to review.
+- Prefix your fork branches with `jaxanluo/` (a personal namespace, matching the
+  existing `hayden/`, `claude/`, and `codex/` branches) so your branches are easy
+  to find and do not get lost among others'.
 - Prefer abstractions when there is a clear abstraction boundary. Do not keep
   adding unstructured code that degrades code quality or maintainability.
 - Keep code, checkpoints, logs, datasets, and experiment artifacts under your
