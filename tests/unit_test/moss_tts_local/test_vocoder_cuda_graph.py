@@ -255,6 +255,26 @@ def test_capture_failure_falls_back_to_eager(session_bundle):
     assert runner._sealed, "runner must still seal after capture failures"
 
 
+def test_cuda_graph_default_is_on():
+    """The vocoder CUDA graph is ON by default; opt out with MOSS_VOCODER_CUDA_GRAPH=0."""
+    from sglang_omni.models.moss_tts_local import streaming_vocoder as sv
+
+    old = os.environ.pop("MOSS_VOCODER_CUDA_GRAPH", None)
+    try:
+        assert (
+            sv._vocoder_cuda_graph_enabled() is True
+        ), "default must be ON (env unset -> enabled)"
+        os.environ["MOSS_VOCODER_CUDA_GRAPH"] = "0"
+        assert (
+            sv._vocoder_cuda_graph_enabled() is False
+        ), "MOSS_VOCODER_CUDA_GRAPH=0 must opt out to eager"
+    finally:
+        if old is None:
+            os.environ.pop("MOSS_VOCODER_CUDA_GRAPH", None)
+        else:
+            os.environ["MOSS_VOCODER_CUDA_GRAPH"] = old
+
+
 if __name__ == "__main__":
     import sys
 

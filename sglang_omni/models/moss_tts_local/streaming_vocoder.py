@@ -25,9 +25,11 @@ import torch
 
 
 def _vocoder_cuda_graph_enabled() -> bool:
-    """True if the streaming-vocoder codec-decode CUDA graph is opted in
-    (``MOSS_VOCODER_CUDA_GRAPH=1``). Default off -> the original eager path."""
-    return os.environ.get("MOSS_VOCODER_CUDA_GRAPH", "0").strip().lower() not in (
+    """True unless the streaming-vocoder codec-decode CUDA graph is opted OUT
+    (``MOSS_VOCODER_CUDA_GRAPH=0``). Default ON; every failure path (capture OOM, low VRAM,
+    replay error, uncaptured shape) degrades to the eager decode, so default-on never crashes.
+    """
+    return os.environ.get("MOSS_VOCODER_CUDA_GRAPH", "1").strip().lower() not in (
         "",
         "0",
         "false",
@@ -111,7 +113,7 @@ class _CodecStreamSession:
     def warmup_cuda_graph(self, frames) -> list[int]:
         """Capture per-T codec-decode CUDA graphs (startup, GPU quiescent), then reset all slots.
 
-        No-op unless ``MOSS_VOCODER_CUDA_GRAPH=1``. Warmup + capture advance per-slot state, so all
+        No-op if ``MOSS_VOCODER_CUDA_GRAPH=0`` (default on). Warmup + capture advance per-slot state, so all
         slots are reset afterwards for clean serving. Returns the list of T actually captured (the
         rest fall back to eager). Must run before serving (never captures during ``step``).
         """
@@ -360,7 +362,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     def start(self) -> None:
         try:
             # Note: (Jiaxin Deng) capture graphs ONCE here -- codec loaded, GPU quiescent, before the
-            # serving loop (never capture mid-serve). env-gated (default path unchanged); best-effort -> eager.
+            # serving loop (never capture mid-serve). default on, opt out with MOSS_VOCODER_CUDA_GRAPH=0; best-effort -> eager.
             if _vocoder_cuda_graph_enabled():
                 captured: list[int] = []
                 try:
@@ -551,7 +553,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
     def warmup_cuda_graph(self) -> list[int]:
         """Pre-capture the streaming codec-decode CUDA graphs at startup (GPU quiescent).
 
-        No-op unless ``MOSS_VOCODER_CUDA_GRAPH=1``. Captures a focused set of step lengths (see
+        No-op if ``MOSS_VOCODER_CUDA_GRAPH=0`` (default on). Captures a focused set of step lengths (see
         ``_cuda_graph_capture_frames``); uncaptured lengths fall back to eager. Returns the captured
         T list. Call once before serving, never during the decode loop.
         """
