@@ -5,13 +5,11 @@ Reuses the exact same prompt N times across a sweep of concurrency levels so
 operators can measure how same-prompt multi-rollout (and, more generally,
 many-concurrent-session) traffic scales: per-level requests/s, output tokens/s,
 prompt-token counts, and p50/p95/p99 latency, plus any profiler events the
-server emits. This is a pressure / diagnostics tool for serving (e.g. issue
-#760), not a model-capability eval -- hence ``benchmarks/stress_tests/`` rather
-than ``benchmarks/eval/``.
+server emits. This is a serving pressure / diagnostics tool (e.g. issue #760).
 
-Run from the repo root (imports are rooted at ``benchmarks.``)::
+Run from the repo root as a module so the ``benchmarks.`` imports resolve::
 
-    python benchmarks/stress_tests/qwen3_omni_rollout_stress.py \\
+    python -m benchmarks.eval.benchmark_omni_rollout_stress \\
         --base-url http://localhost:8000 \\
         --rollout-counts 1,2,4,8,16,32 \\
         --max-tokens 256 \\
