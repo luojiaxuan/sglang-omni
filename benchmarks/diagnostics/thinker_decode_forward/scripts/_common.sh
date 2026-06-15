@@ -49,6 +49,13 @@ ENABLE_MIXED_CHUNK="${ENABLE_MIXED_CHUNK-1}"
 CHUNKED_PREFILL_SIZE="${CHUNKED_PREFILL_SIZE:-8192}"
 PER_STAGE_PROCESSES="${PER_STAGE_PROCESSES:-}"
 
+# MoE weight-traffic quantization (#760 / B200). Empty = BF16 baseline.
+#   QUANTIZATION=fp8  -> online per-tensor W8A8 from the BF16 checkpoint (no
+#                        special checkpoint); policy pins triton fused-MoE FP8.
+# MOE_RUNNER_BACKEND optionally overrides the MoE runner (e.g. triton, cutlass).
+QUANTIZATION="${QUANTIZATION:-}"
+MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND:-}"
+
 NSYS_PREFIX="${NSYS_PREFIX:-}"
 
 # Eval data: per-segment ACL6060 wavs (see README to generate).

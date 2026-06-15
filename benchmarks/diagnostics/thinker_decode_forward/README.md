@@ -63,6 +63,8 @@ thinker_decode_forward/
 | `TP_SIZE` | `2` | thinker tensor parallel |
 | `RUN_MODE` | `local` | `local` or `docker` (+ set `IMAGE=`) |
 | `ENABLE_MIXED_CHUNK` | `1` | empty for nsys decode-only |
+| `QUANTIZATION` | (empty) | `fp8` = online per-tensor W8A8 from the BF16 checkpoint (general: triton fused-MoE FP8 on B200/H100/H200). Empty = BF16 baseline |
+| `MOE_RUNNER_BACKEND` | (empty) | optional MoE runner override (`triton` / `cutlass`); leave empty to let the Omni policy choose |
 | `NSYS_PREFIX` | (empty) | e.g. `nsys launch --session-new=...` |
 
 **Diagnostic env (engine built-in, pass through at launch):**
@@ -116,16 +118,34 @@ MODEL=Qwen/Qwen3-Omni-30B-A3B-Instruct \
   benchmarks/diagnostics/thinker_decode_forward/scripts/car_bench.py
 ```
 
-### 4. B200 FP8 experiment (next)
+### 4. FP8 MoE experiment (general: B200 / H100 / H200)
 
-1. Use native FP8 checkpoint `marksverdhei/Qwen3-Omni-30B-A3B-FP8` (see
-   `examples/configs/qwen3_omni_fp8_colocated.yaml` and
-   `docs/basic_usage/qwen3_omni.md` § Single-GPU FP8).
-2. Extend `qwen3_omni_tp_vllm_gap/scripts/sglang_omni_qwen3_text_tp_server.py`
-   with `--quantization fp8` / server_args overrides if needed.
-3. Re-run `p1_nsys_decode.sh` with `MODEL_PATH=...FP8`; compare MoE ms/step vs
-   [`FINDINGS_A6000.md`](./FINDINGS_A6000.md).
-4. B200 may support **TP=1** (192 GB) — try `TP_SIZE=1 GPUS=0`.
+**Online FP8 (recommended, no special checkpoint).** Quantize the standard BF16
+checkpoint to per-tensor W8A8 at load time — halves expert weight traffic, the
+dominant cost of memory-bound decode. The Omni backend policy pins the portable
+triton fused-MoE FP8 runner. Compare against the BF16 baseline with the same nsys
+methodology:
+
+```bash
+# BF16 baseline
+ENABLE_MIXED_CHUNK= CHUNKED_PREFILL_SIZE=0 \
+  bash scripts/p1_nsys_decode.sh
+
+# Online FP8 (same checkpoint)
+QUANTIZATION=fp8 ENABLE_MIXED_CHUNK= CHUNKED_PREFILL_SIZE=0 \
+  bash scripts/p1_nsys_decode.sh
+```
+
+Compare MoE ms/step and decode wall vs [`FINDINGS_A6000.md`](./FINDINGS_A6000.md)
+and record results in `FINDINGS_B200.md`.
+
+**Native FP8 checkpoint (B200-optimized, optional).** Use
+`marksverdhei/Qwen3-Omni-30B-A3B-FP8` (`MODEL_PATH=...FP8 QUANTIZATION=fp8`) — the
+policy then selects CUTLASS block-FP8 MoE where supported. See
+`examples/configs/qwen3_omni_fp8_colocated.yaml` and
+`docs/basic_usage/qwen3_omni.md` § FP8.
+
+**TP=1 (B200 192 GB).** Try `TP_SIZE=1 GPUS=0` to remove the all-reduce entirely.
 
 ## SLURM
 

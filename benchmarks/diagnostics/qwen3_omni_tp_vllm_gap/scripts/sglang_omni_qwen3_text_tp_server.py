@@ -111,6 +111,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--thinker-memory-fraction", type=float, default=0.75)
     parser.add_argument("--relay-backend", default="shm", choices=["shm", "nccl", "nixl"])
     parser.add_argument("--log-level", default="info")
+    # MoE weight-traffic experiment (#760 / B200): quantize the thinker MoE expert
+    # (and dense) weights to reduce HBM traffic for memory-bound decode. "fp8"
+    # uses online (runtime) per-tensor W8A8 from the BF16 checkpoint -- no special
+    # checkpoint needed -- which the Omni backend policy pins to the portable
+    # triton fused-MoE FP8 runner (B200/H100/H200). Leave unset for BF16 baseline.
+    parser.add_argument("--quantization", default=None)
+    # Optional override of the MoE runner backend (e.g. "triton", "cutlass").
+    # Leave unset to let the Omni backend policy choose.
+    parser.add_argument("--moe-runner-backend", default=None)
     return parser.parse_args(argv)
 
 
@@ -165,6 +174,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         server_arg_updates["chunked_prefill_size"] = int(args.chunked_prefill_size)
     if args.enable_mixed_chunk:
         server_arg_updates["enable_mixed_chunk"] = True
+    if args.quantization:
+        server_arg_updates["quantization"] = str(args.quantization)
+    if args.moe_runner_backend:
+        server_arg_updates["moe_runner_backend"] = str(args.moe_runner_backend)
 
     _apply_stage_factory_updates(
         config,

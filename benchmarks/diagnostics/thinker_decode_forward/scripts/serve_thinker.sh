@@ -41,6 +41,8 @@ _build_server_cmd() {
   [ "${CHUNKED_PREFILL_SIZE:-0}" -gt 0 ] 2>/dev/null && \
     cmd+=(--chunked-prefill-size "${CHUNKED_PREFILL_SIZE}")
   [ -n "${PER_STAGE_PROCESSES}" ] && cmd+=(--per-stage-processes)
+  [ -n "${QUANTIZATION}" ] && cmd+=(--quantization "${QUANTIZATION}")
+  [ -n "${MOE_RUNNER_BACKEND}" ] && cmd+=(--moe-runner-backend "${MOE_RUNNER_BACKEND}")
   printf '%s\0' "${cmd[@]}"
 }
 
@@ -72,6 +74,8 @@ if [ "${RUN_MODE}" = "docker" ]; then
   [ -n "${ENABLE_MIXED_CHUNK}" ] && INNER+=" --enable-mixed-chunk"
   [ "${CHUNKED_PREFILL_SIZE:-0}" -gt 0 ] 2>/dev/null && INNER+=" --chunked-prefill-size ${CHUNKED_PREFILL_SIZE}"
   [ -n "${PER_STAGE_PROCESSES}" ] && INNER+=" --per-stage-processes"
+  [ -n "${QUANTIZATION}" ] && INNER+=" --quantization ${QUANTIZATION}"
+  [ -n "${MOE_RUNNER_BACKEND}" ] && INNER+=" --moe-runner-backend ${MOE_RUNNER_BACKEND}"
   exec docker run --rm \
     --name "${CONTAINER_NAME}" \
     --gpus "\"device=${GPUS}\"" \
