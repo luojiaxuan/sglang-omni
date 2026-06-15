@@ -29,6 +29,7 @@ shape that fails to capture (e.g. an unexpected ``.item()`` host sync) is droppe
 eager, so correctness never depends on capture succeeding. Bit-identity vs eager is gated by
 ``tests/unit_test/moss_tts_local/test_vocoder_cuda_graph.py``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -115,10 +116,19 @@ class MossVocoderCudaGraphRunner:
             result = self._codec._decode_frame(static_codes, static_lengths)
             static_audio = result.audio
             static_audio_lengths = result.audio_lengths
-        self._graphs[t] = (graph, static_codes, static_lengths, static_audio, static_audio_lengths)
+        self._graphs[t] = (
+            graph,
+            static_codes,
+            static_lengths,
+            static_audio,
+            static_audio_lengths,
+        )
         logger.info(
             "Captured MOSS vocoder CUDA graph T=%d (B=%d) -> audio %s (%d cached)",
-            t, b, tuple(static_audio.shape), len(self._graphs),
+            t,
+            b,
+            tuple(static_audio.shape),
+            len(self._graphs),
         )
 
     @torch.no_grad()
@@ -128,7 +138,9 @@ class MossVocoderCudaGraphRunner:
         The caller MUST reset all codec slots after this returns (warmup advances per-slot state).
         """
         if self._sealed:
-            logger.warning("MossVocoderCudaGraphRunner.warmup called after seal; ignoring")
+            logger.warning(
+                "MossVocoderCudaGraphRunner.warmup called after seal; ignoring"
+            )
             return
         # Capture LARGEST T first. The graphs share one CUDA mempool to bound memory; capturing a
         # larger graph after a smaller one grows the pool and invalidates the earlier graph's
@@ -138,20 +150,29 @@ class MossVocoderCudaGraphRunner:
             if t in self._graphs:
                 continue
             if not self._eligible(t):
-                logger.warning("skip MOSS vocoder CG T=%d: outside [1, %d]", t, self._max_frames)
+                logger.warning(
+                    "skip MOSS vocoder CG T=%d: outside [1, %d]", t, self._max_frames
+                )
                 continue
             if len(self._graphs) >= self._max_graphs:
-                logger.warning("MOSS vocoder CG cap %d reached; skipping rest", self._max_graphs)
+                logger.warning(
+                    "MOSS vocoder CG cap %d reached; skipping rest", self._max_graphs
+                )
                 break
             try:
                 self._capture_t(t)
             except Exception as exc:  # best-effort; uncaptured T falls back to eager
                 self._graphs.pop(t, None)
-                logger.warning("MOSS vocoder CG capture failed for T=%d: %s; will use eager", t, exc)
+                logger.warning(
+                    "MOSS vocoder CG capture failed for T=%d: %s; will use eager",
+                    t,
+                    exc,
+                )
         self._sealed = True
         logger.info(
             "MOSS vocoder CUDA graphs sealed: %d T captured %s",
-            len(self._graphs), sorted(self._graphs.keys()),
+            len(self._graphs),
+            sorted(self._graphs.keys()),
         )
 
     def captured_frames(self) -> list[int]:

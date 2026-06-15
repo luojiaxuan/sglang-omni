@@ -7,6 +7,7 @@ sequences (so the state must advance correctly across steps) at varied active-sl
 exec_mask state gating must isolate slots) and T boundaries. Any PCM mismatch fails the gate -- the
 cut is dead; do NOT relax the comparison. GPU + the real MOSS-Audio-Tokenizer-v2 codec required.
 """
+
 from __future__ import annotations
 
 import os
@@ -54,7 +55,9 @@ def session_bundle():
     snaps = glob.glob(CODEC_GLOB)
     if not snaps:
         pytest.skip("MOSS-Audio-Tokenizer-v2 codec snapshot not found")
-    codec = AutoModel.from_pretrained(snaps[0], trust_remote_code=True).to("cuda").eval()
+    codec = (
+        AutoModel.from_pretrained(snaps[0], trust_remote_code=True).to("cuda").eval()
+    )
     n_vq = N_VQ
     vocab = _codebook_size(codec)
     session = _CodecStreamSession(
@@ -91,7 +94,9 @@ def _decode_chunks(session, slot_seqs, chunk_t):
 def test_some_graphs_captured(session_bundle):
     _, _, _, captured = session_bundle
     # If zero captured, the whole line is eager-only (no prize) -- surface it loudly.
-    assert captured, "no codec-decode CUDA graphs captured (all shapes fell back to eager)"
+    assert (
+        captured
+    ), "no codec-decode CUDA graphs captured (all shapes fell back to eager)"
 
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
@@ -100,7 +105,9 @@ def test_some_graphs_captured(session_bundle):
 def test_streaming_pcm_bit_identical(session_bundle, chunk_t, n_active):
     session, n_vq, vocab, captured = session_bundle
     if chunk_t not in captured:
-        pytest.skip(f"T={chunk_t} fell back to eager (not captured); nothing to compare")
+        pytest.skip(
+            f"T={chunk_t} fell back to eager (not captured); nothing to compare"
+        )
     torch.manual_seed(1000 * chunk_t + n_active)
     total = chunk_t * 3 + max(1, chunk_t // 2)  # multiple full chunks + a remainder
     slot_seqs = {
@@ -130,7 +137,9 @@ def test_graph_tracks_eager_across_chunkings(session_bundle, chunk_t):
     matches eager at the single T the other test exercises."""
     session, n_vq, vocab, captured = session_bundle
     if chunk_t not in captured:
-        pytest.skip(f"T={chunk_t} fell back to eager (not captured); nothing to compare")
+        pytest.skip(
+            f"T={chunk_t} fell back to eager (not captured); nothing to compare"
+        )
     torch.manual_seed(7)
     total = 75
     seq = {0: torch.randint(0, vocab, (n_vq, total), device="cuda", dtype=torch.long)}
