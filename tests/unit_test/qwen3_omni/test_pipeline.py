@@ -22,6 +22,11 @@ from sglang_omni.config import (
     build_stage_placement_plan,
     resolve_stage_factory_args,
 )
+from sglang_omni.models.ming_omni.config import (
+    MingOmniPipelineConfig,
+    MingOmniSpeechPipelineConfig,
+    MingOmniStreamingSpeechPipelineConfig,
+)
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -904,6 +909,24 @@ def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
                 )
                 == {}
             )
+
+
+def test_thinker_tp_disable_custom_all_reduce_uses_shared_config_hook() -> None:
+    classes = (
+        Qwen3OmniPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+        MingOmniPipelineConfig,
+        MingOmniSpeechPipelineConfig,
+        MingOmniStreamingSpeechPipelineConfig,
+    )
+
+    for cls in classes:
+        assert "tensor_parallel_server_args_overrides" not in cls.__dict__
+        assert cls.tensor_parallel_server_args_overrides(
+            stage_name="thinker",
+            tp_size=2,
+        ) == {"disable_custom_all_reduce": True}
 
 
 def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args() -> None:

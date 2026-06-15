@@ -580,6 +580,56 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     assert scheduler._abort_on_queued_limit(object()) is False
 
 
+def test_omni_scheduler_coalesce_stops_after_quiet_poll(monkeypatch) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._prefill_coalesce_window_s = 0.008
+    scheduler._prefill_coalesce_poll_s = 0.001
+    scheduler._prefill_coalesce_target = 32
+    scheduler._prefill_coalesce_min = 2
+    scheduler._prefill_coalesce_max_tokens = 0
+    scheduler._async_pending = None
+    scheduler.running_batch = SimpleNamespace(reqs=[])
+    scheduler.waiting_queue = [
+        SimpleNamespace(rid="req-1", origin_input_ids=[1]),
+        SimpleNamespace(rid="req-2", origin_input_ids=[1]),
+    ]
+    scheduler.recv_requests = lambda: []
+    scheduler._take_deferred_request_payloads = lambda: []
+    scheduler.process_input_requests = lambda _more: None
+    sleeps: list[float] = []
+    monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleeps.append)
+
+    scheduler._coalesce_prefill_window()
+
+    assert sleeps == [0.001]
+
+
+def test_omni_scheduler_tp_idle_collective_only_swallows_broadcast_failure(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.tp_group = SimpleNamespace(ranks=[7])
+    scheduler.tp_cpu_group = object()
+
+    class FakeFlag:
+        def item(self) -> int:
+            raise RuntimeError("local item failed")
+
+    monkeypatch.setattr(
+        omni_scheduler_module.torch,
+        "tensor",
+        lambda *_args, **_kwargs: FakeFlag(),
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module.torch.distributed,
+        "broadcast",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(RuntimeError, match="local item failed"):
+        scheduler._tp_inbox_is_idle_collective(0)
+
+
 def test_stage_output_cache_eviction_uses_lru_order() -> None:
     cache = StageOutputCache(max_size=2)
 

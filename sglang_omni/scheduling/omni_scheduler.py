@@ -350,8 +350,7 @@ class OmniScheduler:
         # wait for more queued requests so the first prefill batch is not
         # size-1. See _coalesce_prefill_window for the TP-safety argument.
         self._prefill_coalesce_window_s = (
-            max(env_float("SGLANG_OMNI_PREFILL_COALESCE_MS", default=0.0), 0.0)
-            / 1000.0
+            max(env_float("SGLANG_OMNI_PREFILL_COALESCE_MS", default=0.0), 0.0) / 1000.0
         )
         self._prefill_coalesce_poll_s = (
             max(env_float("SGLANG_OMNI_PREFILL_COALESCE_POLL_MS", default=1.0), 0.1)
@@ -420,11 +419,14 @@ class OmniScheduler:
 
         Engages only on the idle->prefill transition (no decode batch running
         and no in-flight async-decode step) and only while fewer than the target
-        number of requests are queued, so it never stalls active decode. Uses a
-        FIXED iteration count (not wall-clock) and a replicated break condition
-        (``waiting_queue`` length, which is identical across TP ranks after the
-        broadcast in ``recv_requests``) so every rank issues the same number of
-        broadcast collectives and stays in lockstep. No-op unless
+        number of requests are queued, so it never stalls active decode. It
+        stops at the first quiet poll where no new requests arrive, or earlier
+        when target/token budget trips, so moderate concurrency does not pay the
+        full window for an already-drained queue. Uses a FIXED iteration count
+        (not wall-clock) and replicated break conditions (``waiting_queue``
+        length plus the broadcast request list from ``recv_requests``) so every
+        rank issues the same number of broadcast collectives and stays in
+        lockstep. No-op unless
         ``SGLANG_OMNI_PREFILL_COALESCE_MS`` > 0.
         """
         window_s = getattr(self, "_prefill_coalesce_window_s", 0.0)
@@ -461,8 +463,9 @@ class OmniScheduler:
             time.sleep(poll_s)
             more = self.recv_requests()
             more.extend(self._take_deferred_request_payloads())
-            if more:
-                self.process_input_requests(more)
+            if not more:
+                break
+            self.process_input_requests(more)
 
     def _record_prefill_stats(self, batch: Any) -> None:
         """Accumulate prefill (extend) batch sizes and log a periodic summary.
@@ -516,16 +519,14 @@ class OmniScheduler:
         all ranks). Any failure returns False so the caller falls back to the
         always-correct ``broadcast_pyobj``.
         """
+        flag = torch.tensor([int(local_count)], dtype=torch.int64)
         try:
-            import torch
-
-            flag = torch.tensor([int(local_count)], dtype=torch.int64)
             torch.distributed.broadcast(
                 flag, src=self.tp_group.ranks[0], group=self.tp_cpu_group
             )
-            return int(flag.item()) == 0
         except Exception:
             return False
+        return int(flag.item()) == 0
 
     def _init_upstream_compat_flags(self, server_args: Any) -> None:
         self.enable_hisparse = bool(getattr(server_args, "enable_hisparse", False))
