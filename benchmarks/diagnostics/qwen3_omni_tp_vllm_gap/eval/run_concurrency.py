@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -82,9 +83,11 @@ def _score_instances(
         "score_raw_tail": "\n".join(out.splitlines()[-6:]),
     }
 
-SPACY_PY = "/mnt/taurus/home/jiaxuanluo/miniconda3/envs/spaCyEnv/bin/python"
-REPO_ROOT = "/mnt/taurus/home/jiaxuanluo/rasst-demo"
-AGENT_REL = "eval/streaming_sst/remote_omni_agent.py"
+EVAL_DIR = Path(__file__).resolve().parent
+PACKAGE_ROOT = EVAL_DIR.parent
+SPACY_PY = os.environ.get("SPACY_PY", sys.executable)
+REPO_ROOT = os.environ.get("RASST_REPO_ROOT") or os.environ.get("REPO_ROOT") or str(PACKAGE_ROOT)
+AGENT_REL = os.environ.get("REMOTE_OMNI_AGENT", str(EVAL_DIR / "remote_omni_agent.py"))
 
 
 def _read_lines(path: Path) -> List[str]:
@@ -96,6 +99,32 @@ def _shard_round_robin(items: List[str], n: int) -> List[List[int]]:
     for idx in range(len(items)):
         shards[idx % n].append(idx)
     return [s for s in shards if s]
+
+
+def _localize_sources(sources: List[str], data_dir: Path) -> List[str]:
+    """Map archived absolute wav paths to files inside a prepared data dir."""
+    seg_dir = data_dir / "seg"
+    localized: List[str] = []
+    remapped = 0
+    for item in sources:
+        path = Path(item)
+        if path.is_file():
+            localized.append(str(path))
+            continue
+        rel_candidate = data_dir / item
+        if not path.is_absolute() and rel_candidate.is_file():
+            localized.append(str(rel_candidate))
+            remapped += 1
+            continue
+        seg_candidate = seg_dir / path.name
+        if seg_candidate.is_file():
+            localized.append(str(seg_candidate))
+            remapped += 1
+            continue
+        localized.append(item)
+    if remapped:
+        print(f"[runner] localized {remapped}/{len(sources)} source paths under {data_dir}")
+    return localized
 
 
 def main() -> int:
@@ -122,14 +151,13 @@ def main() -> int:
     ap.add_argument("--source-lang", default="English")
     ap.add_argument("--target-lang", default="Chinese")
 
-    ap.add_argument("--simuleval-bin", default=f"{os.path.dirname(SPACY_PY)}/simuleval")
+    ap.add_argument("--simuleval-bin", default=os.environ.get("SIMULEVAL_BIN") or shutil.which("simuleval") or "simuleval")
     ap.add_argument("--seg-tmp-base", default="/dev/shm/remote_omni_eval")
 
     # Optional inline StreamLAAL/BLEU scoring (FBK stream_laal_term.py, no glossary).
     ap.add_argument("--score", action="store_true")
-    ap.add_argument("--fbk-tool", default="/mnt/taurus/home/jiaxuanluo/FBK-fairseq/"
-                    "examples/speech_to_text/simultaneous_translation/scripts/stream_laal_term.py")
-    ap.add_argument("--mwer-root", default="/mnt/taurus/home/jiaxuanluo/mwerSegmenter")
+    ap.add_argument("--fbk-tool", default=os.environ.get("FBK_TOOL", ""))
+    ap.add_argument("--mwer-root", default=os.environ.get("MWERSEGMENTER_ROOT", ""))
     args = ap.parse_args()
 
     if args.data_dir:
@@ -150,6 +178,8 @@ def main() -> int:
     if args.limit and args.limit < len(sources):
         sources = sources[: args.limit]
         targets = targets[: args.limit]
+    if args.data_dir:
+        sources = _localize_sources(sources, Path(args.data_dir))
 
     n = max(1, min(args.concurrency, len(sources)))
     if n != args.concurrency:
