@@ -3,11 +3,11 @@
 
 Reuses the exact same prompt N times across a sweep of concurrency levels so
 operators can measure how same-prompt multi-rollout (and, more generally,
-many-concurrent-session) traffic scales: per-level requests/s, prefill
-tokens/s, and p50/p95/p99 latency, plus any profiler events the server emits.
-This is a pressure / diagnostics tool for serving (e.g. issue #760), not a
-model-capability eval -- hence ``benchmarks/stress_tests/`` rather than
-``benchmarks/eval/``.
+many-concurrent-session) traffic scales: per-level requests/s, output tokens/s,
+prompt-token counts, and p50/p95/p99 latency, plus any profiler events the
+server emits. This is a pressure / diagnostics tool for serving (e.g. issue
+#760), not a model-capability eval -- hence ``benchmarks/stress_tests/`` rather
+than ``benchmarks/eval/``.
 
 Run from the repo root (imports are rooted at ``benchmarks.``)::
 
