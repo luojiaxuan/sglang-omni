@@ -268,6 +268,41 @@ SGLANG_JIT_DEEPGEMM_PRECOMPILE=1 sgl-omni serve \
   --port 8008
 ```
 
+### General online FP8 (W8A8) from a BF16 checkpoint — H100 / H200 / B200
+
+You can also serve the **standard BF16 checkpoint** with `--quantization fp8` to
+quantize the thinker MoE (and dense) weights to per-tensor `float8_e4m3fn` at load
+time — no native FP8 checkpoint required. This halves expert-weight memory/traffic
+and runs on any Hopper+ GPU (H100/H200/B200). The Omni backend policy detects that
+there is no native block-FP8 checkpoint and pins the portable **triton** fused-MoE
+FP8 runner (it does not require CUTLASS), distinct from the native-checkpoint path
+above which selects CUTLASS.
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --quantization fp8 \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
+Notes:
+
+- **Where it helps:** the win scales with how memory-bandwidth-bound decode is.
+  On bandwidth-limited GPUs (e.g. A6000/H100/H200) reducing expert-weight traffic
+  is expected to speed up the memory-bound MoE decode. **On B200 (~8 TB/s HBM3e)
+  it currently does *not* speed up thinker decode** (≈7–10% slower) because the
+  `fp8_w8a8` fused-MoE kernel ships no tuned B200 config and W8A8 adds activation-
+  quant overhead; see
+  `benchmarks/diagnostics/thinker_decode_forward/FINDINGS_B200.md`.
+- **Build tool:** the online-FP8 quant kernels JIT-compile via `ninja` — ensure it
+  is installed and on `PATH`.
+- **First-run JIT race under TP:** the FP8 quant kernels compile lazily on the
+  first prefill, which can race the NCCL collective and crash the thinker. Warm the
+  (persistent) JIT cache once with
+  `benchmarks/diagnostics/thinker_decode_forward/scripts/prewarm_fp8_jit.sh`
+  before serving load.
+
 ### Image and Text Input
 
 Send an image with a text question to get both text and audio responses. Set `"modalities": ["text", "audio"]` to enable audio output.
