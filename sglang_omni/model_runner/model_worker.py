@@ -381,6 +381,21 @@ def _apply_model_worker_backend_policy(
         is_qwen3_omni_arch
         and effective_quantization == "fp8"
         and has_moe
+        and moe_runner_backend == "auto"
+        and not has_native_fp8_block_quant
+    ):
+        # Online (runtime) FP8 from a BF16 checkpoint: weights are quantized at
+        # load time to per-tensor float8_e4m3fn (no block-FP8 scales), so the
+        # CUTLASS / DeepGEMM block-quant MoE paths do not apply. Pin the triton
+        # fused-MoE FP8 runner -- portable across B200/H100/H200 -- which halves
+        # expert weight traffic, the dominant cost of memory-bound decode (#760).
+        server_args.moe_runner_backend = "triton"
+        moe_runner_backend = server_args.moe_runner_backend
+
+    if (
+        is_qwen3_omni_arch
+        and effective_quantization == "fp8"
+        and has_moe
         and moe_runner_backend == "cutlass"
     ):
         if not has_native_fp8_block_quant:
@@ -404,11 +419,11 @@ def _apply_model_worker_backend_policy(
     if (
         model_arch_override == "Qwen3OmniTalker"
         and effective_quantization == "fp8"
-        and has_native_fp8_block_quant
         and fp8_gemm_backend in (None, "auto")
     ):
         # Projected talker prefill has request-dependent FP8 dense GEMM shapes
         # outside decode CUDA graph replay; DeepGEMM can otherwise JIT there.
+        # Applies to both native block-FP8 and online (runtime) FP8 checkpoints.
         server_args.fp8_gemm_runner_backend = "triton"
         fp8_gemm_backend = server_args.fp8_gemm_runner_backend
 
@@ -417,6 +432,7 @@ def _apply_model_worker_backend_policy(
         f"Configured SGLang backend policy: arch={model_arch_override} "
         f"effective_quantization={effective_quantization} "
         f"server_quantization={server_quantization} "
+        f"native_fp8_block_quant={has_native_fp8_block_quant} "
         f"moe_runner_backend={moe_runner_backend} "
         f"fp8_gemm_backend={fp8_gemm_backend}"
     )

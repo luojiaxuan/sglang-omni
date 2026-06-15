@@ -128,11 +128,64 @@ def _model_config(
             expected_fp8_gemm_backend="auto",
         ),
         BackendPolicyCase(
-            name="server_fp8_override_without_native_block_quant_stays_auto",
+            # Online (runtime) FP8 from a BF16 checkpoint: no native block-FP8
+            # weights, so the talker MoE pins triton fused-MoE FP8 and dense GEMM
+            # defaults to triton (avoids DeepGEMM JIT on prefill shapes).
+            name="online_fp8_talker_uses_triton_moe_and_dense_gemm",
             model_quantization=None,
             server_quantization="fp8",
             native_fp8_block_quant=False,
             model_arch_override="Qwen3OmniTalker",
+            has_moe=True,
+            initial_moe_backend="auto",
+            initial_fp8_gemm_backend="auto",
+            ep_size=1,
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="triton",
+            expected_fp8_gemm_backend="triton",
+        ),
+        BackendPolicyCase(
+            # Thinker decode is the #760 target: online FP8 MoE -> triton, dense
+            # GEMM stays auto (decode dense GEMM is CUDA-graph captured).
+            name="online_fp8_thinker_uses_triton_moe_keeps_dense_gemm_auto",
+            model_quantization=None,
+            server_quantization="fp8",
+            native_fp8_block_quant=False,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            has_moe=True,
+            initial_moe_backend="auto",
+            initial_fp8_gemm_backend="auto",
+            ep_size=1,
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="triton",
+            expected_fp8_gemm_backend="auto",
+        ),
+        BackendPolicyCase(
+            # The general online-FP8 path must not depend on CUTLASS support, so
+            # it works on H100/H200 (and any Hopper+), not just B200.
+            name="online_fp8_thinker_triton_independent_of_cutlass_support",
+            model_quantization=None,
+            server_quantization="fp8",
+            native_fp8_block_quant=False,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            has_moe=True,
+            initial_moe_backend="auto",
+            initial_fp8_gemm_backend="auto",
+            ep_size=1,
+            cutlass_supported=False,
+            expected_quantization="fp8",
+            expected_moe_backend="triton",
+            expected_fp8_gemm_backend="auto",
+        ),
+        BackendPolicyCase(
+            # The general online-FP8 MoE pin is scoped to Qwen3-Omni archs only.
+            name="online_fp8_non_qwen_omni_arch_stays_auto",
+            model_quantization=None,
+            server_quantization="fp8",
+            native_fp8_block_quant=False,
+            model_arch_override="OtherMoEForCausalLM",
             has_moe=True,
             initial_moe_backend="auto",
             initial_fp8_gemm_backend="auto",
