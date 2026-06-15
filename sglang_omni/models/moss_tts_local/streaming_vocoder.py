@@ -211,9 +211,21 @@ class _CodecStreamSession:
         with torch.no_grad():
             graphed = None
             if self._cg_runner is not None:
-                graphed = self._cg_runner.decode_step(
-                    codes_step, codes_lengths, exec_mask
-                )
+                try:
+                    graphed = self._cg_runner.decode_step(
+                        codes_step, codes_lengths, exec_mask
+                    )
+                except Exception:
+                    # Note: (Jiaxin Deng) a replay-path failure leaves THIS step's per-slot streaming
+                    # state indeterminate (replay advances it; CUDA-graph errors surface async), so it
+                    # can't be bit-safely eager-retried. Disable the runner so every FUTURE step degrades
+                    # to eager (bit-identical from live state) -- one transient failure must not cascade.
+                    # This step's participants abort upstream (bit-safe: never emit a non-identical output).
+                    logger.exception(
+                        "MOSS vocoder CUDA-graph replay failed; disabling runner, serving eager from here"
+                    )
+                    self._cg_runner = None
+                    raise
             if graphed is not None:
                 audio, audio_lengths = graphed
             else:

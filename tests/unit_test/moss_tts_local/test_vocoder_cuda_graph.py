@@ -154,6 +154,44 @@ def test_graph_tracks_eager_across_chunkings(session_bundle, chunk_t):
     )
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
+def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_bundle):
+    """A replay-path exception must not crash or cascade: the runner is disabled (every future step
+    degrades to eager) and that eager output is bit-identical to a pure-eager reference. The failing
+    step itself raises (its per-slot state is indeterminate after a partial replay) -- bit-safe, we
+    never emit a non-identical output. This is the default-on robustness gate for replay failures.
+    """
+    session, n_vq, vocab, captured = session_bundle
+    chunk_t = next((t for t in (5, 25) if t in captured), None)
+    if chunk_t is None:
+        pytest.skip("need T=5 or T=25 captured")
+    torch.manual_seed(4242)
+    seq = {
+        0: torch.randint(0, vocab, (n_vq, chunk_t * 3), device="cuda", dtype=torch.long)
+    }
+    runner = session._cg_runner
+    session._cg_runner = None  # pure-eager reference
+    eager_ref = _decode_chunks(session, seq, chunk_t)[0]
+
+    session._cg_runner = runner  # graph path, but make the next replay blow up
+    session._reset_slots([0])
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated replay failure")
+
+    runner.decode_step = boom
+    with pytest.raises(RuntimeError):
+        session.step({0: seq[0][:, :chunk_t]})
+    assert session._cg_runner is None, "runner must be disabled after a replay failure"
+
+    # session is now eager-only -> a fresh decode must be bit-identical to the pure-eager reference
+    after = _decode_chunks(session, seq, chunk_t)[0]
+    assert torch.equal(after, eager_ref), (
+        "post-failure eager output not bit-identical to eager reference: "
+        f"max|delta|={(after - eager_ref).abs().max().item():.3e}"
+    )
+
+
 if __name__ == "__main__":
     import sys
 
