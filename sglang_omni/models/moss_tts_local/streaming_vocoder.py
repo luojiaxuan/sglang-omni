@@ -129,6 +129,9 @@ class _CodecStreamSession:
         self._reset_slots(list(range(self._batch_size)))
         return self._cg_runner.captured_frames()
 
+    def has_cuda_graph_runner(self) -> bool:
+        return self._cg_runner is not None
+
     def acquire(self) -> int | None:
         if not self._free_stream_slots:
             return None
@@ -347,6 +350,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             # Note: (Jiaxin Deng) capture graphs ONCE here -- codec loaded, GPU quiescent, before the
             # serving loop (never capture mid-serve). env-gated (default path unchanged); best-effort -> eager.
             if _vocoder_cuda_graph_enabled():
+                captured: list[int] = []
                 try:
                     captured = self.warmup_cuda_graph()
                     logger.info(
@@ -356,6 +360,21 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                     logger.exception(
                         "MOSS vocoder CUDA-graph warmup failed; serving with eager vocoder"
                     )
+                # Note: (Jiaxin Deng) the warmed graphs live on self._session (its runner); the serving
+                # loop reuses that SAME session via _ensure_session. This hinges on super().start() below
+                # running the BLOCKING serving loop on this object -- if a refactor made it non-blocking, or
+                # swapped/recreated the session, the warmed graphs would be silently dropped. The assert
+                # pins the precondition; the warning guards against a serving session without the runner.
+                if captured:
+                    assert (
+                        self._session is not None
+                    ), "vocoder warmup captured graphs but left no session for the (blocking) serving loop"
+                    if not self._session.has_cuda_graph_runner():
+                        logger.warning(
+                            "MOSS vocoder CUDA graphs warmed (T=%s) but the serving session has no runner "
+                            "attached; graphs will go unused -- check session lifecycle in start()/_ensure_session",
+                            captured,
+                        )
             super().start()
         finally:
             self._close_streaming_session()
