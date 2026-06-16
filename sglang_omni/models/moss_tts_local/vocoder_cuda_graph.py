@@ -7,7 +7,7 @@ overhead: under streaming the scheduler emits ~one decode per audio frame, so th
 is paid thousands of times per request. Capturing the decode into a CUDA graph and replaying it
 collapses those launches into one replay.
 
-Adapted from the Higgs vocoder CUDA-graph runner (sgl #581/#729), with two MOSS specifics:
+Adapted from the Higgs vocoder CUDA-graph runner, with two MOSS specifics:
 
 1. **B is fixed at the full slot width (``stream_slots + offline_slots``, default 16); only T varies.**
    The MOSS streaming step always builds a ``[n_vq, B_full, T]`` tensor and selects active slots via
@@ -138,23 +138,29 @@ class MossVocoderCudaGraphRunner:
         self._graphs: dict[int, tuple] = {}
         self._pool = None
         self._sealed = False
+        # Reused all-active mask for the warmup-only state reset (avoid re-allocating it per captured T).
+        self._reset_mask = torch.ones(
+            self._batch_size, dtype=torch.bool, device=self._device
+        )
 
     def _eligible(self, t: int) -> bool:
         return 1 <= t <= self._max_frames
 
-    def _enough_free_vram(self) -> bool:
+    def _enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
-        return free >= self._min_free_bytes
+        return free >= self._min_free_bytes, free
 
     @torch.no_grad()
     def _reset_state(self) -> None:
-        """Reset every streaming module's per-slot state to offset 0 (in-place)."""
-        reset_mask = torch.ones(self._batch_size, dtype=torch.bool, device=self._device)
+        """Reset every streaming module's per-slot offset/positions to 0 (in-place). Warmup-only: runs
+        between captures, never on the serving hot path, so the codec's full state.reset (which also
+        zeros stale K/V rows that the reset offsets/positions already mask out as invalid) is a
+        one-time startup cost, not per-step."""
 
         def _r(module) -> None:
             state = getattr(module, "_streaming_state", None)
             if state is not None:
-                state.reset(reset_mask.to(state.device))
+                state.reset(self._reset_mask.to(state.device))
 
         self._codec.apply(_r)
 
@@ -230,8 +236,8 @@ class MossVocoderCudaGraphRunner:
                 break
             # Note: (Jiaxin Deng) VRAM headroom guard -- skip capture (-> eager) rather than risk OOM on
             # a tight box. Checked per-T because each capture allocates; free only drops through the loop.
-            if not self._enough_free_vram():
-                free, _ = torch.cuda.mem_get_info(self._device)
+            enough, free = self._enough_free_vram()
+            if not enough:
                 logger.warning(
                     "MOSS vocoder CG: free VRAM %.1fGB < %.1fGB headroom; skipping T=%d+ (eager)",
                     free / 1024**3,
@@ -269,10 +275,12 @@ class MossVocoderCudaGraphRunner:
 
         Sets the live exec_mask (host-side, into the codec's fixed mask buffers) so the captured
         torch.where gating advances only active slots, copies codes into the static input, replays,
-        and returns cloned (audio, audio_lengths) static outputs. ``codes_lengths`` is intentionally
-        NOT copied -- capture used all-T lengths and active slots are full-T, so the static lengths
-        already match; inactive slots are gated out by exec_mask. NOT re-entrant (single static buffer
-        per T); the streaming scheduler drains on one serial loop.
+        and returns the static (audio, audio_lengths) output buffers DIRECTLY (no clone). The caller
+        must consume the active slots before the next replay overwrites them (single static buffer per
+        T); the streaming scheduler does this immediately (one batched D2H per step) on its serial
+        loop. ``codes_lengths`` is intentionally NOT copied into the static input: capture used all-T
+        lengths and active slots are full-T so the static lengths already match, and inactive slots
+        are gated out by exec_mask, so the active-slot output is bit-exact either way.
         """
         if not codes_step.is_cuda:
             return None
@@ -283,9 +291,8 @@ class MossVocoderCudaGraphRunner:
         if entry is None:
             return None
         graph, static_codes, static_lengths, static_audio, static_audio_lengths = entry
-        # Replicate eager inputs exactly (codes, lengths, exec_mask) so replay is bit-for-bit identical.
+        # Replicate eager inputs exactly (codes + live exec_mask) so replay is bit-for-bit identical.
         self._codec._set_streaming_exec_mask(exec_mask)
         static_codes.copy_(codes_step)
-        static_lengths.copy_(codes_lengths)
         graph.replay()
-        return static_audio.clone(), static_audio_lengths.clone()
+        return static_audio, static_audio_lengths

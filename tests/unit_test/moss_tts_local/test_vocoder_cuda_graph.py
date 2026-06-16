@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""命门 (lifeline) bit-identity gate for the MOSS streaming-vocoder codec-decode CUDA graph.
+"""Bit-identity test for the MOSS streaming-vocoder codec-decode CUDA graph.
 
-The CUDA-graph replay MUST be bit-for-bit identical to the eager codec decode, or streaming audio
-changes. Because the codec is STATEFUL (per-slot causal offset/KV), the test decodes MULTI-CHUNK
-sequences (so the state must advance correctly across steps) at varied active-slot counts (so the
-exec_mask state gating must isolate slots) and T boundaries. Any PCM mismatch fails the gate -- the
-cut is dead; do NOT relax the comparison. GPU + the real MOSS-Audio-Tokenizer-v2 codec required.
+The CUDA-graph replay must be bit-for-bit identical to the eager codec decode (torch.equal, maxdelta
+0), or streaming audio changes. Because the codec is stateful (per-slot causal offset/KV), the test
+decodes multi-chunk sequences (so the state must advance correctly across steps) at varied active-slot
+counts (so the exec_mask state gating must isolate slots) and T boundaries. Any PCM mismatch fails the
+test; do not relax the comparison. GPU and the real MOSS-Audio-Tokenizer-v2 codec required.
 """
 
 from __future__ import annotations
