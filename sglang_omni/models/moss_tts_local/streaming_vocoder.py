@@ -512,8 +512,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         if override:
             frames = [int(x) for x in override.replace(",", " ").split()]
         else:
-            # Data-driven broad-exact set from measured per-T serving frequency (covers ~87% of steps
-            # vs ~45% structural, near-flat VRAM, +20% c8). Config-specific; see PR description.
+            # Broad-exact small-T set (measured per-T serving frequency). The T=max_step_frames cap is
+            # excluded (biggest single graph, only ~1.04x offline-lane) to shrink the warmup VRAM peak.
             join_floor = max(
                 1,
                 min(self._default_initial_chunk_frames or 5, self._stream_chunk_frames),
@@ -534,7 +534,6 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 join_floor,
                 self._default_initial_chunk_frames or join_floor,
                 self._stream_chunk_frames,
-                self._max_step_frames,
             ]
         return sorted({t for t in frames if 1 <= t <= self._max_step_frames})
 
