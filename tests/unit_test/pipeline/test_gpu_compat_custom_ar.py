@@ -65,9 +65,7 @@ def test_should_disable_with_no_or_single_gpu(monkeypatch) -> None:
 def test_disabled_when_pynvml_unavailable(monkeypatch) -> None:
     _patch_pynvml(monkeypatch, None)
     assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1], env={}) is None
-    assert (
-        gpu_compat.should_disable_thinker_custom_all_reduce([0, 1], env={}) is True
-    )
+    assert gpu_compat.should_disable_thinker_custom_all_reduce([0, 1], env={}) is True
 
 
 def test_enabled_on_full_p2p_mesh(monkeypatch) -> None:
@@ -101,6 +99,4 @@ def test_disabled_on_nvml_errors(monkeypatch) -> None:
 def test_disabled_when_p2p_status_api_missing(monkeypatch) -> None:
     _patch_pynvml(monkeypatch, _FakeP2PNVML(drop_status_fn=True))
     assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1], env={}) is None
-    assert (
-        gpu_compat.should_disable_thinker_custom_all_reduce([0, 1], env={}) is True
-    )
+    assert gpu_compat.should_disable_thinker_custom_all_reduce([0, 1], env={}) is True
