@@ -27,16 +27,31 @@ def test_stage11_fp8_tp2_fixture_uses_safe_startup_args(monkeypatch) -> None:
         next(generator)
 
     extra_args = captured["extra_args"]
-    assert extra_args[extra_args.index("--thinker-mem-fraction-static") + 1] == "0.38"
-    assert extra_args[extra_args.index("--talker-mem-fraction-static") + 1] == "0.18"
-    assert extra_args[extra_args.index("--thinker-cuda-graph") + 1] == "off"
-    assert extra_args[extra_args.index("--partial-start-min-chunks") + 1] == "3"
+    assert (
+        extra_args[extra_args.index("--thinker-mem-fraction-static") + 1]
+        == model_conftest.QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION_STATIC
+    )
+    assert (
+        extra_args[extra_args.index("--talker-mem-fraction-static") + 1]
+        == model_conftest.QWEN3_OMNI_FP8_TP2_TALKER_MEM_FRACTION_STATIC
+    )
+    assert (
+        extra_args[extra_args.index("--thinker-cuda-graph") + 1]
+        == model_conftest.QWEN3_OMNI_FP8_TP2_THINKER_CUDA_GRAPH
+    )
+    assert (
+        extra_args[extra_args.index("--partial-start-min-chunks") + 1]
+        == model_conftest.QWEN3_OMNI_FP8_TP2_PARTIAL_START_MIN_CHUNKS
+    )
 
 
 def test_stage11_videoamme_config_reduces_payload(monkeypatch, tmp_path_factory) -> None:
-    monkeypatch.delenv("STAGE11_SWEEP_VIDEO_MIN_PIXELS", raising=False)
-    monkeypatch.delenv("STAGE11_SWEEP_VIDEO_MAX_PIXELS", raising=False)
-    monkeypatch.delenv("STAGE11_SWEEP_TALKER_PREFILL_USER_CONTEXT", raising=False)
+    monkeypatch.delenv(stage11.STAGE11_VIDEO_MIN_PIXELS_ENV, raising=False)
+    monkeypatch.delenv(stage11.STAGE11_VIDEO_MAX_PIXELS_ENV, raising=False)
+    monkeypatch.delenv(
+        stage11.STAGE11_TALKER_PREFILL_USER_CONTEXT_ENV,
+        raising=False,
+    )
     captured: dict[str, object] = {}
 
     async def fake_run_videoamme_eval(config, compute_wer: bool):
@@ -57,13 +72,15 @@ def test_stage11_videoamme_config_reduces_payload(monkeypatch, tmp_path_factory)
     assert config.video_min_pixels == 6_272
     assert config.video_max_pixels == 6_272
     assert config.warmup == 0
-    assert config.extra_request_params == {"talker_prefill_user_context": False}
+    assert config.extra_request_params == {
+        stage11.STAGE11_TALKER_PREFILL_USER_CONTEXT_PARAM: False
+    }
 
 
 def test_stage11_videoamme_config_sweep_env_overrides(monkeypatch) -> None:
-    monkeypatch.setenv("STAGE11_SWEEP_VIDEO_MIN_PIXELS", "12544")
-    monkeypatch.setenv("STAGE11_SWEEP_VIDEO_MAX_PIXELS", "25088")
-    monkeypatch.setenv("STAGE11_SWEEP_TALKER_PREFILL_USER_CONTEXT", "true")
+    monkeypatch.setenv(stage11.STAGE11_VIDEO_MIN_PIXELS_ENV, "12544")
+    monkeypatch.setenv(stage11.STAGE11_VIDEO_MAX_PIXELS_ENV, "25088")
+    monkeypatch.setenv(stage11.STAGE11_TALKER_PREFILL_USER_CONTEXT_ENV, "true")
 
     video_min_pixels, video_max_pixels, extra_request_params = (
         stage11._stage11_video_request_options()
@@ -71,4 +88,6 @@ def test_stage11_videoamme_config_sweep_env_overrides(monkeypatch) -> None:
 
     assert video_min_pixels == 12_544
     assert video_max_pixels == 25_088
-    assert extra_request_params == {"talker_prefill_user_context": True}
+    assert extra_request_params == {
+        stage11.STAGE11_TALKER_PREFILL_USER_CONTEXT_PARAM: True
+    }

@@ -50,6 +50,12 @@ ASR_DEVICE = "cuda:0"
 STAGE11_VIDEO_MIN_PIXELS = 6_272
 STAGE11_VIDEO_MAX_PIXELS = 6_272
 STAGE11_TALKER_PREFILL_USER_CONTEXT = False
+STAGE11_VIDEO_MIN_PIXELS_ENV = "STAGE11_SWEEP_VIDEO_MIN_PIXELS"
+STAGE11_VIDEO_MAX_PIXELS_ENV = "STAGE11_SWEEP_VIDEO_MAX_PIXELS"
+STAGE11_TALKER_PREFILL_USER_CONTEXT_ENV = (
+    "STAGE11_SWEEP_TALKER_PREFILL_USER_CONTEXT"
+)
+STAGE11_TALKER_PREFILL_USER_CONTEXT_PARAM = "talker_prefill_user_context"
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
@@ -92,14 +98,14 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _stage11_video_request_options() -> tuple[int, int, dict[str, bool]]:
     video_min_pixels = int(
-        os.getenv("STAGE11_SWEEP_VIDEO_MIN_PIXELS", str(STAGE11_VIDEO_MIN_PIXELS))
+        os.getenv(STAGE11_VIDEO_MIN_PIXELS_ENV, str(STAGE11_VIDEO_MIN_PIXELS))
     )
     video_max_pixels = int(
-        os.getenv("STAGE11_SWEEP_VIDEO_MAX_PIXELS", str(STAGE11_VIDEO_MAX_PIXELS))
+        os.getenv(STAGE11_VIDEO_MAX_PIXELS_ENV, str(STAGE11_VIDEO_MAX_PIXELS))
     )
     extra_request_params = {
-        "talker_prefill_user_context": _env_bool(
-            "STAGE11_SWEEP_TALKER_PREFILL_USER_CONTEXT",
+        STAGE11_TALKER_PREFILL_USER_CONTEXT_PARAM: _env_bool(
+            STAGE11_TALKER_PREFILL_USER_CONTEXT_ENV,
             STAGE11_TALKER_PREFILL_USER_CONTEXT,
         )
     }

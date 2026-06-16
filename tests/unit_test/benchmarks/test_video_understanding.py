@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 from benchmarks.tasks.video_understanding import make_video_send_fn
 
+_TALKER_PREFILL_USER_CONTEXT_PARAM = "talker_prefill_user_context"
+
 
 class _FakeResponse:
     async def __aenter__(self):
@@ -43,7 +45,7 @@ def test_video_send_fn_merges_extra_request_params() -> None:
             "http://localhost/v1/chat/completions",
             video_min_pixels=6_272,
             video_max_pixels=6_272,
-            extra_request_params={"talker_prefill_user_context": False},
+            extra_request_params={_TALKER_PREFILL_USER_CONTEXT_PARAM: False},
         )
         result = await send_fn(
             session,
@@ -60,4 +62,4 @@ def test_video_send_fn_merges_extra_request_params() -> None:
     payload = asyncio.run(_run())
     assert payload["video_min_pixels"] == 6_272
     assert payload["video_max_pixels"] == 6_272
-    assert payload["talker_prefill_user_context"] is False
+    assert payload[_TALKER_PREFILL_USER_CONTEXT_PARAM] is False
