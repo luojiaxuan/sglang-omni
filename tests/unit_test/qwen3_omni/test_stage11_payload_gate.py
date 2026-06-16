@@ -54,8 +54,8 @@ def test_stage11_videoamme_config_reduces_payload(monkeypatch, tmp_path_factory)
     config = captured["config"]
     assert captured["compute_wer"] is False
     assert artifacts.per_sample == []
-    assert config.video_min_pixels == 6_272
-    assert config.video_max_pixels == 6_272
+    assert config.video_min_pixels == 5_488
+    assert config.video_max_pixels == 5_488
     assert config.warmup == 0
     assert config.extra_request_params == {"talker_prefill_user_context": False}
 
