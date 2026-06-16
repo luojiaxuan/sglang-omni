@@ -41,8 +41,8 @@ def test_video_send_fn_merges_extra_request_params() -> None:
         send_fn = make_video_send_fn(
             "qwen3-omni",
             "http://localhost/v1/chat/completions",
-            video_min_pixels=5_488,
-            video_max_pixels=5_488,
+            video_min_pixels=6_272,
+            video_max_pixels=6_272,
             extra_request_params={"talker_prefill_user_context": False},
         )
         result = await send_fn(
@@ -58,6 +58,6 @@ def test_video_send_fn_merges_extra_request_params() -> None:
         return session.payload
 
     payload = asyncio.run(_run())
-    assert payload["video_min_pixels"] == 5_488
-    assert payload["video_max_pixels"] == 5_488
+    assert payload["video_min_pixels"] == 6_272
+    assert payload["video_max_pixels"] == 6_272
     assert payload["talker_prefill_user_context"] is False
