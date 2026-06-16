@@ -101,7 +101,7 @@ class _CodecStreamSession:
         )
 
         # Patch the codec attention cache to an in-place write so the graph can capture it
-        # (bit-identical to eager). Cache-storage fix by CloudRipple (codec team), #811.
+        # (bit-identical to eager).
         patch_codec_attention_cache_for_cuda_graph(self._codec)
         if self._cg_runner is None:
             # Scheduler owns the capture shape range (max_frames = the largest T it asks for), rather
@@ -216,7 +216,7 @@ class _CodecStreamSession:
                     result = self._codec._decode_frame(codes_step, codes_lengths)
                     audio, audio_lengths = result.audio, result.audio_lengths
             # One batched D2H per step. A graph replay error can surface async HERE (not in
-            # decode_step), so materialization stays inside the replay guard (#247).
+            # decode_step), so materialization stays inside the replay guard.
             audio_cpu = audio[slots].detach().to("cpu", torch.float32)
             lengths_cpu = audio_lengths[slots].detach().to("cpu")
         except Exception:

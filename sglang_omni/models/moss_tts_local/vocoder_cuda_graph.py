@@ -58,8 +58,8 @@ def _cuda_graph_update_streaming_cache(
 
 
 def patch_codec_attention_cache_for_cuda_graph(codec) -> None:
-    """Rebind the decoder streaming attention cache update to an in-place write (stable address) so a
-    CUDA graph can capture it. Cache-storage fix by CloudRipple (codec team), #811."""
+    """Rebind the decoder streaming attention cache update to an in-place write (stable address,
+    value-identical to eager) so a CUDA graph can capture it."""
     for module in _decoder_attention_modules(codec):
         update_cache = getattr(module, "_update_streaming_cache", None)
         if not callable(update_cache):
