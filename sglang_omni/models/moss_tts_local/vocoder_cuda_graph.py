@@ -1,34 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA graph runner for the MOSS-TTS-Local streaming vocoder (codec) decode.
-
-The streaming codec decode (``_CodecStreamSession.step`` -> ``codec._decode_frame``) is a
-RVQ dequant -> ConvTranspose decoder stack that is tiny per call and dominated by kernel-launch
-overhead: under streaming the scheduler emits ~one decode per audio frame, so the per-launch floor
-is paid thousands of times per request. Capturing the decode into a CUDA graph and replaying it
-collapses those launches into one replay.
-
-Adapted from the Higgs vocoder CUDA-graph runner, with two MOSS specifics:
-
-1. **B is fixed at the full slot width (``stream_slots + offline_slots``, default 16); only T varies.**
-   The MOSS streaming step always builds a ``[n_vq, B_full, T]`` tensor and selects active slots via
-   ``exec_mask`` (vs Higgs capturing B=1 only). So we capture **one graph per T**, B fixed -- no
-   bucketing over B, no padding (the ConvTranspose receptive field makes padding non-bit-exact).
-
-2. **The codec decode is STATEFUL** (per-slot causal offset/KV under ``codec.streaming()``), gated by
-   ``exec_mask`` via ``torch.where`` (e.g. ``offset = where(exec_mask, offset+T, offset)``). So:
-   - We capture with ``exec_mask`` all-active; ``_set_streaming_exec_mask`` (a host-side in-place copy
-     into the modules' fixed mask buffers) is called BEFORE replay with the real mask, so the captured
-     ``torch.where`` reads the live mask and advances ONLY active slots' state -- inactive (paused/free)
-     slots are preserved.
-   - Warmup + capture advance state, so the caller MUST reset all slots after ``warmup()`` (see
-     ``_CodecStreamSession``); serving then advances from clean state.
-
-Capture happens ONCE at warmup (GPU quiescent) then the runner is sealed -- never captures during
-serving (live capture corrupts the co-located AR stage's graph mempool). Capture is best-effort: any
-shape that fails to capture (e.g. an unexpected ``.item()`` host sync) is dropped and falls back to
-eager, so correctness never depends on capture succeeding. Bit-identity vs eager is gated by
-``tests/unit_test/moss_tts_local/test_vocoder_cuda_graph.py``.
-"""
+"""CUDA-graph runner for the MOSS streaming codec decode: one graph per T (B fixed at slot width), captured once at warmup. Adapted from the Higgs vocoder graph; bit-identity gated by the test."""
 
 from __future__ import annotations
 
@@ -87,16 +58,8 @@ def _cuda_graph_update_streaming_cache(
 
 
 def patch_codec_attention_cache_for_cuda_graph(codec) -> None:
-    """Make the streaming attention KV cache CUDA-graph-capturable by writing it IN PLACE.
-
-    Note: (Jiaxin Deng) the upstream MOSS-Audio-Tokenizer-v2 streaming attention stores its per-slot
-    KV cache by reassigning ``state.cached_keys = torch.where(...)`` every step, so the buffer's
-    data_ptr changes each step and a CUDA graph (which records ops on fixed addresses) cannot follow
-    it; replay then reads the capture-time cache and the decode is not bit-identical. This rebinds
-    ``_update_streaming_cache`` to an in-place ``copy_`` version (stable address), value-identical to
-    the original. Cache-storage fix contributed by CloudRipple (codec team) in #811; ported here so
-    the warmup-captured runner can replay the stateful decode bit-identically.
-    """
+    """Rebind the decoder streaming attention cache update to an in-place write (stable address) so a
+    CUDA graph can capture it. Cache-storage fix by CloudRipple (codec team), #811."""
     for module in _decoder_attention_modules(codec):
         update_cache = getattr(module, "_update_streaming_cache", None)
         if not callable(update_cache):
@@ -152,10 +115,8 @@ class MossVocoderCudaGraphRunner:
 
     @torch.no_grad()
     def _reset_state(self) -> None:
-        """Reset every streaming module's per-slot offset/positions to 0 (in-place). Warmup-only: runs
-        between captures, never on the serving hot path, so the codec's full state.reset (which also
-        zeros stale K/V rows that the reset offsets/positions already mask out as invalid) is a
-        one-time startup cost, not per-step."""
+        """Reset every streaming module's offset/positions to 0 in-place (warmup-only, between
+        captures; the full state.reset is a one-time startup cost, not per-step)."""
 
         def _r(module) -> None:
             state = getattr(module, "_streaming_state", None)
@@ -210,10 +171,8 @@ class MossVocoderCudaGraphRunner:
 
     @torch.no_grad()
     def warmup(self, frames: Iterable[int]) -> None:
-        """Capture one graph per T, once, then seal. Call at startup while the GPU is quiescent.
-
-        The caller MUST reset all codec slots after this returns (warmup advances per-slot state).
-        """
+        """Capture one graph per T, once, then seal (startup, GPU quiescent). Caller MUST reset all
+        slots after this returns (warmup advances per-slot state)."""
         if self._sealed:
             logger.warning(
                 "MossVocoderCudaGraphRunner.warmup called after seal; ignoring"
@@ -271,17 +230,7 @@ class MossVocoderCudaGraphRunner:
         codes_lengths: torch.Tensor,
         exec_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
-        """Replay the captured graph for ``[n_vq, B_full, T]`` codes, else return None (eager).
-
-        Sets the live exec_mask (host-side, into the codec's fixed mask buffers) so the captured
-        torch.where gating advances only active slots, copies codes into the static input, replays,
-        and returns the static (audio, audio_lengths) output buffers DIRECTLY (no clone). The caller
-        must consume the active slots before the next replay overwrites them (single static buffer per
-        T); the streaming scheduler does this immediately (one batched D2H per step) on its serial
-        loop. ``codes_lengths`` is intentionally NOT copied into the static input: capture used all-T
-        lengths and active slots are full-T so the static lengths already match, and inactive slots
-        are gated out by exec_mask, so the active-slot output is bit-exact either way.
-        """
+        """Replay the captured graph for ``[n_vq, B_full, T]`` codes (set live exec_mask, copy codes, replay), else None. Returns the static buffers directly; caller consumes before the next replay."""
         if not codes_step.is_cuda:
             return None
         n, b, t = codes_step.shape

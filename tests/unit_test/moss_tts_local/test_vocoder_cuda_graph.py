@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bit-identity test for the MOSS streaming-vocoder codec-decode CUDA graph.
-
-The CUDA-graph replay must be bit-for-bit identical to the eager codec decode (torch.equal, maxdelta
-0), or streaming audio changes. Because the codec is stateful (per-slot causal offset/KV), the test
-decodes multi-chunk sequences (so the state must advance correctly across steps) at varied active-slot
-counts (so the exec_mask state gating must isolate slots) and T boundaries. Any PCM mismatch fails the
-test; do not relax the comparison. GPU and the real MOSS-Audio-Tokenizer-v2 codec required.
-"""
+"""Bit-identity test: the stateful multi-chunk CUDA-graph replay must equal the eager codec decode bit-for-bit (torch.equal, maxdelta 0). GPU + real MOSS-Audio-Tokenizer-v2 codec required."""
 
 from __future__ import annotations
 
@@ -129,12 +122,8 @@ def test_streaming_pcm_bit_identical(session_bundle, chunk_t, n_active):
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 @pytest.mark.parametrize("chunk_t", [5, 25])
 def test_graph_tracks_eager_across_chunkings(session_bundle, chunk_t):
-    """Decode the SAME codes at two different chunk boundaries; for each chunking the graph PCM must
-    equal the eager PCM bit-for-bit. NOTE: the codec is itself chunk-boundary DEPENDENT (eager T=25
-    and T=5 PCM differ by ~0.8 -- different per-step buffer/state evolution), so we do NOT assert
-    cross-chunking equality. The gate is that the graph faithfully reproduces eager AT EACH chunking,
-    including that chunk-dependence; an extra T (here both 5 and 25) guards against a graph that only
-    matches eager at the single T the other test exercises."""
+    """Graph PCM must equal eager PCM bit-for-bit at EACH chunking (the codec is chunk-boundary
+    dependent, so we assert per-chunking, not cross-chunking)."""
     session, n_vq, vocab, captured = session_bundle
     if chunk_t not in captured:
         pytest.skip(
@@ -156,11 +145,8 @@ def test_graph_tracks_eager_across_chunkings(session_bundle, chunk_t):
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_bundle):
-    """A replay-path exception must not crash or cascade: the runner is disabled (every future step
-    degrades to eager) and that eager output is bit-identical to a pure-eager reference. The failing
-    step itself raises (its per-slot state is indeterminate after a partial replay) -- bit-safe, we
-    never emit a non-identical output. This is the default-on robustness gate for replay failures.
-    """
+    """A replay exception disables the runner (future steps go eager, bit-identical to a pure-eager
+    reference); the failing step itself raises so its participants abort."""
     session, n_vq, vocab, captured = session_bundle
     chunk_t = next((t for t in (5, 25) if t in captured), None)
     if chunk_t is None:
@@ -201,9 +187,8 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
-    """When free VRAM is below the configured headroom, warmup skips capture (no OOM) -> empty graph set
-    -> serving uses eager. Simulated by an absurd headroom threshold so the guard always trips; this is
-    the default-on robustness gate for VRAM-tight boxes."""
+    """Below the configured VRAM headroom, warmup skips capture (empty graph set, serving uses eager);
+    forced via an absurd threshold."""
     from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )
@@ -230,11 +215,7 @@ def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_capture_failure_falls_back_to_eager(session_bundle):
-    """A capture exception (e.g. an OOM mid-capture) is caught per-T, that T is dropped, and serving
-    uses eager. Simulated by forcing _capture_t to raise. (Empirically a real mid-capture OOM does NOT
-    wedge the CUDA context: a hogged-VRAM probe OOM'd inside torch.cuda.graph with ~1.4 GB in graph
-    pools and eager decode worked fine afterwards -- so the existing try/except + drop is sufficient.)
-    """
+    """A capture exception is caught per-T, that T dropped, serving uses eager; forced via _capture_t raising. (A real mid-capture OOM does not wedge the CUDA context, verified empirically.)"""
     from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
         MossVocoderCudaGraphRunner,
     )

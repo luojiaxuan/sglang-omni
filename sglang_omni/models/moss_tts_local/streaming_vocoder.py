@@ -1,20 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Streaming vocoder scheduler for MOSS-TTS Local (v1.5).
-
-The MOSS-Audio-Tokenizer-v2 decoder is natively streamable: every block is
-causal and carries per-slot state under ``model.streaming()``, so chunked
-decoding matches one offline decode regardless of chunk boundaries. This
-scheduler holds ONE long-lived batched streaming session on the stage's
-codec: streaming requests occupy a slot for their lifetime, non-streaming
-requests decode through dedicated offline slots of the same session (the
-codec forbids nested ``streaming()`` contexts), and every step advances all
-participating slots by one uniform length with the rest masked via
-``exec_mask``. The persistent session is created either at startup (when the CUDA-graph warmup runs,
-default on) or lazily on the first streaming request (graph disabled). Once the session exists,
-non-streaming requests decode through its offline lane (``decode_offline``), which replays the
-codec's own chunked ``batch_decode`` and is output-equivalent to ``processor.decode_audio_codes``
-(and shares the warmed graphs); before it exists, they take that pre-existing processor path.
-"""
+"""Streaming vocoder scheduler for MOSS-TTS Local: one persistent batched codec.streaming() session; streaming requests hold a slot, non-streaming use its offline lane (output-equivalent to decode_audio_codes)."""
 
 from __future__ import annotations
 
@@ -44,10 +29,8 @@ _SOURCE_HINT = "MOSS-TTS Local"
 
 
 def _vocoder_cuda_graph_enabled() -> bool:
-    """True unless the streaming-vocoder codec-decode CUDA graph is opted OUT
-    (``MOSS_VOCODER_CUDA_GRAPH`` set to 0/false/no/off). Default ON; every failure path (capture OOM,
-    low VRAM, replay error, uncaptured shape) degrades to the eager decode, so default-on never crashes.
-    """
+    """True unless ``MOSS_VOCODER_CUDA_GRAPH`` is 0/false/no/off (default ON; every failure path
+    degrades to eager, so default-on never crashes)."""
     return os.environ.get("MOSS_VOCODER_CUDA_GRAPH", "1").strip().lower() not in (
         "",
         "0",
@@ -83,14 +66,7 @@ def _build_usage(state: MossTTSLocalState) -> dict[str, Any] | None:
 
 
 class _CodecStreamSession:
-    """A persistent batched ``codec.streaming()`` session with slot bookkeeping.
-
-    Slots ``[0, stream_slots)`` are held by live streaming requests; slots
-    ``[stream_slots, stream_slots + offline_slots)`` are reserved for
-    non-streaming batch decodes so an offline request can never wait on (or
-    deadlock against) a long-lived stream. All methods must be called from the
-    scheduler loop thread.
-    """
+    """Persistent batched ``codec.streaming()`` session with slot bookkeeping (stream slots held by live requests; offline slots for non-streaming decodes). Scheduler-loop-thread only."""
 
     def __init__(
         self, codec: Any, *, stream_slots: int, offline_slots: int, n_vq: int
@@ -108,21 +84,15 @@ class _CodecStreamSession:
         self._cg_graph_t: Counter = Counter()
         self._cg_eager_t: Counter = Counter()
         self._cg_total_steps = 0
-        # Persistent batched streaming session: retain the ExitStack so the codec's per-slot causal
-        # state lives across decode steps (chunk-boundary continuity). Closed in close(). CUDA-graph
-        # replay is kept bit-identical to this stateful decode by the in-place attention-cache patch
-        # (patch_codec_attention_cache_for_cuda_graph), applied before warmup capture.
+        # Retain the streaming ExitStack so per-slot causal state lives across steps (closed in close());
+        # graph replay is kept bit-identical to this stateful decode by the in-place cache patch.
         self._exit_stack = contextlib.ExitStack()
         with torch.no_grad():
             self._exit_stack.enter_context(codec.streaming(self._batch_size))
 
     def warmup_cuda_graph(self, frames) -> list[int]:
-        """Capture per-T codec-decode CUDA graphs (startup, GPU quiescent), then reset all slots.
-
-        No-op if ``MOSS_VOCODER_CUDA_GRAPH=0`` (default on). Warmup + capture advance per-slot state, so all
-        slots are reset afterwards for clean serving. Returns the list of T actually captured (the
-        rest fall back to eager). Must run before serving (never captures during ``step``).
-        """
+        """Capture per-T graphs at startup then reset all slots; returns the captured T list (rest
+        fall back to eager). No-op if disabled. Never captures during ``step``."""
         if self._closed or not _vocoder_cuda_graph_enabled():
             return []
         from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
@@ -130,10 +100,8 @@ class _CodecStreamSession:
             patch_codec_attention_cache_for_cuda_graph,
         )
 
-        # Make the streaming attention KV cache graph-capturable before capture: the upstream codec
-        # reassigns state.cached_keys to a new tensor each step (data_ptr changes), which a CUDA graph
-        # cannot follow; this patches it to an in-place write (stable address), bit-identical to eager.
-        # Cache-storage fix contributed by CloudRipple (codec team) in #811.
+        # Patch the codec attention cache to an in-place write so the graph can capture it
+        # (bit-identical to eager). Cache-storage fix by CloudRipple (codec team), #811.
         patch_codec_attention_cache_for_cuda_graph(self._codec)
         if self._cg_runner is None:
             # Scheduler owns the capture shape range (max_frames = the largest T it asks for), rather
@@ -207,12 +175,7 @@ class _CodecStreamSession:
             self._codec.apply(_reset)
 
     def step(self, slot_codes: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
-        """Advance the participating slots by one uniform-length step.
-
-        ``slot_codes`` maps slot -> ``[n_vq, T]`` codes with the SAME ``T``
-        for every participant. Returns slot -> ``[channels, samples]`` float32
-        CPU audio.
-        """
+        """Advance participating slots by one uniform-length step. ``slot_codes`` maps slot -> ``[n_vq, T]`` (same T); returns slot -> ``[channels, samples]`` float32 CPU audio."""
         if not slot_codes:
             return {}
         step_lengths = {int(codes.shape[1]) for codes in slot_codes.values()}
@@ -252,16 +215,13 @@ class _CodecStreamSession:
                     self._codec._set_streaming_exec_mask(exec_mask)
                     result = self._codec._decode_frame(codes_step, codes_lengths)
                     audio, audio_lengths = result.audio, result.audio_lengths
-            # One batched D2H per step, active slots only. A CUDA-graph replay error can surface
-            # asynchronously HERE (on this D2H sync), not inside decode_step, so the output
-            # materialization is kept inside the same guard as the replay (Ratish #247).
+            # One batched D2H per step. A graph replay error can surface async HERE (not in
+            # decode_step), so materialization stays inside the replay guard (#247).
             audio_cpu = audio[slots].detach().to("cpu", torch.float32)
             lengths_cpu = audio_lengths[slots].detach().to("cpu")
         except Exception:
-            # A graphed step failed -- synchronously inside decode_step (graph_failed) or
-            # asynchronously on the D2H above. Disable the runner so every future step degrades to
-            # eager (bit-exact from live state); this step's participants abort upstream (bit-safe,
-            # never emit a non-identical output). A pure eager-path error does not disable the runner.
+            # Graphed step failed (in decode_step or async on the D2H): disable the runner so future
+            # steps go eager; participants abort. An eager-path error does not disable it.
             if self._cg_runner is not None and (graph_failed or graphed is not None):
                 logger.exception(
                     "MOSS vocoder CUDA-graph replay failed (in decode_step or on output "
@@ -286,11 +246,8 @@ class _CodecStreamSession:
     def decode_offline(
         self, codes_list: list[torch.Tensor], *, max_step_frames: int
     ) -> list[torch.Tensor]:
-        """Decode complete utterances ``[n_vq, T]`` through the offline lane.
-
-        Replays the codec's own chunked ``batch_decode`` step plan so the
-        output matches the non-session ``processor.decode_audio_codes`` path.
-        """
+        """Decode complete utterances ``[n_vq, T]`` via the offline lane, replaying the codec's
+        chunked ``batch_decode`` so output matches ``processor.decode_audio_codes``."""
         wavs: list[torch.Tensor] = []
         for wave_start in range(0, len(codes_list), self._offline_slots):
             wave = codes_list[wave_start : wave_start + self._offline_slots]
@@ -405,9 +362,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                     logger.exception(
                         "MOSS vocoder CUDA-graph warmup failed; serving with eager vocoder"
                     )
-                # The warmed graphs live on self._session; the serving loop reuses that same session,
-                # which relies on super().start() below being blocking. The assert + warning pin that
-                # precondition (a refactor that recreated/swapped the session would drop the graphs).
+                # Warmed graphs live on self._session; the serving loop reuses it, relying on
+                # super().start() being blocking. The assert + warning below pin that.
                 if captured:
                     assert (
                         self._session is not None
@@ -435,9 +391,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
                 self._session.close()
                 self._session = None
 
-    # ------------------------------------------------------------------
-    # Streaming hooks
-    # ------------------------------------------------------------------
+    # --- Streaming hooks ---
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         params = payload.request.params
@@ -540,9 +494,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         if state is not None and state.slot is not None and self._session is not None:
             self._session.release(state.slot)
 
-    # ------------------------------------------------------------------
-    # Streaming internals
-    # ------------------------------------------------------------------
+    # --- Streaming internals ---
 
     def _ensure_session(self) -> _CodecStreamSession:
         if self._session is None:
@@ -555,25 +507,13 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         return self._session
 
     def _cuda_graph_capture_frames(self) -> list[int]:
-        """Focused set of step lengths T to capture (each B-wide codec-decode graph is multi-GB, so
-        capturing all of ``[1, max_step_frames]`` would exhaust VRAM).
-
-        ``MOSS_VOCODER_CUDA_GRAPH_FRAMES`` (comma/space-separated ints) overrides; otherwise capture
-        the scheduler's own structural step lengths -- the coalescing join floor, the first-chunk
-        size, the steady-state chunk, and the per-step cap -- which are where the emitted T
-        concentrate. Off-set T (tails, in-between coalesced sizes) fall back to eager.
-        """
+        """Step lengths T to capture; ``MOSS_VOCODER_CUDA_GRAPH_FRAMES`` (comma/space ints) overrides. Default is a data-driven broad-exact set (see below); uncaptured T fall back to eager."""
         override = os.environ.get("MOSS_VOCODER_CUDA_GRAPH_FRAMES", "").strip()
         if override:
             frames = [int(x) for x in override.replace(",", " ").split()]
         else:
-            # Note: (Jiaxin Deng) data-driven broad-exact default. Per-T serving stats on
-            # MOSS-TTS-Local show emitted step lengths concentrate at a small set (T=5 ~38% of steps
-            # from min-coalescing, plus a small-T tail and the first-chunk/steady/cap sizes). This set
-            # covers ~87% of real steps vs ~45% for {join,first,steady,cap}, at near-flat VRAM (the
-            # pool is dominated by the cap graph; each small-T graph adds ~0.03 GB) and +20% c8
-            # throughput over the focused set. Frequencies are config-specific; override via the env
-            # above for other chunk configs. See the graph-set evaluation in the PR description.
+            # Data-driven broad-exact set from measured per-T serving frequency (covers ~87% of steps
+            # vs ~45% structural, near-flat VRAM, +20% c8). Config-specific; see PR description.
             join_floor = max(
                 1,
                 min(self._default_initial_chunk_frames or 5, self._stream_chunk_frames),
@@ -599,12 +539,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         return sorted({t for t in frames if 1 <= t <= self._max_step_frames})
 
     def warmup_cuda_graph(self) -> list[int]:
-        """Pre-capture the streaming codec-decode CUDA graphs at startup (GPU quiescent).
-
-        No-op if ``MOSS_VOCODER_CUDA_GRAPH=0`` (default on). Captures a focused set of step lengths (see
-        ``_cuda_graph_capture_frames``); uncaptured lengths fall back to eager. Returns the captured
-        T list. Call once before serving, never during the decode loop.
-        """
+        """Pre-capture the codec-decode graphs at startup (no-op if disabled); returns the captured T list, uncaptured fall back to eager. Call once before serving, never in the decode loop."""
         with self._state_lock:
             return self._ensure_session().warmup_cuda_graph(
                 self._cuda_graph_capture_frames()
@@ -667,14 +602,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             state.threshold = self._stream_chunk_frames
 
     def _pump_streams(self) -> None:
-        """Decode every stream whose buffer crossed its threshold.
-
-        A step costs one decoder forward over the full slot width, so a due
-        stream does not step alone: peers holding at least the join floor
-        ride along in the same forward. Chunks go to the outbox per
-        iteration. A failed step leaves its participants' slot state
-        indeterminate, so all of them are failed and aborted.
-        """
+        """Decode every stream whose buffer crossed its threshold; due streams coalesce with peers above the join floor into one forward. A failed step fails and aborts all its participants."""
         join_floor = max(
             1, min(self._default_initial_chunk_frames or 5, self._stream_chunk_frames)
         )
@@ -763,9 +691,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             [codes], max_step_frames=self._max_step_frames
         )[0]
 
-    # ------------------------------------------------------------------
-    # Non-streaming path
-    # ------------------------------------------------------------------
+    # --- Non-streaming path ---
 
     def _prepare_codes(
         self, payload: StagePayload
