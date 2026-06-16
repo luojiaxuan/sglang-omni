@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import pickle
+import time
 from multiprocessing.reduction import ForkingPickler
 from typing import Any
 
@@ -18,6 +20,54 @@ import torch
 
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.relay.base import Relay
+
+TRACE_STAGE_IO_ENV = "SGLANG_OMNI_TRACE_STAGE_IO"
+TRACE_STAGE_IO_SYNC_ENV = "SGLANG_OMNI_TRACE_STAGE_IO_SYNC"
+
+
+def trace_stage_io_enabled() -> bool:
+    return os.environ.get(TRACE_STAGE_IO_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _trace_sync_enabled() -> bool:
+    return os.environ.get(TRACE_STAGE_IO_SYNC_ENV, "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _now_ns() -> int:
+    return time.perf_counter_ns()
+
+
+def _elapsed_ms(start_ns: int) -> float:
+    return round((time.perf_counter_ns() - start_ns) / 1e6, 3)
+
+
+def _maybe_sync_tensor(tensor: torch.Tensor) -> None:
+    if not _trace_sync_enabled() or not tensor.is_cuda:
+        return
+    torch.cuda.synchronize(tensor.device)
+
+
+def _maybe_sync_device(device: torch.device) -> None:
+    if not _trace_sync_enabled() or device.type != "cuda":
+        return
+    torch.cuda.synchronize(device)
+
+
+def _tensor_summary(path: str, tensor: torch.Tensor) -> dict[str, Any]:
+    return {
+        "path": path,
+        "shape": [int(dim) for dim in tensor.shape],
+        "dtype": str(tensor.dtype),
+        "device": str(tensor.device),
+        "numel": int(tensor.numel()),
+        "bytes": int(tensor.numel() * tensor.element_size()),
+        "contiguous": bool(tensor.is_contiguous()),
+    }
 
 
 def _dtype_alignment(dtype: torch.dtype) -> int:
@@ -94,27 +144,59 @@ async def write_payload(
     relay: Relay,
     request_id: str,
     payload: StagePayload,
+    trace_context: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """Write a StagePayload to relay. Returns (control_plane_metadata, relay_op)."""
     device = getattr(relay, "device", "cpu")
     transport_device = torch.device(device)
+    trace_enabled = trace_stage_io_enabled() and trace_context is not None
+    timing: dict[str, float] = {}
 
+    start_ns = _now_ns()
     modified_data, tensor_dict = extract_tensors(payload.data)
+    if trace_enabled:
+        timing["extract_ms"] = _elapsed_ms(start_ns)
+
     payload_no_tensors = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
         data=modified_data,
     )
+    start_ns = _now_ns()
     metadata_bytes = pickle.dumps(payload_no_tensors)
+    if trace_enabled:
+        timing["pickle_ms"] = _elapsed_ms(start_ns)
 
     if tensor_dict:
         tensor_buffers = []
         tensor_info = []
+        tensor_summaries = []
+        total_tensor_bytes = 0
         offset = 0
         for path, tensor in tensor_dict.items():
+            if trace_enabled:
+                summary = _tensor_summary(path, tensor)
+                tensor_summaries.append(summary)
+                total_tensor_bytes += int(summary["bytes"])
+                _maybe_sync_tensor(tensor)
+                start_ns = _now_ns()
             flat = tensor.contiguous().view(torch.uint8).reshape(-1)
+            if trace_enabled:
+                _maybe_sync_tensor(flat)
+                timing["contiguous_ms"] = timing.get("contiguous_ms", 0.0) + (
+                    (time.perf_counter_ns() - start_ns) / 1e6
+                )
             if flat.device != transport_device:
+                if trace_enabled:
+                    _maybe_sync_tensor(flat)
+                    start_ns = _now_ns()
                 flat = flat.to(device=transport_device)
+                if trace_enabled:
+                    _maybe_sync_tensor(flat)
+                    _maybe_sync_device(transport_device)
+                    timing["device_copy_ms"] = timing.get("device_copy_ms", 0.0) + (
+                        (time.perf_counter_ns() - start_ns) / 1e6
+                    )
             padding = _pad_offset(offset, _dtype_alignment(tensor.dtype))
             if padding:
                 tensor_buffers.append(
@@ -132,12 +214,39 @@ async def write_payload(
                 }
             )
             offset += flat.numel()
+        if trace_enabled:
+            _maybe_sync_device(transport_device)
+            start_ns = _now_ns()
         all_tensors = torch.cat(tensor_buffers)
+        if trace_enabled:
+            _maybe_sync_tensor(all_tensors)
+            timing["cat_ms"] = _elapsed_ms(start_ns)
     else:
         all_tensors = torch.zeros(1, dtype=torch.uint8, device=device)
         tensor_info = []
+        tensor_summaries = []
+        total_tensor_bytes = 0
+        if trace_enabled:
+            timing["cat_ms"] = 0.0
 
+    start_ns = _now_ns()
     op = await relay.put_async(all_tensors, request_id=request_id)
+    if trace_enabled:
+        timing["put_async_ms"] = _elapsed_ms(start_ns)
+        for key in ("contiguous_ms", "device_copy_ms"):
+            if key in timing:
+                timing[key] = round(timing[key], 3)
+        trace_context["payload_trace"] = {
+            "direction": "write",
+            "relay_device": str(device),
+            "transport_device": str(transport_device),
+            "tensor_count": len(tensor_summaries),
+            "tensor_bytes": total_tensor_bytes,
+            "tensor_payload_bytes": int(all_tensors.numel()),
+            "payload_pickle_bytes": len(metadata_bytes),
+            "tensors": tensor_summaries,
+            "timing_ms": timing,
+        }
 
     return {
         "relay_info": op.metadata,
@@ -150,25 +259,44 @@ async def read_payload(
     relay: Relay,
     request_id: str,
     metadata: dict[str, Any],
+    trace_context: dict[str, Any] | None = None,
 ) -> StagePayload:
     """Read a StagePayload from relay using control_plane metadata."""
     device = getattr(relay, "device", "cpu")
+    trace_enabled = trace_stage_io_enabled() and trace_context is not None
+    timing: dict[str, float] = {}
 
+    start_ns = _now_ns()
     payload_bytes = base64.b64decode(metadata["payload_pickle"])
     payload_no_tensors = pickle.loads(payload_bytes)
+    if trace_enabled:
+        timing["unpickle_ms"] = _elapsed_ms(start_ns)
 
     relay_info = metadata["relay_info"]
     tensor_info = metadata.get("tensor_info", [])
     tensor_dict = {}
 
     data_size = relay_info["transfer_info"]["size"]
+    start_ns = _now_ns()
     recv_tensor = torch.zeros(data_size, dtype=torch.uint8, device=device)
+    if trace_enabled:
+        timing["alloc_recv_ms"] = _elapsed_ms(start_ns)
+        _maybe_sync_tensor(recv_tensor)
+        start_ns = _now_ns()
     op = await relay.get_async(
         metadata=relay_info, dest_tensor=recv_tensor, request_id=request_id
     )
+    if trace_enabled:
+        timing["get_async_ms"] = _elapsed_ms(start_ns)
+        start_ns = _now_ns()
     await op.wait_for_completion()
+    if trace_enabled:
+        _maybe_sync_tensor(recv_tensor)
+        timing["get_wait_ms"] = _elapsed_ms(start_ns)
 
     if tensor_info:
+        if trace_enabled:
+            start_ns = _now_ns()
         for info in tensor_info:
             path = info["path"]
             shape = info["shape"]
@@ -179,8 +307,33 @@ async def read_payload(
             dtype = getattr(torch, dtype_str.replace("torch.", ""))
             tensor = tensor_bytes.view(dtype).reshape(shape)
             tensor_dict[path] = tensor
+        if trace_enabled:
+            timing["slice_restore_ms"] = _elapsed_ms(start_ns)
 
+    start_ns = _now_ns()
     restored_data = restore_tensors(payload_no_tensors.data, tensor_dict)
+    if trace_enabled:
+        timing["restore_ms"] = _elapsed_ms(start_ns)
+        trace_context["payload_trace"] = {
+            "direction": "read",
+            "relay_device": str(device),
+            "tensor_count": len(tensor_info),
+            "tensor_bytes": int(
+                sum(int(info.get("size", 0)) for info in tensor_info)
+            ),
+            "tensor_payload_bytes": int(data_size),
+            "payload_pickle_bytes": len(payload_bytes),
+            "tensors": [
+                {
+                    "path": info.get("path"),
+                    "shape": info.get("shape"),
+                    "dtype": info.get("dtype"),
+                    "bytes": int(info.get("size", 0)),
+                }
+                for info in tensor_info
+            ],
+            "timing_ms": timing,
+        }
     payload = StagePayload(
         request_id=payload_no_tensors.request_id,
         request=payload_no_tensors.request,

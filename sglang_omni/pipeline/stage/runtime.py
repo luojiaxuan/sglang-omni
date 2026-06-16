@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import queue as _queue_mod
 import threading
+import time
 from contextlib import suppress
 from typing import Any, Callable, Literal
 
@@ -46,6 +48,10 @@ logger = logging.getLogger(__name__)
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
+
+
+def _elapsed_ms(start_ns: int) -> float:
+    return round((time.perf_counter_ns() - start_ns) / 1e6, 3)
 
 
 class Stage:
@@ -300,9 +306,17 @@ class Stage:
             self._stream_queue.open(request_id)
 
         # Read payload from relay
+        trace_context = self._make_stage_io_trace_context(
+            request_id=request_id,
+            from_stage=msg.from_stage,
+            to_stage=self.name,
+        )
         try:
             payload = await relay_io.read_payload(
-                self.relay, request_id, msg.shm_metadata
+                self.relay,
+                request_id,
+                msg.shm_metadata,
+                trace_context=trace_context,
             )
         except Exception as exc:
             logger.exception(
@@ -312,7 +326,12 @@ class Stage:
             await self._send_failure(request_id, f"relay read failed: {exc}")
             return
 
-        await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
+        await self._receive_payload_from_stage(
+            request_id,
+            msg.from_stage,
+            payload,
+            trace_context=trace_context,
+        )
 
     async def receive_local_payload(
         self,
@@ -366,6 +385,7 @@ class Stage:
         request_id: str,
         from_stage: str,
         payload: Any,
+        trace_context: dict[str, Any] | None = None,
     ) -> None:
         if request_id in self._aborted:
             return
@@ -382,7 +402,16 @@ class Stage:
             event_name="stage_input_received",
             metadata={"from_stage": from_stage, "kind": "payload"},
         )
+        start_ns = time.perf_counter_ns()
         merged = self.input_handler.receive(request_id, from_stage, payload)
+        if trace_context is not None:
+            self._add_stage_io_timing(
+                trace_context,
+                "input_receive_ms",
+                _elapsed_ms(start_ns),
+            )
+            trace_context["aggregate_ready"] = merged is not None
+            self._emit_stage_io_trace(request_id, trace_context)
         if merged is not None:
             _emit_event(
                 request_id=request_id,
@@ -975,8 +1004,16 @@ class Stage:
             )
             return
 
+        trace_context = self._make_stage_io_trace_context(
+            request_id=request_id,
+            from_stage=self.name,
+            to_stage=target,
+        )
         metadata, op = await relay_io.write_payload(
-            self.relay, request_id, projected_payload
+            self.relay,
+            request_id,
+            projected_payload,
+            trace_context=trace_context,
         )
         msg = DataReadyMessage(
             request_id=request_id,
@@ -990,8 +1027,76 @@ class Stage:
             event_name="stage_hop_sent",
             metadata={"to_stage": target},
         )
+        start_ns = time.perf_counter_ns()
         await self.control_plane.send_to_stage(target, endpoint, msg)
+        if trace_context is not None:
+            self._add_stage_io_timing(
+                trace_context,
+                "control_plane_send_ms",
+                _elapsed_ms(start_ns),
+            )
+        start_ns = time.perf_counter_ns()
         await op.wait_for_completion()
+        if trace_context is not None:
+            self._add_stage_io_timing(
+                trace_context,
+                "relay_op_wait_ms",
+                _elapsed_ms(start_ns),
+            )
+            self._emit_stage_io_trace(request_id, trace_context)
+
+    def _make_stage_io_trace_context(
+        self,
+        *,
+        request_id: str,
+        from_stage: str,
+        to_stage: str,
+    ) -> dict[str, Any] | None:
+        if not relay_io.trace_stage_io_enabled():
+            return None
+        return {
+            "request_id": request_id,
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "edge": f"{from_stage}->{to_stage}",
+            "transport": "relay",
+        }
+
+    @staticmethod
+    def _add_stage_io_timing(
+        trace_context: dict[str, Any],
+        name: str,
+        value_ms: float,
+    ) -> None:
+        payload_trace = trace_context.setdefault("payload_trace", {})
+        timing = payload_trace.setdefault("timing_ms", {})
+        timing[name] = value_ms
+
+    def _emit_stage_io_trace(
+        self,
+        request_id: str,
+        trace_context: dict[str, Any],
+    ) -> None:
+        payload_trace = trace_context.get("payload_trace")
+        if not isinstance(payload_trace, dict):
+            return
+        metadata = {
+            key: value
+            for key, value in trace_context.items()
+            if key not in {"payload_trace", "request_id"}
+        }
+        metadata.update(payload_trace)
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_io_trace",
+            metadata=metadata,
+        )
+        log_record = {"request_id": request_id, "stage": self.name, **metadata}
+        logger.info(
+            "stage_io_trace %s",
+            json.dumps(log_record, sort_keys=True, default=str),
+        )
 
     @staticmethod
     def _is_isolated_projected_payload(
