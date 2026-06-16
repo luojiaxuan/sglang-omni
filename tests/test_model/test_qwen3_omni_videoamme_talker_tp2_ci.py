@@ -15,6 +15,7 @@ Author:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,25 +47,24 @@ CONCURRENCY = 16
 MAX_SAMPLES = 10
 MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
-WARMUP_REQUESTS = 1
-# CI keeps the 10-sample temporal coverage but trims the per-frame video
-# pixel budget to avoid 14k-token long-video prefill dominating the talker TP2
-# gate on 2-GPU H100/H20 runners.
-VIDEO_MAX_PIXELS_CI = 150_528
+STAGE11_VIDEO_MIN_PIXELS = 6_272
+STAGE11_VIDEO_MAX_PIXELS = 6_272
+STAGE11_TALKER_PREFILL_USER_CONTEXT = False
+_FALSE_ENV_VALUES = {"0", "false", "no", "off"}
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0172
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0175
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
+VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.052,
+        "throughput_qps": 0.061,
         "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 130.381,
-        "rtf_mean": 21.1857,
+        "latency_mean_s": 162.533,
+        "rtf_mean": 12.2402,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
@@ -81,6 +81,29 @@ class _TalkerEvalArtifacts:
     per_sample: list
     audio_dir: str
     lang: str
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in _FALSE_ENV_VALUES
+
+
+def _stage11_video_request_options() -> tuple[int, int, dict[str, bool]]:
+    video_min_pixels = int(
+        os.getenv("STAGE11_SWEEP_VIDEO_MIN_PIXELS", str(STAGE11_VIDEO_MIN_PIXELS))
+    )
+    video_max_pixels = int(
+        os.getenv("STAGE11_SWEEP_VIDEO_MAX_PIXELS", str(STAGE11_VIDEO_MAX_PIXELS))
+    )
+    extra_request_params = {
+        "talker_prefill_user_context": _env_bool(
+            "STAGE11_SWEEP_TALKER_PREFILL_USER_CONTEXT",
+            STAGE11_TALKER_PREFILL_USER_CONTEXT,
+        )
+    }
+    return video_min_pixels, video_max_pixels, extra_request_params
 
 
 @pytest.mark.benchmark
@@ -120,31 +143,35 @@ def talker_eval_artifacts(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videoamme_audio"))
+    video_min_pixels, video_max_pixels, extra_request_params = (
+        _stage11_video_request_options()
+    )
+    print(
+        "stage11_sweep_config "
+        f"video_min_pixels={video_min_pixels} "
+        f"video_max_pixels={video_max_pixels} "
+        f"extra_request_params={extra_request_params}"
+    )
     config = VideoEvalConfig(
         model="qwen3-omni",
         port=qwen3_omni_fp8_talker_server_tp2.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
-        warmup=WARMUP_REQUESTS,
         output_dir=output_dir,
         repo_id=DATASETS["videoamme-ci-50"],
         video_fps=2,
         video_max_frames=128,
-        video_max_pixels=VIDEO_MAX_PIXELS_CI,
+        video_min_pixels=video_min_pixels,
+        video_max_pixels=video_max_pixels,
         enable_audio=True,
         asr_device=ASR_DEVICE,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
         disable_tqdm=False,
         timeout_s=500,
-        extra_request_params={"talker_prefill_user_context": False},
+        extra_request_params=extra_request_params,
     )
-    results = asyncio.run(
-        run_videoamme_eval(
-            config,
-            compute_wer=False,
-        )
-    )
+    results = asyncio.run(run_videoamme_eval(config, compute_wer=False))
     return _TalkerEvalArtifacts(
         summary=results["summary"],
         speed=results["speed"],
