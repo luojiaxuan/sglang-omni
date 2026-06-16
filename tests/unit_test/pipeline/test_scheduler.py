@@ -682,9 +682,7 @@ def test_omni_scheduler_telemetry_snapshot_reports_queue_and_kv(monkeypatch) -> 
     scheduler.max_total_num_tokens = 128
     scheduler.max_req_len = 64
     scheduler.max_prefill_tokens = 32
-    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        available_size=lambda: 96
-    )
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 96)
     scheduler._admission_max_waiting = 16
     scheduler._admission_min_free_gpu_memory_bytes = 1024
     scheduler.gpu_id = 0
