@@ -10,16 +10,26 @@
 > **关联：** issue [sgl-project/sglang-omni#760](https://github.com/sgl-project/sglang-omni/issues/760)
 > （B200 结果 comment: [#issuecomment-4705723359](https://github.com/sgl-project/sglang-omni/issues/760#issuecomment-4705723359)）；
 > 同包 `FINDINGS_A6000.md` / `FINDINGS_B200.md`。
+>
+> **2026-06-16 最新状态：这个假设已在 H100 上验证完，结论是不成立。**
+> generic online-FP8 只把 thinker 权重从 28.6 GB/卡降到 14.7 GB/卡，bs=32
+> forward 只快约 2-3%，decode step 基本不变。当前接力方向应回到 **BF16
+> baseline**，重点看 H100 BF16 forward split、scheduler/build 开销、以及 H100 BF16
+> MoE kernel config。详见 `FINDINGS_H100.md`。
 
 ---
 
 ## 0. 一句话目标
 
-在 H100（TP=2）上用**与 B200 完全相同的方法**跑 BF16 vs online-FP8 的 decode A/B：
+已在 H100（TP=2）上用**与 B200 完全相同的方法**跑完 BF16 vs online-FP8 的 decode A/B。
+结论：**FP8 没有带来有意义的 H100 decode 提速，后续回到 BF16。**
 
-1. FP8 在 H100 上**能否提速 decode forward**（验证 memory-bound 假设）。
-2. 量化 H100 的 **host/scheduler 开销占比**（B200 上是 decode step 的 ~30%）。
-3. 据此决定 per-chip 策略：H100 该走 FP8/kernel，还是和 B200 一样转 scheduler 优化。
+新的接力目标：
+
+1. 以 BF16 c32 rebaseline 作为 H100 active baseline。
+2. 用 nsys / scheduler phase 重新拆 H100 的 5-6 ms forward，确认 MoE/attention/dense/TP
+   的真实占比。
+3. 继续看 host/scheduler：c32 约 1.8 ms/step，不再是可以忽略的尾巴。
 
 ---
 
@@ -30,10 +40,11 @@
 | 诊断 | A6000 (~0.77 TB/s) | decode **memory-bound**；MoE = 69% GPU-busy / **59% critical path**；18.6 ms/step。lever = 减 MoE 权重流量（FP8/int8）。 |
 | 实测 | B200 (~8 TB/s) | **online-FP8 通用路径已落地**，但 **FP8 不提速（~7–10% 慢）**。原因：`fp8_w8a8` MoE kernel 在 B200 **无 tuned config** + W8A8 每步 activation 量化 + B200 带宽富余（decode forward 仅 ~5.9 ms，权重流量占比远低于 A6000）。 |
 | 结构发现 | B200 | decode step ≈ 8.5 ms 中 **仅 ~70% 是 GPU forward；~30%（~2.5 ms）是 host/scheduler**（`recv` IPC-relay ~1 ms + `sched` ~0.57 ms），与量化无关。 |
+| 实测 | H100 (~3.35 TB/s) | generic online-FP8 **不值得作为 latency/throughput lever**：BF16 bs=32 forward ~5.8 ms，FP8 ~5.6-5.7 ms；step 基本不变。BF16 rebaseline c16/c24/c32 显示 H100 瓶颈已变成 GPU forward + host/scheduler + kernel config 的混合问题。 |
 
-**为什么轮到 H100：** H100 HBM3 ≈ **3.35 TB/s**，是 B200（~8 TB/s）的 ~42%。decode 更
-memory-bound → 减半权重流量的收益应该更大。A6000 的结论预测 H100 上 FP8 会赢。这是
-**通用 FP8 路径**（已实现，跨 B200/H100/H200）第一次在它**应该奏效**的硬件上验证。
+**H100 结果为什么重要：** H100 HBM3 ≈ **3.35 TB/s**，是 B200（~8 TB/s）的 ~42%。
+A6000 的结论曾预测 H100 上 FP8 会赢；实测没有赢，说明 H100 已经不再是 A6000
+那种单纯 MoE 权重带宽主导的 regime。
 
 **B200 基线数字（H100 对照用）：**
 
@@ -75,11 +86,11 @@ git checkout perf/b200-moe-fp8
 
 ## 3. H100 项目目标（分阶段）
 
-- **Phase 0 — smoke：** 起 BF16 server，health，一个文本请求验证（应得正确输出）。
-- **Phase 1 — BF16 baseline：** `[fwd-by-bs]` + `[step phases]`（forward GPU ms + host 拆分）。
-- **Phase 2 — FP8 A/B：** 预热 JIT → 起 FP8 server → 同 load → 对比 forward ms / 吞吐 / 显存。
-- **Phase 3 — host/scheduler 占比：** 记录 H100 上 host 开销占 decode step 比例（对比 B200 ~30%）。
-- **（可选）Phase 4 — nsys split：** 先修 `decode_split.py`（§5.5），再拆 GPU forward（MoE/attn/AR/dense %）。
+- **Phase 0 — smoke：** 已完成。
+- **Phase 1 — BF16 baseline：** 已完成；active baseline 见 `FINDINGS_H100.md`。
+- **Phase 2 — FP8 A/B：** 已完成；结论是 FP8 只省显存，不作为当前提速方向。
+- **Phase 3 — host/scheduler 占比：** 已完成初步量化；c32 约 1.8 ms/step（~24%）。
+- **Phase 4 — nsys split：** 下一步。先修 `decode_split.py`（§5.5），再拆 GPU forward（MoE/attn/AR/dense %）。
 
 ---
 
@@ -87,7 +98,9 @@ git checkout perf/b200-moe-fp8
 
 ### 4.1 硬件 / 镜像 / 依赖
 
-- **2× H100**（TP=2）。80 GB 足够：BF16 thinker ~28.6 GB/卡，FP8 ~14.7 GB/卡；`mem_fraction_static=0.75` 默认即可。
+- **2× H100**（TP=2）。80 GB 足够：BF16 thinker ~28.6 GB/卡，FP8 ~14.7 GB/卡。
+  为了和 FP8 A/B 及共享机器稳定性对齐，当前 H100 baseline 使用
+  `thinker_memory_fraction=mem_fraction_static=0.55`。
 - CUDA ≥ 12.x（Hopper sm_90）、PyTorch 支持 sm_90。
 - Python 依赖（venv 放 `/data` 下，见 AGENTS.md）：`sglang==0.5.12.post1`、`sgl_kernel`、`flashinfer`、与 B200 同版本。
 - **`ninja` 必装**（online-FP8 JIT 编译要用；见 §5.1）。`pip install ninja`。
@@ -253,13 +266,14 @@ moe_runner_backend=triton`，且 `Load weight end ... mem usage≈14.7 GB`（FP8
 
 ---
 
-## 8. 成功标准与决策树
+## 8. 当前决策
 
-- **若 H100 上 FP8 forward 明显下降（期望 ≥ 10%）：** memory-bound 假设成立 → 通用 FP8 路径
-  在 H100 有价值。再考虑 tune `fp8_w8a8` H100 kernel + weight-only（W8A16）进一步榨。
-- **若 H100 上 FP8 也不提速（像 B200）：** 说明 MoE 权重流量不是 H100 decode 的主瓶颈
-  → 转 **host/scheduler 优化**（B200 上 ~30%，先 profile `recv`/`sched`）。
-- **无论结果：** 记录 host/scheduler 占比，落 `FINDINGS_H100.md`，更新 #760 comment。
+- **H100 FP8 结论：** 不作为当前 decode latency/throughput 优化方向。它省显存，但 bs=32
+  forward 只快约 2-3%，step 基本不动。
+- **H100 BF16 baseline：** c32 约 3775 tok/s，`[fwd-by-bs]` bs=32 约 5.8 ms，
+  `[step phases]` decode step 约 7.75 ms，host/scheduler 约 1.8 ms（~24%）。
+- **下一步：** 回 BF16，做 nsys forward split + scheduler/build profile。只有在 H100
+  tuned `fp8_w8a8` MoE config 出来、或目标变成省显存时，再回头测 FP8。
 
 ---
 
@@ -269,14 +283,14 @@ moe_runner_backend=triton`，且 `Load weight end ... mem usage≈14.7 GB`（FP8
 - [ ] `git clone` fork + `checkout perf/b200-moe-fp8`
 - [ ] 校验 BF16 checkpoint 完整（15 shards，§4.2）
 - [ ] `export PATH` 含 venv bin（§4.3）
-- [ ] Phase 0 smoke（BF16 起服务 + "Paris"）
-- [ ] Phase 1 BF16 baseline（`[fwd-by-bs]` + `[step phases]`）
-- [ ] Phase 2 FP8：先 `prewarm_fp8_jit.sh`，再 A/B
-- [ ] 填 §7 对照表 → 写 `FINDINGS_H100.md`
-- [ ] Phase 3 host/scheduler 占比
-- [ ]（可选）修 `decode_split.py`（nsys 2025.6.3）→ nsys GPU-forward 拆分
-- [ ] 更新 #760 comment / 决定 per-chip 下一步
+- [x] Phase 0 smoke（BF16 起服务 + "Paris"）
+- [x] Phase 1 BF16 baseline（`[fwd-by-bs]` + `[step phases]`）
+- [x] Phase 2 FP8：先 `prewarm_fp8_jit.sh`，再 A/B
+- [x] 填 §7 对照表 → 写 `FINDINGS_H100.md`
+- [x] Phase 3 host/scheduler 占比
+- [ ] 修 `decode_split.py`（nsys 2025.6.3）→ nsys GPU-forward 拆分
+- [ ] 更新 #760 comment with BF16 rebaseline / final H100 decision
 
 ---
 
-*文档版本：2026-06-15。承接 B200 online-FP8 实测（fork `perf/b200-moe-fp8`）。*
+*文档版本：2026-06-16。H100 FP8 A/B 已完成；当前方向回 BF16 rebaseline。*

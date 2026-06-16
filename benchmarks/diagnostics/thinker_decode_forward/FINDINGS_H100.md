@@ -1,17 +1,52 @@
-# H100 findings - thinker decode, general online-FP8 (W8A8) vs BF16
+# H100 findings - thinker decode, BF16 baseline and FP8 decision
 
 H100 decode-forward A/B for the **general online-FP8 (W8A8)** MoE path vs the
 BF16 baseline. This run used the same branch/engine path as the B200 result, and
 the same text steady-decode harness (`decode_load_text.py`, concurrency 32,
 `max_tokens=256`, PHASE_SYNC enabled).
 
-> **Headline (H100): online FP8 W8A8 halves thinker weight memory, but does not
-> produce the expected decode-forward speedup.** With a clean matched memory
-> contract (`thinker_memory_fraction=mem_fraction_static=0.55`), FP8 improves
-> bs=32 forward from about 5.8 ms to 5.6-5.7 ms (roughly 2-3%), and the total
-> decode step stays essentially flat at about 7.4 ms. This misses the planned
-> >=10% H100 success bar, so the simple "H100 is memory-bound enough for generic
-> W8A8 FP8 to win" hypothesis is not supported by this run.
+> **Current H100 decision: drop generic online-FP8 as the active optimization
+> path and return to BF16.** FP8 halves thinker weight memory, but with a clean
+> matched memory contract (`thinker_memory_fraction=mem_fraction_static=0.55`)
+> it only improves bs=32 forward from about 5.8 ms to 5.6-5.7 ms (roughly 2-3%),
+> while total decode step stays essentially flat. It is useful as a memory-saving
+> mode, not as the next H100 latency/throughput lever.
+
+## BF16 rebaseline after dropping FP8 - 2026-06-16
+
+After the FP8 A/B did not clear the >=10% H100 success bar, I reran the H100
+baseline in BF16 and swept text decode concurrency at the same stable `0.55`
+memory contract. Artifacts are under
+`/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline`.
+
+| load | client throughput | steady `[fwd-by-bs]` decode | steady `[step phases]` decode | host/scheduler tax | CUDA graph |
+|------|-------------------|-----------------------------|-------------------------------|--------------------|------------|
+| c16 | 2274.0 tok/s | bs=16: 5.3 ms | 6.71 ms step, 5.34-5.35 ms forward | 1.36-1.38 ms (20%) | 1.000, max_bs=16 |
+| c24 | 3257.0 tok/s | bs=24: 5.4 ms | 7.06 ms step, 5.39-5.40 ms forward | 1.65-1.66 ms (23%) | 1.000, max_bs=24 |
+| c32 | 3775.2 tok/s | bs=32: 5.8 ms | 7.75 ms step, 5.91-5.92 ms forward | 1.82-1.86 ms (24%) | 1.000, max_bs=32 |
+
+Notes:
+
+1. BF16 forward is already much faster on H100 than on A6000. The A6000 baseline
+   was 18.6 ms/step with MoE expert GEMM at 59% of the critical path; on H100 the
+   whole BF16 forward is only about 5.3-5.9 ms.
+2. Forward does not scale linearly with batch: going from c16 to c32 doubles the
+   steady decode batch but only raises forward from about 5.3 ms to 5.9 ms. That
+   weakens the old "pure MoE weight-bandwidth bottleneck" hypothesis.
+3. Step time and host/scheduler work still grow with load. At c32, about 1.8 ms
+   of the 7.75 ms step is outside GPU forward (`recv+sched+build+finalize+
+   stream+proc`), enough to hide any small forward-only win like the observed FP8
+   2-3%.
+4. The H100 BF16 MoE path also logs a Triton 3.6 config miss and falls back to the
+   older Triton 3.2 H100 config, including missing `down_moe` tuned config. This
+   is a more plausible next kernel-side target than generic FP8, but it needs an
+   nsys split to confirm MoE is still the dominant part inside the 5-6 ms forward.
+
+Revised bottleneck read: H100 is no longer the A6000 regime. The largest single
+component is still GPU forward, but the optimization ceiling is now shared by
+BF16 kernel quality and host/scheduler overhead. Generic FP8 is not the right
+first lever because it reduces weight footprint without materially moving step
+time.
 
 ## Setup
 
@@ -104,15 +139,19 @@ MoE kernel and rerun the same A/B.
 
 This H100 run does **not** validate a large memory-bound FP8 win. The current
 generic online-FP8 path is a memory saver and maybe a tiny forward win, but not
-a compelling H100 decode optimization yet.
+a compelling H100 decode optimization.
 
-Recommended next steps:
+Use the BF16 c32 rebaseline as the active H100 reference and spend the next pass
+on:
 
-1. Tune H100 `fp8_w8a8` fused-MoE config (`E=128,N=384`) and rerun BF16/FP8.
-2. Fix or document the FP8 `0.75` startup OOM / KV sizing issue; the successful
-   run required `thinker_memory_fraction=mem_fraction_static=0.55`.
-3. Continue scheduler/host profiling: H100 host tax is about 1.6-1.7 ms/step
-   (~21-23%), enough to hide small forward-only gains.
+1. BF16 H100 forward split: run/fix nsys decode split to break the 5-6 ms forward
+   into MoE, attention, dense GEMM, and TP/all-reduce.
+2. Scheduler/build overhead: c32 spends about 1.8 ms/step outside GPU forward;
+   this is now large enough to matter on H100.
+3. H100 BF16 MoE config quality: the logs fall back from Triton 3.6 to older H100
+   configs and miss the `down_moe` tuned config.
+4. Revisit FP8 only after an H100-specific tuned `fp8_w8a8` MoE config exists, or
+   when memory capacity is the goal rather than decode latency.
 
 ## Artifacts
 
@@ -126,3 +165,9 @@ Recommended next steps:
 | `/data/sglang-omni-h100-runs/20260616-h100-fp8/results/fp8_load_mem055.txt` | FP8 measured client load result |
 | `/data/sglang-omni-h100-runs/20260616-h100-fp8/logs/bf16_mem055.log` | BF16 matched `0.55` server log |
 | `/data/sglang-omni-h100-runs/20260616-h100-fp8/results/bf16_load_mem055.txt` | BF16 matched `0.55` client load result |
+| `/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline/logs/bf16_c16_mem055.log` | BF16 c16 rebaseline server log |
+| `/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline/results/bf16_c16_mem055.txt` | BF16 c16 client load result |
+| `/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline/logs/bf16_c24_mem055.log` | BF16 c24 rebaseline server log |
+| `/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline/results/bf16_c24_mem055.txt` | BF16 c24 client load result |
+| `/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline/logs/bf16_c32_mem055.log` | BF16 c32 rebaseline server log |
+| `/data/sglang-omni-h100-runs/20260616-h100-bf16-rebaseline/results/bf16_c32_mem055.txt` | BF16 c32 client load result |
