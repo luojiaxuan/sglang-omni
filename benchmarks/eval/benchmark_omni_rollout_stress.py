@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# note (luojiaxuan):
 """Closed-loop concurrency / rollout stress runner for Qwen3-Omni.
 
 Reuses the exact same prompt N times across a sweep of concurrency levels so
