@@ -35,10 +35,78 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
+from types import MethodType
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+_ATTN_ORIGINAL_UPDATE_CACHE_ATTR = "_sglang_omni_original_update_streaming_cache"
+
+
+def _decoder_attention_modules(codec) -> list:
+    """Decoder attention modules whose streaming KV cache must be made graph-stable."""
+    modules_by_id: dict[int, object] = {}
+    decoder = getattr(codec, "decoder", ())
+    for decoder_module in decoder:
+        modules = decoder_module.modules() if hasattr(decoder_module, "modules") else ()
+        for module in modules:
+            if hasattr(module, "attention_implementation"):
+                modules_by_id.setdefault(id(module), module)
+    return list(modules_by_id.values())
+
+
+def _cuda_graph_update_streaming_cache(
+    self, state, cached_k, cached_v, cached_pos, k_all, v_all, pos_k
+) -> None:
+    context = getattr(self, "context", None)
+    original = getattr(self, _ATTN_ORIGINAL_UPDATE_CACHE_ATTR, None)
+    if context is None:
+        if callable(original):
+            return original(state, cached_k, cached_v, cached_pos, k_all, v_all, pos_k)
+        raise RuntimeError("CUDA graph codec attention requires finite context")
+    state_cached_keys = getattr(state, "cached_keys", None)
+    state_cached_values = getattr(state, "cached_values", None)
+    state_cached_positions = getattr(state, "cached_positions", None)
+    if (
+        state_cached_keys is None
+        or state_cached_values is None
+        or state_cached_positions is None
+    ):
+        if callable(original):
+            return original(state, cached_k, cached_v, cached_pos, k_all, v_all, pos_k)
+        raise RuntimeError("CUDA graph codec attention cache is not initialized")
+    exec_mask = state.exec_mask.view(-1, 1, 1, 1)
+    exec_mask_pos = state.exec_mask.view(-1, 1)
+    new_cached_k = k_all[:, :, -int(context) :, :].contiguous()
+    new_cached_v = v_all[:, :, -int(context) :, :].contiguous()
+    new_cached_pos = pos_k[:, -int(context) :].contiguous()
+    state_cached_keys.copy_(torch.where(exec_mask, new_cached_k, cached_k))
+    state_cached_values.copy_(torch.where(exec_mask, new_cached_v, cached_v))
+    state_cached_positions.copy_(torch.where(exec_mask_pos, new_cached_pos, cached_pos))
+
+
+def patch_codec_attention_cache_for_cuda_graph(codec) -> None:
+    """Make the streaming attention KV cache CUDA-graph-capturable by writing it IN PLACE.
+
+    Note: (Jiaxin Deng) the upstream MOSS-Audio-Tokenizer-v2 streaming attention stores its per-slot
+    KV cache by reassigning ``state.cached_keys = torch.where(...)`` every step, so the buffer's
+    data_ptr changes each step and a CUDA graph (which records ops on fixed addresses) cannot follow
+    it; replay then reads the capture-time cache and the decode is not bit-identical. This rebinds
+    ``_update_streaming_cache`` to an in-place ``copy_`` version (stable address), value-identical to
+    the original. Cache-storage fix contributed by CloudRipple (codec team) in #811; ported here so
+    the warmup-captured runner can replay the stateful decode bit-identically.
+    """
+    for module in _decoder_attention_modules(codec):
+        update_cache = getattr(module, "_update_streaming_cache", None)
+        if not callable(update_cache):
+            continue
+        if hasattr(module, _ATTN_ORIGINAL_UPDATE_CACHE_ATTR):
+            continue
+        setattr(module, _ATTN_ORIGINAL_UPDATE_CACHE_ATTR, update_cache)
+        module._update_streaming_cache = MethodType(
+            _cuda_graph_update_streaming_cache, module
+        )
 
 
 class MossVocoderCudaGraphRunner:
