@@ -10,6 +10,7 @@ import torch
 
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
+from sglang_omni.pipeline.stage import runtime as stage_runtime
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
@@ -276,7 +277,7 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
 
 def test_stage_io_trace_disabled_by_default(monkeypatch, caplog) -> None:
     """Stage IO tracing must stay silent unless explicitly enabled."""
-    monkeypatch.delenv("SGLANG_OMNI_TRACE_STAGE_IO", raising=False)
+    monkeypatch.delenv(relay_io.TRACE_STAGE_IO_ENV, raising=False)
     events: list[dict] = []
     monkeypatch.setattr(
         "sglang_omni.pipeline.stage.runtime._emit_event",
@@ -310,13 +311,16 @@ def test_stage_io_trace_disabled_by_default(monkeypatch, caplog) -> None:
 
     asyncio.run(_run())
 
-    assert not any(event["event_name"] == "stage_io_trace" for event in events)
-    assert "stage_io_trace" not in caplog.text
+    assert not any(
+        event["event_name"] == stage_runtime.STAGE_IO_TRACE_EVENT
+        for event in events
+    )
+    assert stage_runtime.STAGE_IO_TRACE_EVENT not in caplog.text
 
 
 def test_stage_io_trace_records_relay_payload_edges(monkeypatch, caplog) -> None:
     """Trace relay write/read tensor volume and timing for one stage edge."""
-    monkeypatch.setenv("SGLANG_OMNI_TRACE_STAGE_IO", "1")
+    monkeypatch.setenv(relay_io.TRACE_STAGE_IO_ENV, "1")
     events: list[dict] = []
     monkeypatch.setattr(
         "sglang_omni.pipeline.stage.runtime._emit_event",
@@ -361,7 +365,9 @@ def test_stage_io_trace_records_relay_payload_edges(monkeypatch, caplog) -> None
     asyncio.run(_run())
 
     trace_events = [
-        event for event in events if event["event_name"] == "stage_io_trace"
+        event
+        for event in events
+        if event["event_name"] == stage_runtime.STAGE_IO_TRACE_EVENT
     ]
     assert len(trace_events) == 2
 
@@ -406,7 +412,7 @@ def test_stage_io_trace_records_relay_payload_edges(monkeypatch, caplog) -> None
     ):
         assert key in read_meta["timing_ms"]
 
-    assert caplog.text.count("stage_io_trace") == 2
+    assert caplog.text.count(stage_runtime.STAGE_IO_TRACE_EVENT) == 2
 
 
 def test_stage_relay_read_failure_completes_with_error() -> None:

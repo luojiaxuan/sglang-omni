@@ -23,19 +23,15 @@ from sglang_omni.relay.base import Relay
 
 TRACE_STAGE_IO_ENV = "SGLANG_OMNI_TRACE_STAGE_IO"
 TRACE_STAGE_IO_SYNC_ENV = "SGLANG_OMNI_TRACE_STAGE_IO_SYNC"
+_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 
 
 def trace_stage_io_enabled() -> bool:
-    return os.environ.get(TRACE_STAGE_IO_ENV, "").lower() in {"1", "true", "yes", "on"}
+    return os.environ.get(TRACE_STAGE_IO_ENV, "").lower() in _TRUE_ENV_VALUES
 
 
 def _trace_sync_enabled() -> bool:
-    return os.environ.get(TRACE_STAGE_IO_SYNC_ENV, "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return os.environ.get(TRACE_STAGE_IO_SYNC_ENV, "").lower() in _TRUE_ENV_VALUES
 
 
 def _now_ns() -> int:

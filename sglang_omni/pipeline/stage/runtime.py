@@ -45,6 +45,7 @@ from sglang_omni.relay.base import Relay, create_relay
 from sglang_omni.scheduling.messages import IncomingMessage
 
 logger = logging.getLogger(__name__)
+STAGE_IO_TRACE_EVENT = "stage_io_trace"
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
@@ -1089,12 +1090,13 @@ class Stage:
         _emit_event(
             request_id=request_id,
             stage=self.name,
-            event_name="stage_io_trace",
+            event_name=STAGE_IO_TRACE_EVENT,
             metadata=metadata,
         )
         log_record = {"request_id": request_id, "stage": self.name, **metadata}
         logger.info(
-            "stage_io_trace %s",
+            "%s %s",
+            STAGE_IO_TRACE_EVENT,
             json.dumps(log_record, sort_keys=True, default=str),
         )
 
