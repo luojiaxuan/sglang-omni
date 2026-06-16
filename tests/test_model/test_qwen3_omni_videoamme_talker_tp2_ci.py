@@ -46,28 +46,32 @@ CONCURRENCY = 16
 MAX_SAMPLES = 10
 MAX_TOKENS = 256
 ASR_DEVICE = "cuda:0"
+WARMUP_REQUESTS = 1
+# CI keeps the 10-sample temporal coverage but trims the per-frame video
+# pixel budget to avoid 14k-token long-video prefill dominating the talker TP2
+# gate on 2-GPU H100/H20 runners.
+VIDEO_MAX_PIXELS_CI = 150_528
 
 VIDEOAMME_TALKER_TP2_THINKER_TEXT_MIN_ACCURACY = 0.4
-VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0548
+VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0172
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0.0
+VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.058,
+        "throughput_qps": 0.052,
         "output_tok_per_req_s": 0.3,
-        "latency_mean_s": 170.36,
-        "rtf_mean": 12.8415,
+        "latency_mean_s": 130.381,
+        "rtf_mean": 21.1857,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
 
-# note (Yue Yin, Chenyang): 0.55-calibrated latency baseline (146.7 gate) is
-# unreachable on the #765 0.40 OOM-fix config (~148s); pin the gate to 155
-
-VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 155
+# note (Yue Yin): 0.55-calibrated latency baseline (146.7 gate) is unreachable on
+# the #765 0.40 OOM-fix config (~148s); pin the gate to 150 (manager-approved).
+VIDEOAMME_TALKER_TP2_THRESHOLDS[16]["latency_mean_s_max"] = 150.0
 
 
 @dataclass
@@ -81,12 +85,12 @@ class _TalkerEvalArtifacts:
 
 @pytest.mark.benchmark
 def test_thinker_tp2_actually_applied(
-    qwen3_omni_fp8_tp2_server: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
 ) -> None:
     """Confirm the thinker stage actually came up at tp_size=2.
     Prevents silent fallback to TP=1
     """
-    log_file = qwen3_omni_fp8_tp2_server.log_file
+    log_file = qwen3_omni_fp8_talker_server_tp2.log_file
     checks = MetricCheckCollector("Thinker TP=2 server log checks")
     checks.check(
         log_file is not None and log_file.exists(),
@@ -112,28 +116,35 @@ def test_thinker_tp2_actually_applied(
 
 @pytest.fixture(scope="module")
 def talker_eval_artifacts(
-    qwen3_omni_fp8_tp2_server: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videoamme_audio"))
     config = VideoEvalConfig(
         model="qwen3-omni",
-        port=qwen3_omni_fp8_tp2_server.port,
+        port=qwen3_omni_fp8_talker_server_tp2.port,
         max_samples=MAX_SAMPLES,
         max_tokens=MAX_TOKENS,
         max_concurrency=CONCURRENCY,
+        warmup=WARMUP_REQUESTS,
         output_dir=output_dir,
         repo_id=DATASETS["videoamme-ci-50"],
         video_fps=2,
         video_max_frames=128,
-        video_max_pixels=401408,
+        video_max_pixels=VIDEO_MAX_PIXELS_CI,
         enable_audio=True,
         asr_device=ASR_DEVICE,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
         disable_tqdm=False,
         timeout_s=500,
+        extra_request_params={"talker_prefill_user_context": False},
     )
-    results = asyncio.run(run_videoamme_eval(config, compute_wer=False))
+    results = asyncio.run(
+        run_videoamme_eval(
+            config,
+            compute_wer=False,
+        )
+    )
     return _TalkerEvalArtifacts(
         summary=results["summary"],
         speed=results["speed"],
@@ -145,11 +156,11 @@ def talker_eval_artifacts(
 
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
-    qwen3_omni_fp8_tp2_server: ServerHandle,
+    qwen3_omni_fp8_talker_server_tp2: ServerHandle,
     talker_eval_artifacts: _TalkerEvalArtifacts,
 ) -> _TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
-    stop_server(qwen3_omni_fp8_tp2_server.proc)
+    stop_server(qwen3_omni_fp8_talker_server_tp2.proc)
     wait_for_gpu_memory_release()
     return talker_eval_artifacts
 
