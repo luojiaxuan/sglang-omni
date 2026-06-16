@@ -15,6 +15,7 @@ requests take the pre-existing ``processor.decode_audio_codes`` path.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from collections import Counter
@@ -104,11 +105,13 @@ class _CodecStreamSession:
         self._cg_graph_t: Counter = Counter()
         self._cg_eager_t: Counter = Counter()
         self._cg_total_steps = 0
-        # Note: (Jiaxin Deng) enter streaming but DON'T retain the ExitStack -- holding it
-        # deterministically breaks multi-step CUDA-graph replay (step 1+ reads stale state, ~0.4 PCM
-        # error). cleanup is explicit in close() via _stop_streaming.
+        # Persistent batched streaming session: retain the ExitStack so the codec's per-slot causal
+        # state lives across decode steps (chunk-boundary continuity). Closed in close(). CUDA-graph
+        # replay is kept bit-identical to this stateful decode by the in-place attention-cache patch
+        # (patch_codec_attention_cache_for_cuda_graph), applied before warmup capture.
+        self._exit_stack = contextlib.ExitStack()
         with torch.no_grad():
-            codec.streaming(self._batch_size).__enter__()
+            self._exit_stack.enter_context(codec.streaming(self._batch_size))
 
     def warmup_cuda_graph(self, frames) -> list[int]:
         """Capture per-T codec-decode CUDA graphs (startup, GPU quiescent), then reset all slots.
@@ -121,8 +124,14 @@ class _CodecStreamSession:
             return []
         from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
             MossVocoderCudaGraphRunner,
+            patch_codec_attention_cache_for_cuda_graph,
         )
 
+        # Make the streaming attention KV cache graph-capturable before capture: the upstream codec
+        # reassigns state.cached_keys to a new tensor each step (data_ptr changes), which a CUDA graph
+        # cannot follow; this patches it to an in-place write (stable address), bit-identical to eager.
+        # Cache-storage fix contributed by CloudRipple (codec team) in #811.
+        patch_codec_attention_cache_for_cuda_graph(self._codec)
         if self._cg_runner is None:
             self._cg_runner = MossVocoderCudaGraphRunner(
                 self._codec, batch_size=self._batch_size, n_vq=self._n_vq
@@ -151,7 +160,7 @@ class _CodecStreamSession:
         if self._cg_runner is not None:
             self._log_cg_stats()
         with torch.no_grad():
-            self._codec._stop_streaming()
+            self._exit_stack.close()
         self._closed = True
 
     def _log_cg_stats(self) -> None:
@@ -538,11 +547,19 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         if override:
             frames = [int(x) for x in override.replace(",", " ").split()]
         else:
+            # Note: (Jiaxin Deng) data-driven broad-exact default. Per-T serving stats on
+            # MOSS-TTS-Local show emitted step lengths concentrate at a small set (T=5 ~38% of steps
+            # from min-coalescing, plus a small-T tail and the first-chunk/steady/cap sizes). This set
+            # covers ~87% of real steps vs ~45% for {join,first,steady,cap}, at near-flat VRAM (the
+            # pool is dominated by the cap graph; each small-T graph adds ~0.03 GB) and +20% c8
+            # throughput over the focused set. Frequencies are config-specific; override via the env
+            # above for other chunk configs. See the graph-set evaluation in the PR description.
             join_floor = max(
                 1,
                 min(self._default_initial_chunk_frames or 5, self._stream_chunk_frames),
             )
             frames = [
+                4, 5, 8, 9, 10, 11, 12, 13, 20, 22, 24, 25,
                 join_floor,
                 self._default_initial_chunk_frames or join_floor,
                 self._stream_chunk_frames,
