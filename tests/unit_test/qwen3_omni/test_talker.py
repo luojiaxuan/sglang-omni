@@ -25,7 +25,11 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
 )
-from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
+from sglang_omni.models.qwen3_omni.request_builders import (
+    TALKER_PREFILL_USER_CONTEXT_PARAM,
+    _build_talker_request_data,
+    build_sglang_talker_request,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import (
     MIN_PARTIAL_START_CHUNKS,
@@ -737,10 +741,6 @@ def _drive_real_builder(
     request_id: str = "r0",
     request_params: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    from sglang_omni.models.qwen3_omni.request_builders import (
-        _build_talker_request_data,
-    )
-
     captured: dict[str, Any] = {}
 
     class StubPrefillBuilder:
@@ -825,7 +825,7 @@ def test_real_builder_threads_user_context_prefill_flag() -> None:
     _, captured = _drive_real_builder(
         prefetched_chunks=[object()] * 5,
         prefetched_stream_done=False,
-        request_params={"talker_prefill_user_context": False},
+        request_params={TALKER_PREFILL_USER_CONTEXT_PARAM: False},
     )
 
     assert captured["build_prompt_prefill_include_user_context"] is False

@@ -35,6 +35,7 @@ from sglang_omni.models.qwen3_omni.config import (
 from sglang_omni.models.qwen3_omni.merge import decode_events, merge_for_thinker
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
+    TALKER_PREFILL_USER_CONTEXT_PARAM,
     apply_thinker_result,
     build_sglang_thinker_request,
     project_mm_aggregate_to_talker_ar,
@@ -229,7 +230,7 @@ def test_qwen_mm_aggregate_to_talker_projection_drops_context_when_disabled() ->
         request_id="req-1",
         request=OmniRequest(
             inputs="hi",
-            params={"talker_prefill_user_context": False},
+            params={TALKER_PREFILL_USER_CONTEXT_PARAM: False},
         ),
         data={
             "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},

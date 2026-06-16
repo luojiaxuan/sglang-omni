@@ -34,6 +34,7 @@ DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+TALKER_PREFILL_USER_CONTEXT_PARAM = "talker_prefill_user_context"
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
@@ -262,7 +263,7 @@ def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
     params = payload.request.params or {}
-    include_user_context = bool(params.get("talker_prefill_user_context", True))
+    include_user_context = bool(params.get(TALKER_PREFILL_USER_CONTEXT_PARAM, True))
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         thinker_inputs=(
@@ -1072,7 +1073,7 @@ def _build_talker_request_data(
         )
     thinker_chunks = list(payload.prefetched_chunks)
     thinker_done = bool(payload.prefetched_stream_done)
-    include_user_context = bool(params.get("talker_prefill_user_context", True))
+    include_user_context = bool(params.get(TALKER_PREFILL_USER_CONTEXT_PARAM, True))
 
     if not thinker_chunks:
         raise RuntimeError(
