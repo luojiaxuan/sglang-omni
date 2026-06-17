@@ -176,6 +176,8 @@ def gpu_ids_support_p2p_mesh(
         return None
     status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
     read_index = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
+    if isinstance(read_index, tuple):  # some pynvml builds expose this as (0,)
+        read_index = read_index[0]
 
     source_env = os.environ if env is None else env
     visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
@@ -194,7 +196,12 @@ def gpu_ids_support_p2p_mesh(
                     return False
         return True
     except Exception as exc:
-        logger.debug("NVML P2P mesh query failed for gpus=%s: %s", ids, exc)
+        logger.warning(
+            "NVML P2P mesh query failed for gpus=%s: %s; "
+            "keeping custom all-reduce disabled",
+            ids,
+            exc,
+        )
         return None
     finally:
         _shutdown_nvml(pynvml)
