@@ -396,6 +396,7 @@ class OmniScheduler:
         self._prefill_stats_batches = 0
         self._prefill_stats_reqs = 0
         self._prefill_stats_max = 0
+        self._prefill_coalesce_enabled = self._prefill_coalesce_window_s > 0.0
 
     def _waiting_prefill_tokens(self) -> int:
         """Best-effort sum of prefill tokens currently in the waiting queue.
@@ -640,8 +641,8 @@ class OmniScheduler:
             return self._drain_local_inbox()
 
         recv_msgs = self._drain_local_inbox() if self.is_entry_rank else []
-        if getattr(self, "_tp_idle_broadcast_skip", False) and (
-            self._tp_inbox_is_idle_collective(len(recv_msgs))
+        if self._tp_idle_broadcast_skip and self._tp_inbox_is_idle_collective(
+            len(recv_msgs)
         ):
             return []
         return broadcast_pyobj(
@@ -824,7 +825,8 @@ class OmniScheduler:
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
         self._emit_prefill_start_for_batch(batch)
-        self._record_prefill_stats(batch)
+        if self._log_prefill_stats:
+            self._record_prefill_stats(batch)
         if self._model_runner is not None:
             # Mirror upstream run_batch's per-forward counter: OmniScheduler
             # overrides run_batch, so without this forward_ct stays 0 and
@@ -1468,7 +1470,8 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
-            self._coalesce_prefill_window()
+            if self._prefill_coalesce_enabled:
+                self._coalesce_prefill_window()
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
@@ -1501,7 +1504,8 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
-            self._coalesce_prefill_window()
+            if self._prefill_coalesce_enabled:
+                self._coalesce_prefill_window()
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
             disable_overlap_for_batch = self.is_disable_overlap_for_batch(batch)
@@ -1646,7 +1650,8 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
-            self._coalesce_prefill_window()
+            if self._prefill_coalesce_enabled:
+                self._coalesce_prefill_window()
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
 
