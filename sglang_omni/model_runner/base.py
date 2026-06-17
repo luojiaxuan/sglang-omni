@@ -4,6 +4,7 @@
 Handles: ForwardBatch construction, phase-aware pre/post hooks, forward
 pass, sampling, logit post-processing, and output extraction.
 """
+
 from __future__ import annotations
 
 import logging
@@ -579,8 +580,14 @@ class ModelRunner:
     ) -> None:
         """Append each rollout request's sampled-token logprob (one per step)."""
         logprobs = sampled_logprobs_to_list(next_token_logprobs)
-        if logprobs is None or next_token_ids is None:
-            return
+        if logprobs is None:
+            shape = getattr(next_token_logprobs, "shape", None)
+            raise RuntimeError(
+                "Failed to convert sampler next_token_logprobs "
+                f"type={type(next_token_logprobs).__name__} shape={shape}"
+            )
+        if next_token_ids is None:
+            raise RuntimeError("Sampler did not return next_token_ids")
         if hasattr(next_token_ids, "tolist"):
             token_id_values = next_token_ids.tolist()
         else:

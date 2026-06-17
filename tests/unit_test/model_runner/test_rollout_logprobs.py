@@ -63,6 +63,20 @@ def test_rollout_logprobs_raises_on_batch_size_mismatch() -> None:
     assert data.output_token_logprobs == []
 
 
+def test_rollout_logprobs_raises_on_malformed_sampler_shape() -> None:
+    runner = object.__new__(ModelRunner)
+    data = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
+
+    with pytest.raises(RuntimeError, match="Failed to convert"):
+        runner._record_rollout_logprobs(
+            [[-0.5, -0.7]],
+            torch.tensor([11]),
+            [SimpleNamespace(data=data)],
+        )
+
+    assert data.output_token_logprobs == []
+
+
 def test_enable_sampler_logprobs_initializes_missing_forward_batch_fields() -> None:
     forward_batch = SimpleNamespace()
 
