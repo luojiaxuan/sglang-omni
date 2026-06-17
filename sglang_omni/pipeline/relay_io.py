@@ -38,6 +38,10 @@ def _pad_offset(offset: int, alignment: int) -> int:
     return (-offset) % alignment
 
 
+def _dtype_from_str(dtype_str: str) -> torch.dtype:
+    return getattr(torch, dtype_str.replace("torch.", ""))
+
+
 # ---------------------------------------------------------------------------
 # Tensor extraction / restoration (recursive, nested dicts/lists)
 # ---------------------------------------------------------------------------
@@ -258,7 +262,7 @@ async def read_tensor_ref(relay: Relay, ref: TensorRef) -> torch.Tensor:
             f"tensor_ref {ref.ref_id} shape mismatch: expected {ref.shape}, "
             f"got {tuple(tensor.shape)}"
         )
-    expected_dtype = getattr(torch, ref.dtype.replace("torch.", ""))
+    expected_dtype = _dtype_from_str(ref.dtype)
     if tensor.dtype != expected_dtype:
         raise RuntimeError(
             f"tensor_ref {ref.ref_id} dtype mismatch: expected {ref.dtype}, "
@@ -448,7 +452,7 @@ async def read_payload(
             offset = info["offset"]
             size = info["size"]
             tensor_bytes = recv_tensor[offset : offset + size]
-            dtype = getattr(torch, dtype_str.replace("torch.", ""))
+            dtype = _dtype_from_str(dtype_str)
             tensor = tensor_bytes.view(dtype).reshape(shape)
             tensor_dict[path] = tensor
 
@@ -514,7 +518,7 @@ async def read_blob(
     )
     await op.wait_for_completion()
 
-    dtype = getattr(torch, dtype_str.replace("torch.", ""))
+    dtype = _dtype_from_str(dtype_str)
     return recv_buf[offset:].view(dtype).reshape(shape)
 
 
