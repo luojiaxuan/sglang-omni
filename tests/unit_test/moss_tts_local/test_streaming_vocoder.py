@@ -205,6 +205,21 @@ def _terminal_payload(
     )
 
 
+def _offline_payload(rows: torch.Tensor, request_id: str) -> StagePayload:
+    state = MossTTSLocalState(
+        text="x",
+        audio_codes=rows[:, 1:].clone(),
+        prompt_tokens=2,
+        completion_tokens=int(rows.shape[0]),
+        engine_time_s=0.25,
+    )
+    return StagePayload(
+        request_id=request_id,
+        request=OmniRequest(inputs="", params={}),
+        data=state.to_dict(),
+    )
+
+
 def _drain(scheduler) -> list:
     messages = []
     while True:
@@ -625,30 +640,34 @@ def test_abort_releases_slot(monkeypatch) -> None:
     )
 
 
+def test_non_streaming_path_ignores_idle_startup_session(monkeypatch) -> None:
+    processor = FakeProcessor()
+    scheduler = _make_scheduler(monkeypatch, processor)
+    scheduler._ensure_session()
+    assert scheduler._session is not None
+    assert processor.audio_tokenizer._streaming_state is not None
+
+    rows = _rows(11, seed=59)
+    (result,) = scheduler._vocode_batch([_offline_payload(rows, "r1")])
+
+    assert processor.decode_calls == 1
+    assert scheduler._session is None
+    assert processor.audio_tokenizer._streaming_state is None
+    np.testing.assert_array_equal(
+        _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
+    )
+
+
 def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
-
-    def offline_payload(rows: torch.Tensor, request_id: str) -> StagePayload:
-        state = MossTTSLocalState(
-            text="x",
-            audio_codes=rows[:, 1:].clone(),
-            prompt_tokens=2,
-            completion_tokens=int(rows.shape[0]),
-            engine_time_s=0.25,
-        )
-        return StagePayload(
-            request_id=request_id,
-            request=OmniRequest(inputs="", params={}),
-            data=state.to_dict(),
-        )
 
     rows_1 = _rows(11, seed=60)
     rows_2 = _rows(4, seed=61)
 
     # Before any stream: the pre-existing processor path is used.
     results = scheduler._vocode_batch(
-        [offline_payload(rows_1, "r1"), offline_payload(rows_2, "r2")]
+        [_offline_payload(rows_1, "r1"), _offline_payload(rows_2, "r2")]
     )
     assert processor.decode_calls == 1
     waves_before = [_decode_audio(result.data) for result in results]
@@ -665,7 +684,7 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     # offline decodes must go through the session's offline lane and still
     # produce identical audio.
     results = scheduler._vocode_batch(
-        [offline_payload(rows_1, "r3"), offline_payload(rows_2, "r4")]
+        [_offline_payload(rows_1, "r3"), _offline_payload(rows_2, "r4")]
     )
     assert processor.decode_calls == 1
     waves_after = [_decode_audio(result.data) for result in results]

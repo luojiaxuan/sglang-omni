@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Streaming vocoder scheduler for MOSS-TTS Local: one persistent batched codec.streaming() session; streaming requests hold a slot, non-streaming use its offline lane (output-equivalent to decode_audio_codes)."""
+"""Streaming vocoder scheduler for MOSS-TTS Local.
+
+Streaming requests share one persistent batched ``codec.streaming()`` session.
+Pure non-streaming traffic keeps the pre-existing ``processor.decode_audio_codes``
+path even when startup CUDA-graph warmup briefly opened an idle session.
+"""
 
 from __future__ import annotations
 
@@ -339,6 +344,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         self._n_vq = int(processor.model_config.n_vq)
         self._sample_rate = _resolve_sample_rate(processor)
         self._session: _CodecStreamSession | None = None
+        self._session_used_by_streaming = False
         self._stream_states: dict[str, _LocalStreamState] = {}
         super().__init__(
             self._vocode,
@@ -390,6 +396,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             if self._session is not None:
                 self._session.close()
                 self._session = None
+            self._session_used_by_streaming = False
 
     # --- Streaming hooks ---
 
@@ -506,6 +513,16 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
             )
         return self._session
 
+    def _close_idle_startup_session_locked(self) -> None:
+        if (
+            self._session is not None
+            and not self._session_used_by_streaming
+            and not self._stream_states
+            and not self._stream_payloads
+        ):
+            self._session.close()
+            self._session = None
+
     def _cuda_graph_capture_frames(self) -> list[int]:
         """Step lengths T to capture; ``MOSS_VOCODER_CUDA_GRAPH_FRAMES`` (comma/space ints) overrides. Default is a data-driven broad-exact set (see below); uncaptured T fall back to eager."""
         override = os.environ.get("MOSS_VOCODER_CUDA_GRAPH_FRAMES", "").strip()
@@ -546,6 +563,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
 
     def _ensure_slot(self, state: _LocalStreamState) -> None:
         if state.slot is None:
+            self._session_used_by_streaming = True
             state.slot = self._ensure_session().acquire()
 
     def _latch_stream_metadata(
@@ -686,6 +704,7 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
         if rows.numel() == 0:
             return None
         codes = rows[:, : self._n_vq].transpose(0, 1).contiguous()
+        self._session_used_by_streaming = True
         return self._ensure_session().decode_offline(
             [codes], max_step_frames=self._max_step_frames
         )[0]
@@ -727,6 +746,8 @@ class MossTTSLocalStreamingVocoderScheduler(StreamingSimpleScheduler):
 
     def _decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
         """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms."""
+        with self._state_lock:
+            self._close_idle_startup_session_locked()
         if self._session is None:
             # Processor path opens its own streaming context; illegal once a
             # session is live.
