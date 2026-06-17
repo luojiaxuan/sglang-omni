@@ -546,9 +546,7 @@ class ModelRunner:
     ) -> Any:
         self._apply_repetition_penalty(logits_output, requests)
         self._apply_codec_suppress_tokens(logits_output, requests)
-        wants_rollout_logprob = any(
-            getattr(sr.data, "return_logprob", False) for sr in requests
-        )
+        wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
             self._enable_sampler_logprobs(forward_batch, len(requests))
         next_token_ids = self.tp_worker.model_runner.sample(
@@ -596,7 +594,7 @@ class ModelRunner:
             )
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            if getattr(data, "return_logprob", False):
+            if data.return_logprob:
                 data.output_token_logprobs.append(
                     [logprobs[row_idx], token_ids[row_idx]]
                 )
