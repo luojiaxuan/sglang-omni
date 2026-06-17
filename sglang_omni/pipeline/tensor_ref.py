@@ -95,6 +95,13 @@ class TensorRefPolicy:
     path_allowlist: tuple[str, ...]
 
     def should_externalize(self, path: str, tensor: torch.Tensor) -> bool:
+        """Whether to externalize this tensor leaf as a TensorRef.
+
+        The allowlist matches the *leaf name* with any list index stripped
+        (``foo[0]`` -> ``foo``), so an allowlisted ``list[Tensor]`` (e.g.
+        deepstack embeds) is externalized element-by-element -- each list
+        element becomes its own blob / relay segment.
+        """
         leaf_name = path.rsplit(".", 1)[-1].split("[")[0]
         if leaf_name not in self.path_allowlist:
             return False
