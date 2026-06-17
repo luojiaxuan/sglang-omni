@@ -209,6 +209,82 @@ def test_mrope_text_decode_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert forward_batch._sglang_omni_mrope_seconds >= 0.0
 
 
+def test_mrope_text_decode_fast_path_accepts_zero_delta_mm_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_BUILD_PROFILE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([8], dtype=torch.int64)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 1), -1, dtype=torch.int64)
+
+    mm_input = SimpleNamespace(
+        mrope_position_delta=torch.zeros((1, 1), dtype=torch.int64),
+        contains_mm_input=lambda: False,
+    )
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[mm_input]),
+    )
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        torch.tensor([[8], [8], [8]], dtype=torch.int64),
+    )
+    assert forward_batch._sglang_omni_mrope_fast is True
+
+
+def test_mrope_fast_path_skips_nonzero_delta_mm_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_BUILD_PROFILE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([8], dtype=torch.int64)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 1), -1, dtype=torch.int64)
+
+    mm_input = SimpleNamespace(
+        mrope_position_delta=torch.ones((1, 1), dtype=torch.int64),
+        contains_mm_input=lambda: False,
+    )
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[mm_input]),
+    )
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        torch.full((3, 1), -1, dtype=torch.int64),
+    )
+    assert forward_batch._sglang_omni_mrope_fast is False
+
+
 def test_mrope_fast_path_skips_multimodal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
 

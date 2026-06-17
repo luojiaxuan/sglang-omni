@@ -355,6 +355,33 @@ class ModelRunner:
 
         original = forward_batch_cls._compute_mrope_positions
 
+        def mrope_delta_is_zero(mm_input: Any) -> bool:
+            if mm_input is None:
+                return True
+            contains_mm_input = getattr(mm_input, "contains_mm_input", None)
+            if callable(contains_mm_input) and contains_mm_input():
+                return False
+            cached = getattr(mm_input, "_sglang_omni_zero_mrope_delta", None)
+            if cached is not None:
+                return bool(cached)
+            delta = getattr(mm_input, "mrope_position_delta", None)
+            if delta is None:
+                return False
+            if isinstance(delta, torch.Tensor):
+                if delta.device.type != "cpu":
+                    return False
+                is_zero = bool(delta.numel() > 0 and torch.all(delta == 0).item())
+            else:
+                try:
+                    is_zero = all(int(value) == 0 for value in delta)
+                except TypeError:
+                    is_zero = int(delta) == 0
+            try:
+                setattr(mm_input, "_sglang_omni_zero_mrope_delta", is_zero)
+            except Exception:
+                pass
+            return is_zero
+
         def patched_mrope(forward_batch, model_runner, batch):
             prof = bool(os.environ.get("SGLANG_OMNI_BUILD_PROFILE"))
             fast = bool(os.environ.get("SGLANG_OMNI_FAST_MROPE_DECODE"))
@@ -362,7 +389,9 @@ class ModelRunner:
             used_fast = False
             try:
                 mm_inputs = getattr(batch, "multimodal_inputs", None)
-                text_only = mm_inputs is None or all(mm is None for mm in mm_inputs)
+                text_only = mm_inputs is None or all(
+                    mrope_delta_is_zero(mm) for mm in mm_inputs
+                )
                 if (
                     fast
                     and text_only
