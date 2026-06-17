@@ -174,6 +174,70 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     assert not hasattr(ModelRunner, "prepare_prefill")
 
 
+class _DecodeMode:
+    def is_decode(self) -> bool:
+        return True
+
+
+def test_mrope_text_decode_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_BUILD_PROFILE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([4, 7], dtype=torch.int32)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 2), -1, dtype=torch.int64)
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[None, None]),
+    )
+
+    expected = torch.tensor([[4, 7], [4, 7], [4, 7]], dtype=torch.int64)
+    assert torch.equal(forward_batch.mrope_positions, expected)
+    assert forward_batch._sglang_omni_mrope_fast is True
+    assert forward_batch._sglang_omni_mrope_seconds >= 0.0
+
+
+def test_mrope_fast_path_skips_multimodal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_FAST_MROPE_DECODE", "1")
+
+    class ForwardBatch:
+        def __init__(self) -> None:
+            self.forward_mode = _DecodeMode()
+            self.positions = torch.tensor([4], dtype=torch.int32)
+            self.spec_info = None
+            self.mrope_positions = None
+
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            self.mrope_positions = torch.full((3, 1), -1, dtype=torch.int64)
+
+    runner = object.__new__(ModelRunner)
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    forward_batch = ForwardBatch()
+    forward_batch._compute_mrope_positions(
+        object(),
+        SimpleNamespace(multimodal_inputs=[object()]),
+    )
+
+    assert torch.equal(
+        forward_batch.mrope_positions,
+        torch.full((3, 1), -1, dtype=torch.int64),
+    )
+
+
 def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
     calls: list[tuple[str, int]] = []
 
