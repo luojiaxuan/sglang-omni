@@ -684,11 +684,12 @@ async def _chat_non_stream(
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
+        if _is_overload_error(exc):
+            logger.warning("Admission rejected request %s: %s", request_id, exc)
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         logger.exception("Error generating response for request %s", request_id)
         if _is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if _is_overload_error(exc):
-            raise HTTPException(status_code=429, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     requested_modalities = req.modalities or ["text"]
@@ -1178,12 +1179,15 @@ def _register_speech(app: FastAPI) -> None:
                     return speech_error_response(rate_limit_error(str(exc)))
                 return speech_error_response(internal_error(str(exc)))
             except Exception as exc:
+                if _is_overload_error(exc):
+                    logger.warning(
+                        "Admission rejected request %s: %s", request_id, exc
+                    )
+                    return speech_error_response(rate_limit_error(str(exc)))
                 logger.exception(
                     "Error preparing raw PCM speech stream for request %s",
                     request_id,
                 )
-                if _is_overload_error(exc):
-                    return speech_error_response(rate_limit_error(str(exc)))
                 return speech_error_response(internal_error(str(exc)))
 
         try:
@@ -1200,9 +1204,10 @@ def _register_speech(app: FastAPI) -> None:
                 return speech_error_response(rate_limit_error(str(exc)))
             return speech_error_response(internal_error(str(exc)))
         except Exception as exc:
-            logger.exception("Error generating speech for request %s", request_id)
             if _is_overload_error(exc):
+                logger.warning("Admission rejected request %s: %s", request_id, exc)
                 return speech_error_response(rate_limit_error(str(exc)))
+            logger.exception("Error generating speech for request %s", request_id)
             return speech_error_response(internal_error(str(exc)))
 
         headers = {
