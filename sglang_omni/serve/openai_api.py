@@ -972,8 +972,6 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
             for name, params in req.stage_sampling.items()
         }
 
-    # Thread rollout artifact controls into the generation params so stages can
-    # decide whether to emit logprobs / omni action streams.
     extra_params: dict[str, Any] = {
         "return_logprob": req.return_logprob,
         "return_omni_rollout": req.return_omni_rollout,

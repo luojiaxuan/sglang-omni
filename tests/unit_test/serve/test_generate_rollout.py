@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""POST /generate — Miles-compatible RL rollout endpoint (#780 §1.1.1)."""
+"""POST /generate — Miles-compatible RL rollout endpoint."""
 
 from __future__ import annotations
 
@@ -204,9 +204,6 @@ def test_generate_rejects_ambiguous_prompt_inputs() -> None:
     assert resp.status_code == 400
 
 
-# --- converter unit tests -------------------------------------------------
-
-
 def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     req = RolloutRequest(
         input_ids=[1, 2, 3],
@@ -284,7 +281,6 @@ def test_converter_threads_return_logprob_into_omni_params() -> None:
 
 
 def test_converter_defaults_stream_false_and_logprob_true() -> None:
-    # #780: rollout defaults — stream False, return_logprob True.
     req = RolloutRequest(prompt="hi", sampling_params={})
     assert req.stream is False
     assert req.return_logprob is True

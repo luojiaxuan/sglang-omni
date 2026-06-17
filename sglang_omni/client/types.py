@@ -130,8 +130,6 @@ class GenerateChunk:
     token_ids: list[int] = field(default_factory=list)
     text: str = ""
     logprobs: list[float] | None = None
-    # RL-rollout per-token logprobs: (logprob, token_id[, text]) pairs, mirroring
-    # sglang's native meta_info.output_token_logprobs.
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
     finish_reason: str | None = None
@@ -202,7 +200,6 @@ class CompletionResult:
     audio: CompletionAudio | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
-    # RL-rollout artifacts (populated when the stage emits them).
     output_token_logprobs: list[Any] | None = None
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None

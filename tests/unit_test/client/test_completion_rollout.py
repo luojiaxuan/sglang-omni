@@ -34,8 +34,6 @@ class _StreamStubCoordinator:
 
 
 def test_completion_surfaces_logprobs_and_weight_version() -> None:
-    # `output_token_logprobs` carries (logprob, token_id) pairs, mirroring
-    # sglang's native meta_info; msgpack transports them as JSON arrays.
     result = {
         "text": "hello",
         "finish_reason": "stop",
@@ -104,8 +102,6 @@ def test_completion_preserves_empty_logprob_list() -> None:
 
 
 def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
-    # qwen3-omni merges a text `decode` terminal with an audio terminal; the
-    # rollout artifacts ride on the decode result.
     result = {
         "decode": {
             "text": "hi",

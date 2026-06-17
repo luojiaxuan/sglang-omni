@@ -65,7 +65,6 @@ class ARRequestData:
     output_ids: list[int] = field(default_factory=list)
     extra_model_outputs: dict[str, Any] = field(default_factory=dict)
     finish_reason: str | None = None
-    # RL-rollout artifacts.
     weight_version: str | None = None
     return_logprob: bool = False
     output_token_logprobs: list[Any] = field(default_factory=list)

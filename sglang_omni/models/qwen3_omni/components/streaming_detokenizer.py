@@ -272,7 +272,6 @@ class StreamingDetokenizeScheduler:
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
 
-        # RL-rollout artifacts produced by the thinker stage.
         output_token_logprobs = thinker_out.get("output_token_logprobs")
         if output_token_logprobs is not None:
             result.setdefault("output_token_logprobs", output_token_logprobs)

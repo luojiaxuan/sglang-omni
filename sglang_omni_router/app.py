@@ -348,8 +348,6 @@ def register_routes(
 
     @app.post("/generate")
     async def generate(request: Request) -> Response:
-        # RL rollout generation route: select one worker and forward the body
-        # opaquely; omni action streams in the response are not interpreted.
         return await proxy.forward_model_request(request, "/generate")
 
     @app.post("/v1/chat/completions")
