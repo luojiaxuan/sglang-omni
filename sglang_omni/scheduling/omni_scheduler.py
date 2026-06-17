@@ -865,12 +865,14 @@ class OmniScheduler:
 
     def _admission_rejection_reason(self, request_id: str, req: Any) -> str | None:
         max_waiting = getattr(self, "_admission_max_waiting", None)
-        if max_waiting is not None and len(self.waiting_queue) >= max_waiting:
-            return (
-                "Admission rejected: scheduler waiting queue is full "
-                f"(waiting={len(self.waiting_queue)}, limit={max_waiting}). "
-                "Retry later or raise SGLANG_OMNI_ADMISSION_MAX_WAITING."
-            )
+        if max_waiting is not None:
+            waiting = self._admission_waiting_queue_depth()
+            if waiting >= max_waiting:
+                return (
+                    "Admission rejected: scheduler waiting queue is full "
+                    f"(waiting={waiting}, limit={max_waiting}). "
+                    "Retry later or raise SGLANG_OMNI_ADMISSION_MAX_WAITING."
+                )
 
         min_free = getattr(self, "_admission_min_free_gpu_memory_bytes", None)
         if min_free is not None:
@@ -889,6 +891,30 @@ class OmniScheduler:
         del request_id, req
         return None
 
+    def _admission_waiting_queue_depth(self) -> int:
+        """Return a TP-consistent queue depth for max-waiting admission."""
+        local_waiting = len(self.waiting_queue)
+        if getattr(self, "tp_size", 1) <= 1:
+            return local_waiting
+        cpu_group = getattr(self, "tp_cpu_group", None)
+        if cpu_group is None:
+            return local_waiting
+
+        value = torch.tensor([local_waiting], dtype=torch.int64)
+        try:
+            torch.distributed.all_reduce(
+                value,
+                op=torch.distributed.ReduceOp.MAX,
+                group=cpu_group,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to compute TP-consistent waiting queue depth for admission",
+                exc_info=True,
+            )
+            return local_waiting
+        return int(value.item())
+
     def _cuda_free_bytes(self) -> int | None:
         snapshot = cuda_memory_snapshot(getattr(self, "gpu_id", None))
         free_bytes = snapshot.get("cuda_free_bytes")
@@ -903,28 +929,28 @@ class OmniScheduler:
         if cpu_group is None:
             return None
 
+        values = torch.tensor(
+            [
+                1 if local_free is not None else 0,
+                int(local_free) if local_free is not None else 0,
+            ],
+            dtype=torch.int64,
+        )
         try:
-            values = torch.tensor(
-                [
-                    1 if local_free is not None else 0,
-                    int(local_free) if local_free is not None else 0,
-                ],
-                dtype=torch.int64,
-            )
             torch.distributed.all_reduce(
                 values,
                 op=torch.distributed.ReduceOp.MIN,
                 group=cpu_group,
             )
-            if int(values[0].item()) <= 0:
-                return None
-            return int(values[1].item())
         except Exception:
             logger.debug(
                 "Failed to compute TP-consistent CUDA free memory for admission",
                 exc_info=True,
             )
             return None
+        if int(values[0].item()) <= 0:
+            return None
+        return int(values[1].item())
 
     def _scheduler_telemetry_snapshot(self) -> dict[str, Any]:
         available_tokens = allocator_available_tokens(

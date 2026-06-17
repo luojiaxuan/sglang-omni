@@ -639,6 +639,35 @@ def test_omni_scheduler_admission_rejects_full_waiting_queue() -> None:
     assert scheduler._aborted_request_ids == {"req-new"}
 
 
+def test_omni_scheduler_admission_max_waiting_uses_tp_group_max(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.waiting_queue = []
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+    scheduler._admission_max_waiting = 1
+    scheduler._admission_min_free_gpu_memory_bytes = 4 * 1024 * 1024
+    calls: list[tuple[object, object]] = []
+
+    def fake_all_reduce(values, *, op, group):
+        calls.append((op, group))
+        assert op == torch.distributed.ReduceOp.MAX
+        values[0] = 1
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    reason = scheduler._admission_rejection_reason(
+        "req-full-on-peer",
+        SimpleNamespace(rid="req-full-on-peer"),
+    )
+
+    assert reason is not None
+    assert "scheduler waiting queue is full" in reason
+    assert "waiting=1" in reason
+    assert calls == [(torch.distributed.ReduceOp.MAX, scheduler.tp_cpu_group)]
+
+
 def test_omni_scheduler_admission_min_free_uses_tp_group_min(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.waiting_queue = []

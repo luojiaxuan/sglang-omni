@@ -1180,9 +1180,7 @@ def _register_speech(app: FastAPI) -> None:
                 return speech_error_response(internal_error(str(exc)))
             except Exception as exc:
                 if _is_overload_error(exc):
-                    logger.warning(
-                        "Admission rejected request %s: %s", request_id, exc
-                    )
+                    logger.warning("Admission rejected request %s: %s", request_id, exc)
                     return speech_error_response(rate_limit_error(str(exc)))
                 logger.exception(
                     "Error preparing raw PCM speech stream for request %s",
