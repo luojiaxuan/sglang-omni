@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -56,4 +57,61 @@ def test_rollout_logprobs_skips_on_batch_size_mismatch() -> None:
         torch.tensor([-0.5, -1.5]), torch.tensor([11, 22]), [SimpleNamespace(data=data)]
     )
 
+    assert data.output_token_logprobs == []
+
+
+def test_enable_sampler_logprobs_initializes_missing_forward_batch_fields() -> None:
+    forward_batch = SimpleNamespace()
+
+    ModelRunner._enable_sampler_logprobs(forward_batch, batch_size=2)
+
+    assert forward_batch.return_logprob is True
+    assert forward_batch.top_logprobs_nums == [0, 0]
+    assert forward_batch.token_ids_logprobs == [None, None]
+
+
+def test_record_rollout_logprobs_initializes_missing_output_list() -> None:
+    runner = object.__new__(ModelRunner)
+    data = SimpleNamespace(return_logprob=True)
+
+    runner._record_rollout_logprobs(
+        torch.tensor([-0.25]), torch.tensor([33]), [SimpleNamespace(data=data)]
+    )
+
+    assert data.output_token_logprobs == [[-0.25, 33]]
+
+
+def test_record_rollout_logprobs_requires_return_flag() -> None:
+    runner = object.__new__(ModelRunner)
+    data = SimpleNamespace(output_token_logprobs=[])
+
+    with pytest.raises(AssertionError, match="return_logprob"):
+        runner._record_rollout_logprobs(
+            torch.tensor([-0.25]), torch.tensor([33]), [SimpleNamespace(data=data)]
+        )
+
+
+def test_sample_next_token_ids_requires_sampler_logprobs_when_requested() -> None:
+    runner = object.__new__(ModelRunner)
+    runner._apply_repetition_penalty = lambda *args: None
+    runner._apply_codec_suppress_tokens = lambda *args: None
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(
+            sample=lambda _logits_output, _forward_batch: torch.tensor([44])
+        )
+    )
+    data = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
+    request = SimpleNamespace(data=data)
+    forward_batch = SimpleNamespace()
+    logits_output = SimpleNamespace()
+
+    with pytest.raises(RuntimeError, match="next_token_logprobs"):
+        runner._sample_next_token_ids(
+            logits_output,
+            forward_batch,
+            SimpleNamespace(),
+            [request],
+        )
+
+    assert forward_batch.return_logprob is True
     assert data.output_token_logprobs == []

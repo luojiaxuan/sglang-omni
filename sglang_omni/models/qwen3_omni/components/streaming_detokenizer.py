@@ -123,7 +123,11 @@ class StreamingDetokenizeScheduler:
 
     def _on_stream_chunk(self, request_id: str, item: Any) -> None:
         data = item.data
-        token_id = int(data.item()) if hasattr(data, "item") else int(data)
+        try:
+            item_value = data.item()
+        except AttributeError:
+            item_value = data
+        token_id = int(item_value)
         s = self._ensure_state(request_id)
         s.pending_tokens.append(token_id)
 
@@ -284,10 +288,11 @@ class StreamingDetokenizeScheduler:
         )
         if input_ids is None:
             prompt_tokens = 0
-        elif hasattr(input_ids, "numel"):
-            prompt_tokens = int(input_ids.numel())
         else:
-            prompt_tokens = len(input_ids)
+            try:
+                prompt_tokens = int(input_ids.numel())
+            except AttributeError:
+                prompt_tokens = len(input_ids)
 
         completion_ids = thinker_out.get("output_ids") or []
         completion_tokens = len(completion_ids)

@@ -232,6 +232,19 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
     assert state.engine_outputs["thinker"]["output_token_logprobs"] == []
 
 
+def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
+    state = Qwen3OmniPipelineState()
+    result = SimpleNamespace(output_ids=[8], extra_model_outputs={})
+
+    thinker_out = apply_thinker_result(state, stage_name="thinker", result=result)
+
+    assert "finish_reason" not in thinker_out
+    assert "weight_version" not in thinker_out
+    assert "output_token_logprobs" not in thinker_out
+    assert state.thinker_out is thinker_out
+    assert state.engine_outputs["thinker"] is thinker_out
+
+
 def test_qwen_preprocess_pretokenized_builds_thinker_state_from_ids() -> None:
     # Miles RL rollout sends pre-tokenized input_ids; they must reach the thinker
     # directly (no chat template / re-tokenize), with encoders skipped.
@@ -693,7 +706,11 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert infrastructure_saw_graph_disabled == [expected_infrastructure_graph_disabled]
     assert capture_hidden_layers_seen == [expected_capture_hidden_layers]
     assert init_graph_calls == expected_init_graph_calls
-    assert getattr(server_args, "enable_return_hidden_states", False) is speech_enabled
+    try:
+        enable_return_hidden_states = server_args.enable_return_hidden_states
+    except AttributeError:
+        enable_return_hidden_states = False
+    assert enable_return_hidden_states is speech_enabled
     assert server_args.disable_cuda_graph is False
     assert scheduler.server_args is server_args
 
