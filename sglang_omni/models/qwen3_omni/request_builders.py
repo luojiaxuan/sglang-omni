@@ -793,15 +793,15 @@ def apply_thinker_result(
         "extra_model_outputs": dict(result.extra_model_outputs),
     }
 
-    finish_reason = getattr(result, "finish_reason", None)
+    finish_reason = result.finish_reason
     if finish_reason is not None:
         thinker_out["finish_reason"] = finish_reason
 
-    weight_version = getattr(result, "weight_version", None)
+    weight_version = result.weight_version
     if weight_version is not None:
         thinker_out["weight_version"] = weight_version
 
-    output_token_logprobs = getattr(result, "output_token_logprobs", None)
+    output_token_logprobs = result.output_token_logprobs
     if output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = output_token_logprobs
 

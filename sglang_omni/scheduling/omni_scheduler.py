@@ -773,7 +773,7 @@ class OmniScheduler:
             # Build result payload from the Req
             data = req._omni_data
             data.output_ids = list(req.output_ids)
-            data.weight_version = getattr(self.server_args, "weight_version", None)
+            data.weight_version = self.server_args.weight_version
             finished_reason = req.finished_reason
             data.finish_reason = (
                 finished_reason.to_json().get("type")

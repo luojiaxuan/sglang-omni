@@ -220,6 +220,8 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
     result = SimpleNamespace(
         output_ids=[],
         extra_model_outputs={},
+        finish_reason=None,
+        weight_version=None,
         output_token_logprobs=[],
     )
 
