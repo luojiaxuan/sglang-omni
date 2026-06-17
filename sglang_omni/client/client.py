@@ -93,6 +93,7 @@ class Client:
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
         logprobs_parts: list[Any] = []
+        saw_output_token_logprobs = False
         omni_rollout: dict[str, Any] | None = None
         weight_version: str | None = None
 
@@ -106,7 +107,8 @@ class Client:
                 sample_rate = chunk.sample_rate
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
-            if chunk.output_token_logprobs:
+            if chunk.output_token_logprobs is not None:
+                saw_output_token_logprobs = True
                 logprobs_parts.extend(chunk.output_token_logprobs)
             if chunk.omni_rollout is not None:
                 omni_rollout = chunk.omni_rollout
@@ -143,7 +145,9 @@ class Client:
             audio=audio,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
-            output_token_logprobs=logprobs_parts or None,
+            output_token_logprobs=(
+                logprobs_parts if saw_output_token_logprobs else None
+            ),
             omni_rollout=omni_rollout,
             weight_version=weight_version,
         )

@@ -138,6 +138,25 @@ def test_generate_omits_logprobs_when_not_requested() -> None:
     assert resp.json()["meta_info"]["output_token_logprobs"] is None
 
 
+def test_generate_preserves_empty_logprob_list_when_requested() -> None:
+    result = _text_result()
+    result.output_token_logprobs = []
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="qwen3-omni"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "sampling_params": {},
+            "return_logprob": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["meta_info"]["output_token_logprobs"] == []
+
+
 def test_generate_emits_audio_block_when_present() -> None:
     result = _text_result()
     result.audio = CompletionAudio(id="a1", data="QUJD", transcript="hello world")
@@ -205,10 +224,26 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
     assert gen.extra_params["return_logprob"] is True
 
 
-def test_converter_wraps_prompt_as_user_message_for_chat_pipeline() -> None:
+def test_converter_preserves_prompt_as_raw_rollout_input() -> None:
     from sglang_omni.client import Client
 
     req = RolloutRequest(prompt="hi", sampling_params={})
+    gen = _build_rollout_generate_request(req)
+    omni = Client._build_omni_request(gen)
+
+    assert gen.prompt == "hi"
+    assert gen.prompt_token_ids is None
+    assert gen.messages is None
+    assert omni.inputs == "hi"
+
+
+def test_converter_preserves_messages_as_chat_rollout_input() -> None:
+    from sglang_omni.client import Client
+
+    req = RolloutRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        sampling_params={},
+    )
     gen = _build_rollout_generate_request(req)
     omni = Client._build_omni_request(gen)
 

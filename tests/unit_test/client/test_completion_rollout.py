@@ -88,6 +88,21 @@ def test_completion_without_logprobs_leaves_fields_none() -> None:
     assert out.omni_rollout is None
 
 
+def test_completion_preserves_empty_logprob_list() -> None:
+    result = {
+        "text": "",
+        "finish_reason": "stop",
+        "output_token_logprobs": [],
+    }
+    client = Client(_SubmitStubCoordinator(result))
+
+    out = asyncio.run(
+        client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
+    )
+
+    assert out.output_token_logprobs == []
+
+
 def test_completion_surfaces_rollout_from_multiterminal_decode() -> None:
     # qwen3-omni merges a text `decode` terminal with an audio terminal; the
     # rollout artifacts ride on the decode result.

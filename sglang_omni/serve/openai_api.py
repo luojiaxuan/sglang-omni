@@ -789,8 +789,6 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
             Message(role=m.get("role", "user"), content=m.get("content"))
             for m in req.messages
         ]
-    elif req.prompt is not None:
-        messages = [Message(role="user", content=req.prompt)]
 
     stage_sampling: dict[str, SamplingParams] | None = None
     if req.stage_sampling:
@@ -810,7 +808,7 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
 
     return GenerateRequest(
         model=req.model,
-        prompt=None,
+        prompt=req.prompt,
         prompt_token_ids=req.input_ids,
         messages=messages,
         sampling=sampling,
