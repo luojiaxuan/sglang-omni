@@ -661,9 +661,17 @@ class Stage:
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
             # Fan out the *unresolved* payload before materializing any
-            # tensor refs below — followers materialize refs themselves,
-            # on their own relay/device, rather than receiving an already
-            # resolved large CUDA tensor over the cross-process work queue.
+            # tensor refs below, so a follower receives the small ref rather
+            # than an already-resolved large CUDA tensor over the work queue.
+            #
+            # CONTRACT: a TensorRef must be resolved exactly once per blob. The
+            # relay get is destructive (the SHM backend unlinks on read), so two
+            # ranks resolving the same ref would double-unlink. This holds today
+            # because the only ref consumer (thinker) runs OmniScheduler with
+            # requires_tp_work_fanout=False -- it never reaches this fanout, and
+            # materialize runs once on the leader. Do NOT enable a ref edge whose
+            # consumer is a requires_tp_work_fanout=True stage without making the
+            # relay read non-destructive / reference-counted first.
             self._tp_fanout.fanout_work(payload)
         payload_for_scheduler = payload
         if tensor_refs_enabled():

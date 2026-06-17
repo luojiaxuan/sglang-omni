@@ -15,7 +15,11 @@ from sglang_omni.pipeline.tensor_ref import (
     tensor_ref_numel,
     tensor_refs_enabled,
 )
-from tests.unit_test.fixtures.pipeline_fakes import FakeRelay, make_stage_payload
+from tests.unit_test.fixtures.pipeline_fakes import (
+    DestructiveFakeRelay,
+    FakeRelay,
+    make_stage_payload,
+)
 
 
 def _make_ref(**overrides) -> TensorRef:
@@ -191,5 +195,30 @@ def test_write_payload_without_policy_is_unchanged() -> None:
         assert "tensor_ref_stats" not in metadata
         restored = await relay_io.read_payload(relay, payload.request_id, metadata)
         assert torch.equal(restored.data["x"], payload.data["x"])
+
+    asyncio.run(_run())
+
+
+def test_destructive_relay_blob_read_is_single_use() -> None:
+    """A blob read is destructive on the SHM backend (unlink-on-read): the first
+    resolve succeeds, a second independent resolve of the same blob fails. This
+    is why a TensorRef consumer MUST resolve exactly once -- the thinker
+    (OmniScheduler, requires_tp_work_fanout=False) resolves once on the leader;
+    a requires_tp_work_fanout=True consumer would double-unlink and crash.
+    """
+
+    async def _run() -> None:
+        relay = DestructiveFakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        metadata, op = await relay_io.write_blob(relay, "req-1:blob", tensor)
+        await op.wait_for_completion()
+
+        # First (sole / leader) resolve succeeds.
+        first = await relay_io.read_blob(relay, "req-1:blob", metadata)
+        assert torch.equal(first, tensor)
+
+        # A second independent resolve of the same blob crashes.
+        with pytest.raises(RuntimeError):
+            await relay_io.read_blob(relay, "req-1:blob", metadata)
 
     asyncio.run(_run())
