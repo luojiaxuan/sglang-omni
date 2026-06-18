@@ -281,9 +281,9 @@ async def materialize_tensor_refs(
             return await read_tensor_ref(relay, ref)
         return obj
 
-    # Containers are rebuilt only when a descendant ref was actually resolved;
-    # otherwise the original object is returned unchanged so ref-free payloads
-    # (every non-consumer stage) skip per-request container churn.
+    # note (luojiaxuan): Rebuild containers only when a descendant ref resolves;
+    # note (luojiaxuan): ref-free and non-consumer payloads keep object identity
+    # note (luojiaxuan): to skip per-request container churn.
     if isinstance(obj, dict):
         new_dict = {}
         changed = False

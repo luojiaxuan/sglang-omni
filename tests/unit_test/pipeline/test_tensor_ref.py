@@ -63,8 +63,8 @@ def test_policy_should_externalize_respects_allowlist_and_threshold() -> None:
         consumer_stage="thinker",
         path_allowlist=("video_embeds",),
     )
-    big = torch.zeros(32, dtype=torch.float32)  # 128 bytes
-    small = torch.zeros(4, dtype=torch.float32)  # 16 bytes
+    big = torch.zeros(32, dtype=torch.float32)
+    small = torch.zeros(4, dtype=torch.float32)
 
     assert policy.should_externalize("encoder_outs.image_encoder.video_embeds", big)
     assert not policy.should_externalize(
@@ -131,7 +131,6 @@ async def _write_and_read_mid_payload(
     video_embeds = mid_payload.data["encoder_outs"]["image_encoder"]["video_embeds"]
     assert is_tensor_ref_dict(video_embeds)
 
-    # Let the deferred blob-publish op settle before reading it back.
     for task in list(relay_io._BACKGROUND_REF_TASKS):
         await task
 
@@ -168,7 +167,6 @@ def test_materialize_tensor_refs_materialize_all_overrides_consumer_stage() -> N
         tensor = torch.arange(8, dtype=torch.float32)
         mid_payload, original = await _write_and_read_mid_payload(relay, tensor)
 
-        # mm_aggregate is not the declared consumer, but materialize_all forces it.
         resolved_data = await relay_io.materialize_tensor_refs(
             relay,
             mid_payload.data,
@@ -212,11 +210,9 @@ def test_destructive_relay_blob_read_is_single_use() -> None:
         metadata, op = await relay_io.write_blob(relay, "req-1:blob", tensor)
         await op.wait_for_completion()
 
-        # First (sole / leader) resolve succeeds.
         first = await relay_io.read_blob(relay, "req-1:blob", metadata)
         assert torch.equal(first, tensor)
 
-        # A second independent resolve of the same blob crashes.
         with pytest.raises(RuntimeError):
             await relay_io.read_blob(relay, "req-1:blob", metadata)
 
