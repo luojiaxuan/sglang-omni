@@ -958,7 +958,6 @@ def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
         assert cls.tensor_parallel_server_args_overrides(
             stage_name="thinker", tp_size=2
         ) == {"disable_custom_all_reduce": True}
-        # TP==1 and non-thinker stages stay untouched.
         assert (
             cls.tensor_parallel_server_args_overrides(stage_name="thinker", tp_size=1)
             == {}

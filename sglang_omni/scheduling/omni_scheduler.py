@@ -347,12 +347,6 @@ class OmniScheduler:
         self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
-        # --- Prefill batching knobs (issue #760) -----------------------------
-        # All default to CURRENT behavior; opt in via env for benchmarking
-        # before any default is flipped (the Qwen3-Omni CI thresholds are
-        # tight). Coalesce window: on the idle->prefill transition, briefly
-        # wait for more queued requests so the first prefill batch is not
-        # size-1. See _coalesce_prefill_window for the TP-safety argument.
         self._prefill_coalesce_window_s = (
             max(env_float("SGLANG_OMNI_PREFILL_COALESCE_MS", default=0.0), 0.0) / 1000.0
         )
@@ -372,10 +366,6 @@ class OmniScheduler:
         self._prefill_coalesce_min = max(
             env_int("SGLANG_OMNI_PREFILL_COALESCE_MIN") or 2, 1
         )
-        # Token budget: never coalesce a prefill larger than the engine will run
-        # in one (chunked) step. Bounds the transient activation/broadcast
-        # memory that caused a multimodal thinker-TP OOM at high concurrency
-        # (issue #760). Default: chunked_prefill_size, else max_prefill_tokens.
         _coalesce_max_tokens = env_int("SGLANG_OMNI_PREFILL_COALESCE_MAX_TOKENS")
         if _coalesce_max_tokens and _coalesce_max_tokens > 0:
             self._prefill_coalesce_max_tokens = _coalesce_max_tokens
@@ -385,11 +375,9 @@ class OmniScheduler:
                 or getattr(self, "max_prefill_tokens", 0)
                 or 0
             )
-        # Cheap int-broadcast fast path so idle TP loops skip the pyobj pickle.
         self._tp_idle_broadcast_skip = env_flag(
             "SGLANG_OMNI_TP_IDLE_BROADCAST_SKIP", default=False
         )
-        # Periodic prefill-batch-size summary to quantify fragmentation.
         self._log_prefill_stats = env_flag(
             "SGLANG_OMNI_LOG_PREFILL_STATS", default=False
         )
