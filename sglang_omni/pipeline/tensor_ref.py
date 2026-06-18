@@ -27,7 +27,6 @@ class TensorRef:
     path: str
     shape: tuple[int, ...]
     dtype: str
-    device: str
     nbytes: int
     blob_key: str
     blob_metadata: dict[str, Any]
@@ -43,7 +42,6 @@ class TensorRef:
             "path": self.path,
             "shape": list(self.shape),
             "dtype": self.dtype,
-            "device": self.device,
             "nbytes": self.nbytes,
             "blob_key": self.blob_key,
             "blob_metadata": self.blob_metadata,
@@ -60,7 +58,6 @@ class TensorRef:
             path=str(obj["path"]),
             shape=tuple(int(x) for x in obj["shape"]),
             dtype=str(obj["dtype"]),
-            device=str(obj["device"]),
             nbytes=int(obj["nbytes"]),
             blob_key=str(obj["blob_key"]),
             blob_metadata=dict(obj["blob_metadata"]),

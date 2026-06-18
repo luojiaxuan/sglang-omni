@@ -296,7 +296,6 @@ def test_stage_execute_fanouts_unresolved_payload_before_materializing_refs(
             path="video_embeds",
             shape=tuple(tensor.shape),
             dtype=str(tensor.dtype),
-            device=str(tensor.device),
             nbytes=tensor.numel() * tensor.element_size(),
             blob_key="req-1:blob",
             blob_metadata=blob_metadata,

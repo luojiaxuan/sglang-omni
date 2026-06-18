@@ -99,12 +99,6 @@ def restore_tensors(obj: Any, tensor_dict: dict[str, torch.Tensor]) -> Any:
         return obj
 
 
-# ---------------------------------------------------------------------------
-# Lazy TensorRef: externalize large allowlisted tensors instead of inlining
-# them into the payload buffer. Intermediate stages forward the small ref
-# dict untouched; only the declared consumer stage resolves it.
-# ---------------------------------------------------------------------------
-
 _BACKGROUND_REF_TASKS: set[asyncio.Task] = set()
 _LOGGED_REF_EDGES: set[tuple[str, str]] = set()
 
@@ -161,7 +155,6 @@ async def publish_tensor_ref(
         path=path,
         shape=tuple(tensor.shape),
         dtype=str(tensor.dtype),
-        device=str(tensor.device),
         nbytes=tensor.numel() * tensor.element_size(),
         blob_key=blob_key,
         blob_metadata=blob_metadata,

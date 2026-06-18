@@ -31,7 +31,6 @@ def _make_ref(**overrides) -> TensorRef:
         path="encoder_outs.image_encoder.video_embeds",
         shape=(2, 3),
         dtype="torch.float32",
-        device="cuda:0",
         nbytes=24,
         blob_key="req-1:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
         blob_metadata={"relay_info": {}, "tensor_shape": [2, 3]},
