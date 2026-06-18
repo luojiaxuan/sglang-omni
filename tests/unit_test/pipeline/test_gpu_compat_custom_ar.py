@@ -28,8 +28,6 @@ class _FakeP2PNVML(ModuleType):
         self._query_error = query_error
         self.shutdown_called = False
         if drop_status_fn:
-            # Simulate an old pynvml without the P2P-status API (instance attr
-            # shadows the class method so getattr(..., None) returns None).
             self.nvmlDeviceGetP2PStatus = None
 
     def nvmlInit(self) -> None:
@@ -55,7 +53,6 @@ def _patch_pynvml(monkeypatch, fake: ModuleType | None) -> None:
 
 
 def test_should_disable_with_no_or_single_gpu(monkeypatch) -> None:
-    # NVML should never even be consulted for < 2 GPUs.
     _patch_pynvml(monkeypatch, _FakeP2PNVML(not_ok_pairs={(0, 1)}))
     assert gpu_compat.should_disable_thinker_custom_all_reduce(None, env={}) is True
     assert gpu_compat.should_disable_thinker_custom_all_reduce([], env={}) is True

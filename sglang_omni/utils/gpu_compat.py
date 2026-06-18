@@ -176,8 +176,9 @@ def gpu_ids_support_p2p_mesh(
         return None
     status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", 0)
     read_index = getattr(pynvml, "NVML_P2P_CAPS_INDEX_READ", 0)
-    # nvidia-ml-py 13.595.45 ships a stray trailing comma (`= 0,`), making this
-    # constant a 1-tuple; nvmlDeviceGetP2PStatus needs a plain int.
+    # note (luojiaxuan): nvidia-ml-py 13.595.45 ships a stray trailing comma
+    # note (luojiaxuan): (`= 0,`), making this constant a 1-tuple;
+    # note (luojiaxuan): nvmlDeviceGetP2PStatus needs a plain int.
     if isinstance(read_index, tuple):
         read_index = read_index[0]
 
