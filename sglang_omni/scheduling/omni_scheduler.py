@@ -385,9 +385,11 @@ class OmniScheduler:
         self._dirty_deferred_request_ids: set[str] = set()
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
-        # Opt-in overload guards evaluated at queue time. The default
-        # max_waiting mirrors the existing upstream max_queued_requests limit
-        # and surfaces a controlled rejection before an uncontrolled overload.
+        # note (luojiaxuan): Opt-in overload guards are evaluated at queue
+        # note (luojiaxuan): time. The default max_waiting mirrors the
+        # note (luojiaxuan): existing upstream max_queued_requests limit and
+        # note (luojiaxuan): surfaces a controlled rejection before an
+        # note (luojiaxuan): uncontrolled overload.
         self._admission_max_waiting = self._resolve_admission_max_waiting()
         self._admission_min_free_gpu_memory_bytes = (
             self._resolve_admission_min_free_gpu_memory_bytes()
@@ -876,9 +878,11 @@ class OmniScheduler:
 
         min_free = getattr(self, "_admission_min_free_gpu_memory_bytes", None)
         if min_free is not None:
-            # TP ranks can have different local free memory. Reduce to a
-            # group-wide minimum before deciding so every rank appends or
-            # rejects the same payload and keeps waiting_queue in lockstep.
+            # note (luojiaxuan): TP ranks can have different local free
+            # note (luojiaxuan): memory. Reduce to a group-wide minimum before
+            # note (luojiaxuan): deciding so every rank appends or rejects the
+            # note (luojiaxuan): same payload and keeps waiting_queue in
+            # note (luojiaxuan): lockstep.
             free_bytes = self._admission_cuda_free_bytes()
             if free_bytes is not None and free_bytes < min_free:
                 return (
