@@ -360,9 +360,10 @@ class OmniScheduler:
             if _coalesce_target and _coalesce_target > 0
             else getattr(self, "max_running_requests", None)
         )
-        # Minimum waiting-queue depth before the window engages, so a lone
-        # request never pays the idle wait (avoids the low-concurrency latency
-        # tax measured in the issue #760 audio A/B).
+        # note (luojiaxuan): Minimum waiting-queue depth before the window
+        # note (luojiaxuan): engages, so a lone request never pays the idle
+        # note (luojiaxuan): wait (avoids the low-concurrency latency tax
+        # note (luojiaxuan): measured in the issue #760 audio A/B).
         self._prefill_coalesce_min = max(
             env_int("SGLANG_OMNI_PREFILL_COALESCE_MIN") or 2, 1
         )
@@ -430,9 +431,11 @@ class OmniScheduler:
             return
         if getattr(self, "_async_pending", None) is not None:
             return
-        # Overlap loop: a finished prefill result waits one iteration in
-        # result_queue (running_batch still 0) before its decode starts; don't
-        # stall that transition. Attribute only exists in _event_loop_overlap.
+        # note (luojiaxuan): Overlap loop: a finished prefill result waits
+        # note (luojiaxuan): one iteration in result_queue (running_batch
+        # note (luojiaxuan): still 0) before its decode starts; don't stall
+        # note (luojiaxuan): that transition. Attribute only exists in
+        # note (luojiaxuan): _event_loop_overlap.
         if getattr(self, "result_queue", None):
             return
         if batch_size(getattr(self, "running_batch", None)) > 0:
@@ -440,9 +443,10 @@ class OmniScheduler:
         coalesce_min = getattr(self, "_prefill_coalesce_min", 2)
         if not coalesce_min <= len(self.waiting_queue) < target:
             return
-        # Token budget bounds the coalesced prefill (and its transient
-        # activation/broadcast memory) to one chunk-worth; prevents the
-        # multimodal thinker-TP OOM seen at high concurrency (issue #760).
+        # note (luojiaxuan): Token budget bounds the coalesced prefill (and
+        # note (luojiaxuan): its transient activation/broadcast memory) to one
+        # note (luojiaxuan): chunk-worth; prevents the multimodal thinker-TP
+        # note (luojiaxuan): OOM seen at high concurrency (issue #760).
         budget = getattr(self, "_prefill_coalesce_max_tokens", 0) or 0
         if budget and self._waiting_prefill_tokens() >= budget:
             return

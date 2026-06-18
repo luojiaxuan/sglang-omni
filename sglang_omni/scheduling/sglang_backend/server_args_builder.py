@@ -21,11 +21,14 @@ def build_sglang_server_args(
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
     if chunked_prefill_size is None:
-        # Issue #760: opt-in chunked prefill so long (audio) prefills interleave
-        # with decode instead of blocking an entire prefill step. Off by default
-        # (the Qwen3-Omni CI thresholds are tight). The PrefillManager already
-        # force-disables chunking for projected-embeds (talker) requests, so
-        # enabling this only affects the thinker prefill path.
+        # note (luojiaxuan): Issue #760: opt-in chunked prefill so long
+        # note (luojiaxuan): (audio) prefills interleave with decode instead
+        # note (luojiaxuan): of blocking an entire prefill step. Off by
+        # note (luojiaxuan): default (the Qwen3-Omni CI thresholds are tight).
+        # note (luojiaxuan): The PrefillManager already force-disables
+        # note (luojiaxuan): chunking for projected-embeds (talker) requests,
+        # note (luojiaxuan): so enabling this only affects the thinker prefill
+        # note (luojiaxuan): path.
         env_chunk = env_int("SGLANG_OMNI_CHUNKED_PREFILL_SIZE")
         if env_chunk and env_chunk > 0:
             chunked_prefill_size = env_chunk
