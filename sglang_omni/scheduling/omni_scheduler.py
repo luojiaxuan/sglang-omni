@@ -98,6 +98,8 @@ class OmniScheduler:
         are defined directly on this class and take precedence.
     """
 
+    _log_prefill_stats: bool = False
+
     def __init__(
         self,
         tp_worker: Any,
