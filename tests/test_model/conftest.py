@@ -105,21 +105,23 @@ def qwen3_omni_fp8_talker_server_tp2(tmp_path_factory: pytest.TempPathFactory):
             "--gpu-code2wav",
             "1",
             # note (luojiaxuan): GPU 1 co-locates thinker rank-1, talker, and
-            # code2wav under TP=2. Keep headroom for request-time
-            # broadcast/transient tensors; larger KV budgets can OOM under
-            # concurrency-16 video prefill.
+            # note (luojiaxuan): code2wav under TP=2. Keep headroom for
+            # note (luojiaxuan): request-time broadcast/transient tensors;
+            # note (luojiaxuan): larger KV budgets can OOM under
+            # note (luojiaxuan): concurrency-16 video prefill.
             "--thinker-mem-fraction-static",
             QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION_STATIC,
             "--talker-mem-fraction-static",
             QWEN3_OMNI_FP8_TP2_TALKER_MEM_FRACTION_STATIC,
             # note (luojiaxuan): Stage 11 is dominated by long-video prefill.
-            # Thinker CUDA graph capture can reserve tens of GiB on 2-GPU
-            # co-located startup and starve the talker before requests begin.
+            # note (luojiaxuan): Thinker CUDA graph capture can reserve tens
+            # note (luojiaxuan): of GiB on 2-GPU co-located startup and starve
+            # note (luojiaxuan): the talker before requests begin.
             "--thinker-cuda-graph",
             QWEN3_OMNI_FP8_TP2_THINKER_CUDA_GRAPH,
             # note (luojiaxuan): Start talker as soon as the existing
-            # partial-start guard allows to maximize overlap with the
-            # long-video thinker stream.
+            # note (luojiaxuan): partial-start guard allows to maximize
+            # note (luojiaxuan): overlap with the long-video thinker stream.
             "--partial-start-min-chunks",
             QWEN3_OMNI_FP8_TP2_PARTIAL_START_MIN_CHUNKS,
         ],
