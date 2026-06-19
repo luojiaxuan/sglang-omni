@@ -98,7 +98,8 @@ def test_policy_from_env_requires_declared_edge(monkeypatch) -> None:
     )
     assert policy is not None
     assert policy.consumer_stage == "thinker"
-    assert policy.threshold_bytes == int(DEFAULT_TENSOR_REF_THRESHOLD_MB * 1024 * 1024)
+    assert DEFAULT_TENSOR_REF_THRESHOLD_MB == 2.0
+    assert policy.threshold_bytes == 2 * 1024 * 1024
     assert policy.path_allowlist == DEFAULT_TENSOR_REF_PATHS
 
 

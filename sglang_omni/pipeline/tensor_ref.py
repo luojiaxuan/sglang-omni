@@ -16,7 +16,7 @@ from typing import Any
 import torch
 
 TENSOR_REF_MARKER = "__sglang_omni_tensor_ref__"
-DEFAULT_TENSOR_REF_THRESHOLD_MB = 8.0
+DEFAULT_TENSOR_REF_THRESHOLD_MB = 2.0
 DEFAULT_TENSOR_REF_PATHS = (
     "video_embeds",
     "deepstack_visual_embeds_image",
