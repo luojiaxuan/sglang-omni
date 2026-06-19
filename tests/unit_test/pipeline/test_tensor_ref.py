@@ -9,6 +9,8 @@ import torch
 
 from sglang_omni.pipeline import relay_io
 from sglang_omni.pipeline.tensor_ref import (
+    DEFAULT_TENSOR_REF_PATHS,
+    DEFAULT_TENSOR_REF_THRESHOLD_MB,
     TensorRef,
     TensorRefPolicy,
     is_tensor_ref_dict,
@@ -96,8 +98,8 @@ def test_policy_from_env_requires_declared_edge(monkeypatch) -> None:
     )
     assert policy is not None
     assert policy.consumer_stage == "thinker"
-    assert policy.threshold_bytes == 8 * 1024 * 1024
-    assert "video_embeds" in policy.path_allowlist
+    assert policy.threshold_bytes == int(DEFAULT_TENSOR_REF_THRESHOLD_MB * 1024 * 1024)
+    assert policy.path_allowlist == DEFAULT_TENSOR_REF_PATHS
 
 
 async def _write_and_read_mid_payload(
@@ -192,6 +194,45 @@ def test_write_payload_without_policy_is_unchanged() -> None:
         assert "tensor_ref_stats" not in metadata
         restored = await relay_io.read_payload(relay, payload.request_id, metadata)
         assert torch.equal(restored.data["x"], payload.data["x"])
+
+    asyncio.run(_run())
+
+
+def test_write_payload_keeps_small_allowlisted_tensor_inline_with_policy() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(4, dtype=torch.float32)
+        payload = make_stage_payload(
+            request_id="req-1",
+            data={"encoder_outs": {"image_encoder": {"video_embeds": tensor}}},
+        )
+        policy = TensorRefPolicy(
+            threshold_bytes=tensor.numel() * tensor.element_size() + 1,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("video_embeds",),
+        )
+
+        metadata, op = await relay_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            tensor_ref_policy=policy,
+        )
+        await op.wait_for_completion()
+
+        stats = metadata["tensor_ref_stats"]
+        assert stats["ref_count"] == 0
+        assert stats["ref_bytes"] == 0
+        assert stats["inline_tensor_bytes"] == tensor.numel() * tensor.element_size()
+
+        restored = await relay_io.read_payload(relay, payload.request_id, metadata)
+        value = restored.data["encoder_outs"]["image_encoder"]["video_embeds"]
+        assert torch.equal(value, tensor)
+        assert not is_tensor_ref_dict(value)
 
     asyncio.run(_run())
 

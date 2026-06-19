@@ -16,6 +16,12 @@ from typing import Any
 import torch
 
 TENSOR_REF_MARKER = "__sglang_omni_tensor_ref__"
+DEFAULT_TENSOR_REF_THRESHOLD_MB = 8.0
+DEFAULT_TENSOR_REF_PATHS = (
+    "video_embeds",
+    "deepstack_visual_embeds_image",
+    "deepstack_visual_embeds_video",
+)
 
 
 @dataclass(frozen=True)
@@ -113,17 +119,24 @@ class TensorRefPolicy:
         consumer_stage = edges.get((from_stage, to_stage))
         if consumer_stage is None:
             return None
-        threshold_mb = float(os.environ.get("SGLANG_OMNI_TENSOR_REF_THRESHOLD_MB", "8"))
-        paths = os.environ.get(
-            "SGLANG_OMNI_TENSOR_REF_PATHS",
-            "video_embeds,deepstack_visual_embeds_image,deepstack_visual_embeds_video",
+        threshold_mb = float(
+            os.environ.get(
+                "SGLANG_OMNI_TENSOR_REF_THRESHOLD_MB",
+                str(DEFAULT_TENSOR_REF_THRESHOLD_MB),
+            )
+        )
+        raw_paths = os.environ.get("SGLANG_OMNI_TENSOR_REF_PATHS")
+        path_allowlist = (
+            tuple(p.strip() for p in raw_paths.split(",") if p.strip())
+            if raw_paths is not None
+            else DEFAULT_TENSOR_REF_PATHS
         )
         return cls(
             threshold_bytes=int(threshold_mb * 1024 * 1024),
             from_stage=from_stage,
             to_stage=to_stage,
             consumer_stage=consumer_stage,
-            path_allowlist=tuple(p.strip() for p in paths.split(",") if p.strip()),
+            path_allowlist=path_allowlist,
         )
 
 
