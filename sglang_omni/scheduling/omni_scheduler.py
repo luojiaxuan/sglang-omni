@@ -14,7 +14,6 @@ inheriting from ``SGLangScheduler``.
 from __future__ import annotations
 
 import logging
-import os
 import queue as _queue_mod
 import threading
 import time
@@ -46,6 +45,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.utils.env import env_flag, env_float
 
 logger = logging.getLogger(__name__)
 
@@ -844,12 +844,10 @@ class OmniScheduler:
     def _phase_profile_on(self) -> bool:
         on = getattr(self, "_phase_prof_on", None)
         if on is None:
-            on = self._phase_prof_on = bool(
-                os.environ.get("SGLANG_OMNI_PHASE_PROFILE")
-            )
+            on = self._phase_prof_on = env_flag("SGLANG_OMNI_PHASE_PROFILE")
             if on:
-                self._phase_interval = float(
-                    os.environ.get("SGLANG_OMNI_PHASE_PROFILE_INTERVAL", "5")
+                self._phase_interval = env_float(
+                    "SGLANG_OMNI_PHASE_PROFILE_INTERVAL", default=5.0
                 )
                 self._phase_last_log = time.perf_counter()
                 self._phase_acc = {

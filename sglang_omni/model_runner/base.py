@@ -7,7 +7,6 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +23,7 @@ from sglang_omni.scheduling.types import (
     RequestOutput,
     sampled_logprobs_to_list,
 )
+from sglang_omni.utils.env import env_flag
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,7 @@ class _PendingStep:
     model_worker_batch: Any  # for the prefill-only finalize branch (unused in decode)
     batch_result: Any  # carries logits_output (device of next_token_ids)
     n_real: int  # number of real (non-padding) rows this step
+    phase: dict[str, Any] | None = None
 
 
 class ModelRunner:
@@ -103,15 +104,13 @@ class ModelRunner:
         # overlap a host copy; the device-snapshot path does not).
         self._async_query_hit: int = 0
         self._async_query_miss: int = 0
-        self._phase_on: bool = bool(os.environ.get("SGLANG_OMNI_PHASE_PROFILE"))
-        self._phase_sync: bool = bool(os.environ.get("SGLANG_OMNI_PHASE_SYNC"))
+        self._phase_on: bool = env_flag("SGLANG_OMNI_PHASE_PROFILE")
+        self._phase_sync: bool = env_flag("SGLANG_OMNI_PHASE_SYNC")
         self._last_phase: dict[str, Any] | None = None
-        self._build_profile_on: bool = bool(
-            os.environ.get("SGLANG_OMNI_BUILD_PROFILE")
-        )
+        self._build_profile_on: bool = env_flag("SGLANG_OMNI_BUILD_PROFILE")
         self._last_build_phase: dict[str, float] | None = None
-        self._mrope_patch_enabled: bool = self._build_profile_on or bool(
-            os.environ.get("SGLANG_OMNI_FAST_MROPE_DECODE")
+        self._mrope_patch_enabled: bool = self._build_profile_on or env_flag(
+            "SGLANG_OMNI_FAST_MROPE_DECODE"
         )
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
@@ -209,11 +208,17 @@ class ModelRunner:
         scheduling has two steps momentarily in flight: the just-launched step
         N and the not-yet-resolved step N-1.
         """
+        prof = bool(getattr(self, "_phase_on", False))
+        if prof:
+            self._last_phase = None
+            self._last_build_phase = None
+        t0 = time.perf_counter() if prof else 0.0
         built = self._build_forward_batch(scheduler_output)
         if built is None:
             return None
         forward_batch, schedule_batch, model_worker_batch, is_prefill = built
         assert not is_prefill, "async lookahead launch is decode-only"
+        t1 = time.perf_counter() if prof else 0.0
         batch_result = self._prepare_and_forward(
             forward_batch,
             schedule_batch,
@@ -221,8 +226,23 @@ class ModelRunner:
             is_prefill,
             is_lookahead=True,
         )
+        if prof and bool(getattr(self, "_phase_sync", False)):
+            torch.cuda.synchronize(self.device)
+        t2 = time.perf_counter() if prof else 0.0
         launch_buf = self.post_decode_launch(
             batch_result, forward_batch, scheduler_output.requests
+        )
+        t3 = time.perf_counter() if prof else 0.0
+        phase = (
+            {
+                "build": t1 - t0,
+                "forward": t2 - t1,
+                "post": t3 - t2,
+                "is_prefill": False,
+                "build_detail": self._last_build_phase,
+            }
+            if prof
+            else None
         )
         # Publish this step's output token ids now (post_decode_launch set them
         # from GPU state without a host sync) so the NEXT decode step's
@@ -244,6 +264,7 @@ class ModelRunner:
             model_worker_batch=model_worker_batch,
             batch_result=batch_result,
             n_real=len(scheduler_output.requests),
+            phase=phase,
         )
 
     def execute_resolve(
@@ -270,6 +291,7 @@ class ModelRunner:
             for req in pending.scheduler_output.requests
             if req.data.req.finished() or self._req_is_retracted(req.data.req)
         }
+        t_post0 = time.perf_counter() if pending.phase is not None else 0.0
         self.post_decode_resolve(
             pending.launch_buf,
             pending.batch_result,
@@ -277,7 +299,8 @@ class ModelRunner:
             pending.schedule_batch,
             pending.scheduler_output.requests,
         )
-        return self._finalize(
+        t_finalize0 = time.perf_counter() if pending.phase is not None else 0.0
+        out = self._finalize(
             pending.batch_result,
             pending.forward_batch,
             pending.schedule_batch,
@@ -286,6 +309,12 @@ class ModelRunner:
             set_output_ids=False,
             skip_rids=skip_rids,
         )
+        if pending.phase is not None:
+            phase = dict(pending.phase)
+            phase["post"] = phase["post"] + (t_finalize0 - t_post0)
+            phase["finalize"] = time.perf_counter() - t_finalize0
+            self._last_phase = phase
+        return out
 
     def _build_forward_batch(self, scheduler_output: Any):
         """Build the ForwardBatch + capture-hidden mode. Returns
@@ -349,8 +378,25 @@ class ModelRunner:
         """Install an env-gated text-decode MRoPE fast path and profiler hook."""
 
         if getattr(forward_batch_cls, "_sglang_omni_mrope_patch", False):
+            if not getattr(
+                forward_batch_cls, "_sglang_omni_mrope_patch_reuse_logged", False
+            ):
+                logger.debug(
+                    "SGLang Omni MRoPE patch already installed on %s",
+                    getattr(forward_batch_cls, "__name__", forward_batch_cls),
+                )
+                forward_batch_cls._sglang_omni_mrope_patch_reuse_logged = True
             return
         if not hasattr(forward_batch_cls, "_compute_mrope_positions"):
+            if not getattr(
+                forward_batch_cls, "_sglang_omni_mrope_patch_missing_logged", False
+            ):
+                logger.warning(
+                    "SGLang Omni MRoPE patch requested but %s has no "
+                    "_compute_mrope_positions; skipping fast path/profile hook",
+                    getattr(forward_batch_cls, "__name__", forward_batch_cls),
+                )
+                forward_batch_cls._sglang_omni_mrope_patch_missing_logged = True
             return
 
         original = forward_batch_cls._compute_mrope_positions
@@ -383,8 +429,8 @@ class ModelRunner:
             return is_zero
 
         def patched_mrope(forward_batch, model_runner, batch):
-            prof = bool(os.environ.get("SGLANG_OMNI_BUILD_PROFILE"))
-            fast = bool(os.environ.get("SGLANG_OMNI_FAST_MROPE_DECODE"))
+            prof = env_flag("SGLANG_OMNI_BUILD_PROFILE")
+            fast = env_flag("SGLANG_OMNI_FAST_MROPE_DECODE")
             t0 = time.perf_counter() if prof else 0.0
             used_fast = False
             try:
