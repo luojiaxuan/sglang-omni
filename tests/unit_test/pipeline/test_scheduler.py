@@ -657,10 +657,7 @@ def test_omni_scheduler_admission_max_waiting_uses_tp_group_max(
 
     monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
 
-    reason = scheduler._admission_rejection_reason(
-        "req-full-on-peer",
-        SimpleNamespace(rid="req-full-on-peer"),
-    )
+    reason = scheduler._admission_rejection_reason()
 
     assert reason is not None
     assert "scheduler waiting queue is full" in reason
@@ -684,10 +681,7 @@ def test_omni_scheduler_admission_min_free_uses_tp_group_min(monkeypatch) -> Non
 
     monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
 
-    reason = scheduler._admission_rejection_reason(
-        "req-min-free",
-        SimpleNamespace(rid="req-min-free"),
-    )
+    reason = scheduler._admission_rejection_reason()
 
     assert reason is not None
     assert "free CUDA memory is below" in reason

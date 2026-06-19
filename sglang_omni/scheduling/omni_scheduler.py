@@ -45,13 +45,12 @@ from sglang_omni.proto.admin import (
     ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
     ADMIN_WEIGHTS_CHECKER,
 )
+from sglang_omni.scheduling.env import env_float, env_int
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.observability import (
     allocator_available_tokens,
     batch_size,
     cuda_memory_snapshot,
-    env_float,
-    env_int,
     safe_qsize,
 )
 
@@ -751,7 +750,7 @@ class OmniScheduler:
             self._emit_request_error(req_id, ValueError(kv_error))
             self.abort(req_id)
             return
-        admission_error = self._admission_rejection_reason(req_id, req)
+        admission_error = self._admission_rejection_reason()
         if admission_error is not None:
             logger.warning(
                 "Rejecting request %s before queueing: %s",
@@ -865,7 +864,7 @@ class OmniScheduler:
             f"{mem_hint}"
         )
 
-    def _admission_rejection_reason(self, request_id: str, req: Any) -> str | None:
+    def _admission_rejection_reason(self) -> str | None:
         max_waiting = getattr(self, "_admission_max_waiting", None)
         if max_waiting is not None:
             waiting = self._admission_waiting_queue_depth()
@@ -892,7 +891,6 @@ class OmniScheduler:
                     "Retry later or lower SGLANG_OMNI_ADMISSION_MIN_FREE_GPU_MEMORY_MB."
                 )
 
-        del request_id, req
         return None
 
     def _admission_waiting_queue_depth(self) -> int:
