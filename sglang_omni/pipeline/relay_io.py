@@ -137,13 +137,9 @@ async def publish_tensor_ref(
     if edge not in _LOGGED_REF_EDGES:
         _LOGGED_REF_EDGES.add(edge)
         logger.info(
-            "tensor_ref active: externalizing %s (%.1f MiB) on edge %s->%s, "
-            "consumer=%s",
-            path,
-            tensor.numel() * tensor.element_size() / 1024**2,
-            from_stage,
-            to_stage,
-            consumer_stage,
+            f"tensor_ref active: externalizing {path} "
+            f"({tensor.numel() * tensor.element_size() / 1024**2:.1f} MiB) "
+            f"on edge {from_stage}->{to_stage}, consumer={consumer_stage}"
         )
     blob_key = f"{request_id}:tensor_ref:{from_stage}:{to_stage}:{uuid4().hex}:{path}"
     blob_metadata, op = await write_blob(relay, blob_key, tensor)
