@@ -661,11 +661,11 @@ class Stage:
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
             # note (luojiaxuan): Fan out unresolved refs before materialization
-            # note (luojiaxuan): so followers receive small refs, not large CUDA
-            # note (luojiaxuan): tensors. TensorRef blobs are single-resolve
-            # note (luojiaxuan): because SHM get unlinks on read; do not enable
-            # note (luojiaxuan): refs for requires_tp_work_fanout=True consumers
-            # note (luojiaxuan): until blob reads are ref-counted/non-destructive.
+            # so followers receive small refs, not large CUDA
+            # tensors. TensorRef blobs are single-resolve
+            # because SHM get unlinks on read; do not enable
+            # refs for requires_tp_work_fanout=True consumers
+            # until blob reads are ref-counted/non-destructive.
             self._tp_fanout.fanout_work(payload)
         payload_for_scheduler = payload
         if tensor_refs_enabled():
