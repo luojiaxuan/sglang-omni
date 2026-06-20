@@ -6,8 +6,6 @@ from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
-from sglang_omni.scheduling.observability import env_int
-
 
 def build_sglang_server_args(
     model_path: str,
@@ -20,18 +18,6 @@ def build_sglang_server_args(
     **overrides: Any,
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
-    if chunked_prefill_size is None:
-        # note (luojiaxuan): Issue #760: opt-in chunked prefill so long
-        # (audio) prefills interleave with decode instead
-        # of blocking an entire prefill step. Off by
-        # default (the Qwen3-Omni CI thresholds are tight).
-        # The PrefillManager already force-disables
-        # chunking for projected-embeds (talker) requests,
-        # so enabling this only affects the thinker prefill
-        # path.
-        env_chunk = env_int("SGLANG_OMNI_CHUNKED_PREFILL_SIZE")
-        if env_chunk and env_chunk > 0:
-            chunked_prefill_size = env_chunk
     kwargs: dict[str, Any] = {
         "model_path": model_path,
         "trust_remote_code": True,
