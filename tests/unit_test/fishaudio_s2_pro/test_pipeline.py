@@ -339,12 +339,12 @@ def _run_s2pro_engine_with_fake_buffers(
         del model_path, context_length
         build_kwargs.update(kwargs)
         return SimpleNamespace(
+            cuda_graph_bs=kwargs["cuda_graph_bs"],
+            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             enable_torch_compile=kwargs["enable_torch_compile"],
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],
             max_running_requests=kwargs["max_running_requests"],
-            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
-            cuda_graph_bs=kwargs["cuda_graph_bs"],
             page_size=1,
             chunked_prefill_size=kwargs["chunked_prefill_size"],
             max_prefill_tokens=16384,
