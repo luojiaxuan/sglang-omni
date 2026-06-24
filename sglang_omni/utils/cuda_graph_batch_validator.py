@@ -121,6 +121,14 @@ def evaluate_cuda_graph_batch_sizing(
 
     captured = [b for b in (captured_bs or []) if b is not None]
     max_captured = max(captured) if captured else None
+    expected_capture_values = [
+        value
+        for value in (cuda_graph_max_bs, max_running_requests, request_slots)
+        if value is not None
+    ]
+    expected_capture_target = (
+        min(expected_capture_values) if expected_capture_values else None
+    )
 
     if buffer_capacity is not None and max_captured is not None:
         if max_captured > buffer_capacity:
@@ -134,6 +142,18 @@ def evaluate_cuda_graph_batch_sizing(
         findings.append(
             f"model-side buffer not read ({buffer_source}); validated serving "
             f"config vs. captured sizes only."
+        )
+
+    if (
+        max_captured is not None
+        and expected_capture_target is not None
+        and max_captured < expected_capture_target
+    ):
+        ok = False
+        findings.append(
+            f"captured CUDA graphs cover up to bs={max_captured}, below the "
+            f"effective serving target {expected_capture_target}; replay at "
+            "larger runnable batch sizes will fall back or fail."
         )
 
     if (

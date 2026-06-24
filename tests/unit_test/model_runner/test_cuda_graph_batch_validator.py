@@ -84,6 +84,19 @@ def test_buffer_below_admission_limit_flagged():
     assert any("cannot be served" in f for f in report.findings)
 
 
+def test_captured_under_effective_target_is_flagged():
+    report = evaluate_cuda_graph_batch_sizing(
+        stage="tts_engine",
+        max_running_requests=64,
+        cuda_graph_max_bs=64,
+        captured_bs=[1, 2, 4, 8, 16],
+        request_slots=64,
+        buffer_capacity=64,
+    )
+    assert not report.ok
+    assert any("below the effective serving target 64" in f for f in report.findings)
+
+
 def test_clamped_cap_is_not_a_failure():
     report = evaluate_cuda_graph_batch_sizing(
         stage="talker_ar",
