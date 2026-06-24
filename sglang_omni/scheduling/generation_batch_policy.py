@@ -6,6 +6,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+_MISSING = object()
+
 
 def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     max_bs = int(max_bs)
@@ -22,46 +24,47 @@ def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     return values
 
 
-def build_generation_batch_defaults(
-    max_running_requests: int,
+def build_generation_batch_overrides(
     *,
+    max_running_requests: int,
     cuda_graph_max_bs: int | None = None,
     torch_compile_max_bs: int | None = None,
-) -> dict[str, int]:
-    max_running_requests = int(max_running_requests)
-    if max_running_requests < 1:
-        raise ValueError("max_running_requests must be >= 1")
+    server_args_overrides: Mapping[str, Any] | None = None,
+    **stage_defaults: Any,
+) -> dict[str, Any]:
+    incoming = dict(server_args_overrides or {})
+    max_running_requests = _normalize_positive_int(
+        "max_running_requests",
+        incoming.pop("max_running_requests", max_running_requests),
+    )
     cuda_graph_max_bs = (
-        max_running_requests if cuda_graph_max_bs is None else int(cuda_graph_max_bs)
+        max_running_requests if cuda_graph_max_bs is None else cuda_graph_max_bs
+    )
+    cuda_graph_max_bs = _normalize_positive_int(
+        "cuda_graph_max_bs",
+        incoming.pop("cuda_graph_max_bs", cuda_graph_max_bs),
     )
     torch_compile_max_bs = (
-        max_running_requests
-        if torch_compile_max_bs is None
-        else int(torch_compile_max_bs)
+        max_running_requests if torch_compile_max_bs is None else torch_compile_max_bs
     )
-    if cuda_graph_max_bs < 1:
-        raise ValueError("cuda_graph_max_bs must be >= 1")
-    if torch_compile_max_bs < 1:
-        raise ValueError("torch_compile_max_bs must be >= 1")
-    return {
+    torch_compile_max_bs = _normalize_positive_int(
+        "torch_compile_max_bs",
+        incoming.pop("torch_compile_max_bs", torch_compile_max_bs),
+    )
+    cuda_graph_bs = incoming.pop("cuda_graph_bs", _MISSING)
+
+    overrides = {
+        **stage_defaults,
+        **incoming,
         "max_running_requests": max_running_requests,
         "cuda_graph_max_bs": cuda_graph_max_bs,
         "torch_compile_max_bs": torch_compile_max_bs,
     }
+    if cuda_graph_bs is _MISSING:
+        overrides["cuda_graph_bs"] = build_default_cuda_graph_bs(cuda_graph_max_bs)
+    else:
+        overrides["cuda_graph_bs"] = cuda_graph_bs
 
-
-def build_generation_batch_overrides(
-    defaults: Mapping[str, Any],
-    server_args_overrides: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    overrides = dict(defaults)
-    _set_default_cuda_graph_bs(overrides)
-    if server_args_overrides:
-        cuda_graph_max_overridden = "cuda_graph_max_bs" in server_args_overrides
-        cuda_graph_bs_overridden = "cuda_graph_bs" in server_args_overrides
-        overrides.update(server_args_overrides)
-        if cuda_graph_max_overridden and not cuda_graph_bs_overridden:
-            _set_default_cuda_graph_bs(overrides, overwrite=True)
     return overrides
 
 
@@ -173,18 +176,14 @@ def _read_positive_int(
     return normalized
 
 
-def _set_default_cuda_graph_bs(
-    overrides: dict[str, Any],
-    *,
-    overwrite: bool = False,
-) -> None:
-    if "cuda_graph_max_bs" not in overrides:
-        return
-    if not overwrite and "cuda_graph_bs" in overrides:
-        return
-    overrides["cuda_graph_bs"] = build_default_cuda_graph_bs(
-        int(overrides["cuda_graph_max_bs"])
-    )
+def _normalize_positive_int(field: str, value: Any) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer") from exc
+    if normalized < 1:
+        raise ValueError(f"{field} must be >= 1")
+    return normalized
 
 
 def _normalize_cuda_graph_bs(

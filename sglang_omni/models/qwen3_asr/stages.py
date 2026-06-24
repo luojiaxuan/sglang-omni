@@ -16,7 +16,6 @@ from sglang_omni.scheduling.bootstrap import (
     create_sglang_infrastructure_defer_cuda_graph,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_defaults,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
@@ -55,7 +54,6 @@ def create_sglang_qwen3_asr_executor(
         "disable_cuda_graph": False,
         "disable_overlap_schedule": True,
         "enable_torch_compile": enable_torch_compile,
-        **build_generation_batch_defaults(max_running_requests),
         "mem_fraction_static": mem_fraction_static,
         "max_prefill_tokens": 4096,
         "chunked_prefill_size": 4096,
@@ -68,7 +66,11 @@ def create_sglang_qwen3_asr_executor(
         sm_version = get_visible_gpu_sm_version(gpu_id)
         if sm_version is not None and sm_version >= 100:
             defaults["mm_attention_backend"] = "triton_attn"
-    overrides = build_generation_batch_overrides(defaults, server_args_overrides)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=max_running_requests,
+        server_args_overrides=server_args_overrides,
+        **defaults,
+    )
 
     server_args = build_sglang_server_args(
         model_path,

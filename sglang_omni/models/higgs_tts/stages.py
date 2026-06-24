@@ -410,19 +410,17 @@ def create_sglang_tts_engine_executor(
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     overrides = build_generation_batch_overrides(
-        {
-            "disable_cuda_graph": False,
-            "cuda_graph_max_bs": cuda_graph_max_bs,
-            "mem_fraction_static": 0.85,
-            "max_running_requests": max_running_requests,
-            "chunked_prefill_size": 8192,
-            "dtype": "bfloat16",
-            # note (luojiaxuan): Radix cache is namespaced per ref-audio via
-            # Req.extra_key (set in build_sglang_higgs_request); shared -100
-            # placeholder prefixes from different ref audios can't
-            # cross-contaminate the KV tree.
-        },
-        server_args_overrides,
+        max_running_requests=max_running_requests,
+        cuda_graph_max_bs=cuda_graph_max_bs,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        mem_fraction_static=0.85,
+        chunked_prefill_size=8192,
+        dtype="bfloat16",
+        # note (luojiaxuan): Radix cache is namespaced per ref-audio via
+        # Req.extra_key (set in build_sglang_higgs_request); shared -100
+        # placeholder prefixes from different ref audios can't cross-contaminate
+        # the KV tree.
     )
 
     server_args = build_sglang_server_args(

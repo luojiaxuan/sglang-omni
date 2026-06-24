@@ -26,7 +26,6 @@ def create_sglang_whisper_asr_executor(
         create_sglang_infrastructure_defer_cuda_graph,
     )
     from sglang_omni.scheduling.generation_batch_policy import (
-        build_generation_batch_defaults,
         build_generation_batch_overrides,
         validate_generation_batch_policy,
     )
@@ -43,18 +42,16 @@ def create_sglang_whisper_asr_executor(
     encoder_token_count = int(processor.feature_extractor.nb_max_frames // 2)
 
     overrides = build_generation_batch_overrides(
-        {
-            "disable_cuda_graph": False,
-            "disable_overlap_schedule": True,
-            "enable_torch_compile": True,
-            **build_generation_batch_defaults(max_running_requests),
-            "mem_fraction_static": mem_fraction_static,
-            "max_prefill_tokens": 4096,
-            "chunked_prefill_size": 4096,
-            "sampling_backend": "pytorch",
-            "dtype": dtype,
-        },
-        server_args_overrides,
+        max_running_requests=max_running_requests,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        disable_overlap_schedule=True,
+        enable_torch_compile=True,
+        mem_fraction_static=mem_fraction_static,
+        max_prefill_tokens=4096,
+        chunked_prefill_size=4096,
+        sampling_backend="pytorch",
+        dtype=dtype,
     )
 
     server_args = build_sglang_server_args(

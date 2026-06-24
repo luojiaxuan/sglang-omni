@@ -35,7 +35,6 @@ from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_defaults,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
@@ -540,9 +539,8 @@ def create_sglang_tts_engine_executor(
         device = f"cuda:{gpu_id}"
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
-    overrides: dict[str, Any] = {
+    stage_defaults: dict[str, Any] = {
         "dtype": dtype,
-        **build_generation_batch_defaults(16),
         "disable_cuda_graph": False,
         "disable_overlap_schedule": True,
         "enable_torch_compile": False,
@@ -554,8 +552,14 @@ def create_sglang_tts_engine_executor(
         # note (luojiaxuan): Without a typed stage budget, this path cannot use
         # process-scoped colocated profiling, so keep the legacy static fraction
         # for split/custom deployments.
-        overrides["mem_fraction_static"] = 0.6 if torch.cuda.device_count() > 1 else 0.5
-    overrides = build_generation_batch_overrides(overrides, server_args_overrides)
+        stage_defaults["mem_fraction_static"] = (
+            0.6 if torch.cuda.device_count() > 1 else 0.5
+        )
+    overrides = build_generation_batch_overrides(
+        max_running_requests=16,
+        server_args_overrides=server_args_overrides,
+        **stage_defaults,
+    )
     memory_budget = _apply_colocated_ar_memory_budget(
         overrides,
         total_gpu_memory_fraction=total_gpu_memory_fraction,

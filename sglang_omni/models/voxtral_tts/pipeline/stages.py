@@ -17,7 +17,6 @@ from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_defaults,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
@@ -205,18 +204,16 @@ def create_generation_executor(
     gpu_id = int(device.split(":")[-1]) if ":" in device else 0
 
     overrides = build_generation_batch_overrides(
-        {
-            **build_generation_batch_defaults(16),
-            "dtype": "bfloat16",
-            "disable_cuda_graph": False,
-            "disable_overlap_schedule": True,
-            "decrypted_config_file": _write_voxtral_sglang_config(checkpoint_dir),
-            "enable_torch_compile": True,
-            "mem_fraction_static": 0.85,
-            "max_prefill_tokens": 8192,
-            "sampling_backend": "pytorch",
-        },
-        server_args_overrides,
+        max_running_requests=16,
+        server_args_overrides=server_args_overrides,
+        dtype="bfloat16",
+        disable_cuda_graph=False,
+        disable_overlap_schedule=True,
+        decrypted_config_file=_write_voxtral_sglang_config(checkpoint_dir),
+        enable_torch_compile=True,
+        mem_fraction_static=0.85,
+        max_prefill_tokens=8192,
+        sampling_backend="pytorch",
     )
 
     server_args = build_sglang_server_args(

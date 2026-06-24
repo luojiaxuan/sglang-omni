@@ -18,7 +18,6 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_defaults,
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
@@ -253,16 +252,14 @@ def create_sglang_tts_engine_executor(
     patch_fish_config_for_sglang()
 
     overrides = build_generation_batch_overrides(
-        {
-            **build_generation_batch_defaults(64),
-            "disable_cuda_graph": False,
-            "mem_fraction_static": 0.85,
-            "chunked_prefill_size": 8192,
-            "dtype": "bfloat16",
-            "enable_torch_compile": True,
-            "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
-        },
-        server_args_overrides,
+        max_running_requests=64,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        mem_fraction_static=0.85,
+        chunked_prefill_size=8192,
+        dtype="bfloat16",
+        enable_torch_compile=True,
+        random_seed=int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
     )
 
     server_args = build_sglang_server_args(
