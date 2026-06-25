@@ -199,6 +199,8 @@ def create_sglang_tts_engine_executor(
 
     overrides = build_generation_batch_overrides(
         max_running_requests=16,
+        cuda_graph_max_bs=32,
+        torch_compile_max_bs=32,
         server_args_overrides=server_args_overrides,
         dtype=dtype,
         disable_cuda_graph=False,

@@ -276,8 +276,28 @@ def validate_stage(
         max_running_requests = server_args.max_running_requests
         cuda_graph_max_bs = server_args.cuda_graph_max_bs
     except AttributeError:
+        server_args = None
         max_running_requests = None
         cuda_graph_max_bs = None
+
+    try:
+        model = model_runner.model
+    except AttributeError:
+        model = None
+    model_cls = type(model).__name__ if model is not None else "unknown-model"
+
+    if bool(getattr(server_args, "disable_cuda_graph", False)):
+        return CudaGraphBatchReport(
+            stage=f"{stage_name} ({model_cls})",
+            max_running_requests=max_running_requests,
+            cuda_graph_max_bs=cuda_graph_max_bs,
+            captured_bs=None,
+            request_slots=None,
+            buffer_capacity=buffer_capacity,
+            buffer_source="caller-provided" if buffer_capacity is not None else None,
+            is_valid=True,
+            findings=["CUDA graph is disabled; capture coverage audit skipped."],
+        )
 
     try:
         request_slots = model_runner.req_to_token_pool.size
@@ -286,16 +306,10 @@ def validate_stage(
 
     captured_bs = read_captured_bs(model_runner)
 
-    try:
-        model = model_runner.model
-    except AttributeError:
-        model = None
     if buffer_capacity is None:
         buffer_capacity, buffer_source = read_model_buffer_capacity(model)
     else:
         buffer_source = "caller-provided"
-
-    model_cls = type(model).__name__ if model is not None else "unknown-model"
 
     return evaluate_cuda_graph_batch_sizing(
         stage=f"{stage_name} ({model_cls})",

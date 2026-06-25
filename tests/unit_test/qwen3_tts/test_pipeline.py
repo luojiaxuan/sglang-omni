@@ -1942,7 +1942,7 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
 
         def init_device_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
-            assert self.server_args.torch_compile_max_bs == 16
+            assert self.server_args.torch_compile_max_bs == 32
             init_graph_calls.append(True)
 
     class FakeWorker:
@@ -2052,7 +2052,7 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_running_requests"] == 2
-    assert build_kwargs["torch_compile_max_bs"] == 16
+    assert build_kwargs["torch_compile_max_bs"] == 32
 
     def target():
         return None
@@ -2083,5 +2083,5 @@ def test_qwen3_tts_engine_applies_compat_overrides_and_reenables_cuda_graph(
     assert scheduler.server_args.cuda_graph_max_bs == 32
     assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is False
-    assert scheduler.server_args.torch_compile_max_bs == 16
+    assert scheduler.server_args.torch_compile_max_bs == 32
     clear_qwen3_tts_preprocessing_context()

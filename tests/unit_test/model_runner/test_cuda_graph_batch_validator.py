@@ -26,6 +26,7 @@ def _fake_runner(
     model=None,
     max_running_requests=64,
     cuda_graph_max_bs=64,
+    disable_cuda_graph=False,
     capture_bs=None,
     request_slots=64,
     has_graph_runner=True,
@@ -35,6 +36,7 @@ def _fake_runner(
         server_args=SimpleNamespace(
             max_running_requests=max_running_requests,
             cuda_graph_max_bs=cuda_graph_max_bs,
+            disable_cuda_graph=disable_cuda_graph,
         ),
         req_to_token_pool=SimpleNamespace(size=request_slots),
         graph_runner=graph_runner,
@@ -283,6 +285,21 @@ def test_validate_stage_caller_override_buffer():
     report = validate_stage("tts_engine", runner, buffer_capacity=65)
     assert report.buffer_capacity == 65
     assert report.buffer_source == "caller-provided"
+
+
+def test_validate_stage_disabled_cuda_graph_is_valid_no_op():
+    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
+    runner = _fake_runner(
+        model=model,
+        disable_cuda_graph=True,
+        capture_bs=None,
+        has_graph_runner=False,
+    )
+    report = validate_stage("tts_engine", runner)
+    assert report.is_valid
+    assert report.captured_bs is None
+    assert report.buffer_capacity is None
+    assert any("CUDA graph is disabled" in f for f in report.findings)
 
 
 def test_validate_stage_unregistered_model_partial_report():
