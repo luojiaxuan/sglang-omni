@@ -360,7 +360,7 @@ def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
         ),
     ]
 
-    # note (YueYin): .to() must happen per-chunk before torch.stack, not after
+    # note (luojiaxuan): .to() must happen per-chunk before torch.stack, not after
     result = torch.stack(
         [
             builder.chunk_layer_hidden_or_embed(c).to(
