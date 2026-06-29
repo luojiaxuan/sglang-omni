@@ -134,6 +134,18 @@ def _repeat_samples(
     return repeated
 
 
+def _repeat_source_sample_ids(
+    samples: list[VideoAMMESample],
+    *,
+    request_count: int,
+) -> list[str]:
+    if request_count <= 0:
+        raise ValueError("request_count must be positive")
+    if not samples:
+        raise ValueError("at least one Video-AMME sample is required")
+    return [samples[index % len(samples)].sample_id for index in range(request_count)]
+
+
 def _scheduled_offsets(request_count: int, request_rate: float) -> list[float]:
     if request_count <= 0:
         raise ValueError("request_count must be positive")
@@ -440,12 +452,16 @@ async def _run_load_stage(
     *,
     stage_id: str,
     samples: list[VideoAMMESample],
+    source_sample_ids: list[str] | None = None,
     send_fn,
     max_concurrency: int,
     request_rate: float,
     timeout_s: int,
     disable_tqdm: bool,
 ) -> tuple[list[RequestResult], list[StressRequestRecord], float]:
+    if source_sample_ids is not None and len(source_sample_ids) != len(samples):
+        raise ValueError("source_sample_ids must match samples length")
+
     semaphore = asyncio.Semaphore(max_concurrency)
     offsets = _scheduled_offsets(len(samples), request_rate)
     timeout = aiohttp.ClientTimeout(total=timeout_s)
@@ -468,7 +484,11 @@ async def _run_load_stage(
             stage_id=stage_id,
             index=index,
             request_id=result.request_id,
-            source_sample_id=sample.sample_id.rsplit("_", 1)[-1],
+            source_sample_id=(
+                source_sample_ids[index]
+                if source_sample_ids is not None
+                else sample.sample_id
+            ),
             scheduled_offset_s=round(scheduled_offset, 4),
             start_offset_s=round(started_at - stage_start, 4),
             finish_offset_s=round(finished_at - stage_start, 4),
@@ -531,6 +551,10 @@ async def run_videoamme_talker_stress(args: argparse.Namespace) -> dict[str, Any
                 request_count=args.request_count,
                 stage_id=stage_id,
             )
+            source_sample_ids = _repeat_source_sample_ids(
+                base_samples,
+                request_count=args.request_count,
+            )
             audio_output_dir = (
                 str(output_dir / "audio" / stage_id) if save_audio else None
             )
@@ -549,6 +573,7 @@ async def run_videoamme_talker_stress(args: argparse.Namespace) -> dict[str, Any
             request_results, records, wall_clock_s = await _run_load_stage(
                 stage_id=stage_id,
                 samples=stage_samples,
+                source_sample_ids=source_sample_ids,
                 send_fn=send_fn,
                 max_concurrency=concurrency,
                 request_rate=args.request_rate,

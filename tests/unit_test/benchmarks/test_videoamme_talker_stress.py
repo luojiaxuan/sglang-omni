@@ -89,6 +89,7 @@ from benchmarks.eval.benchmark_omni_videoamme_talker_stress import (
     _parse_positive_int_list,
     _parse_request_rate,
     _repeat_samples,
+    _repeat_source_sample_ids,
     _scheduled_offsets,
     _stress_summary,
 )
@@ -167,6 +168,20 @@ def test_repeat_samples_uses_unique_safe_ids() -> None:
     ]
     assert {sample.audio_path for sample in repeated} == {"/tmp/audio.wav"}
     assert {sample.video_path for sample in repeated} == {"/tmp/video.mp4"}
+
+
+def test_repeat_source_sample_ids_preserves_original_ids() -> None:
+    sources = [_sample("sample/one_part"), _sample("sample/two_part")]
+
+    repeated_source_ids = _repeat_source_sample_ids(sources, request_count=5)
+
+    assert repeated_source_ids == [
+        "sample/one_part",
+        "sample/two_part",
+        "sample/one_part",
+        "sample/two_part",
+        "sample/one_part",
+    ]
 
 
 def test_scheduled_offsets_support_closed_and_open_loop() -> None:
