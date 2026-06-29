@@ -903,28 +903,18 @@ class OmniScheduler:
             return local_waiting
 
         value = torch.tensor([local_waiting], dtype=torch.int64)
-        try:
-            torch.distributed.all_reduce(
-                value,
-                op=torch.distributed.ReduceOp.MAX,
-                group=cpu_group,
-            )
-        except Exception:
-            logger.debug(
-                "Failed to compute TP-consistent waiting queue depth for admission",
-                exc_info=True,
-            )
-            return local_waiting
+        torch.distributed.all_reduce(
+            value,
+            op=torch.distributed.ReduceOp.MAX,
+            group=cpu_group,
+        )
         return int(value.item())
-
-    def _cuda_free_bytes(self) -> int | None:
-        snapshot = cuda_memory_snapshot(getattr(self, "gpu_id", None))
-        free_bytes = snapshot.get("cuda_free_bytes")
-        return int(free_bytes) if free_bytes is not None else None
 
     def _admission_cuda_free_bytes(self) -> int | None:
         """Return a TP-consistent free-memory value for admission decisions."""
-        local_free = self._cuda_free_bytes()
+        snapshot = cuda_memory_snapshot(getattr(self, "gpu_id", None))
+        free_bytes = snapshot.get("cuda_free_bytes")
+        local_free = int(free_bytes) if free_bytes is not None else None
         if getattr(self, "tp_size", 1) <= 1:
             return local_free
         cpu_group = getattr(self, "tp_cpu_group", None)
@@ -938,18 +928,11 @@ class OmniScheduler:
             ],
             dtype=torch.int64,
         )
-        try:
-            torch.distributed.all_reduce(
-                values,
-                op=torch.distributed.ReduceOp.MIN,
-                group=cpu_group,
-            )
-        except Exception:
-            logger.debug(
-                "Failed to compute TP-consistent CUDA free memory for admission",
-                exc_info=True,
-            )
-            return None
+        torch.distributed.all_reduce(
+            values,
+            op=torch.distributed.ReduceOp.MIN,
+            group=cpu_group,
+        )
         if int(values[0].item()) <= 0:
             return None
         return int(values[1].item())
@@ -1041,10 +1024,6 @@ class OmniScheduler:
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
         self._emit_prefill_start_for_batch(batch)
-        self._emit_scheduler_telemetry(
-            "scheduler_batch_start",
-            extra={"batch_size": batch_size(batch)},
-        )
         if self._model_runner is not None:
             # Mirror upstream run_batch's per-forward counter: OmniScheduler
             # overrides run_batch, so without this forward_ct stays 0 and
@@ -1055,18 +1034,9 @@ class OmniScheduler:
             mr_output = self._model_runner.execute(sched_output)
             self._emit_stream_output(sched_output, mr_output)
             result = self._make_batch_result(batch, mr_output)
-            self._emit_scheduler_telemetry(
-                "scheduler_batch_end",
-                extra={"batch_size": batch_size(batch)},
-            )
             return result
         # Fallback: call upstream's run_batch (uses tp_worker directly)
-        result = _Upstream.run_batch(self, batch, pp_proxy_tensors)
-        self._emit_scheduler_telemetry(
-            "scheduler_batch_end",
-            extra={"batch_size": batch_size(batch)},
-        )
-        return result
+        return _Upstream.run_batch(self, batch, pp_proxy_tensors)
 
     def _build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner

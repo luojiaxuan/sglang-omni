@@ -276,6 +276,35 @@ def test_omni_scheduler_custom_runner_updates_next_input_ids() -> None:
     assert batch.input_ids.tolist() == [11, 12]
 
 
+def test_omni_scheduler_custom_runner_skips_hot_path_telemetry() -> None:
+    next_token_ids = torch.tensor([11], dtype=torch.int32)
+
+    class FakeModelRunner:
+        def execute(self, sched_output):
+            sched_output.batch_data.output_ids = next_token_ids
+            return SimpleNamespace(outputs={}, can_run_cuda_graph=False)
+
+    telemetry_calls: list[tuple] = []
+
+    def record_telemetry(*args, **kwargs):
+        telemetry_calls.append(args)
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = FakeModelRunner()
+    scheduler._stream_output_builder = None
+    scheduler._prefill_start_done = set()
+    scheduler._emit_scheduler_telemetry = record_telemetry
+
+    batch = SimpleNamespace(
+        reqs=[SimpleNamespace(rid="req-1", _omni_data=SimpleNamespace())],
+        output_ids=None,
+    )
+
+    scheduler._run_batch(batch)
+
+    assert telemetry_calls == []
+
+
 def test_omni_scheduler_custom_runner_advances_forward_ct() -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL
@@ -665,6 +694,23 @@ def test_omni_scheduler_admission_max_waiting_uses_tp_group_max(
     assert calls == [(torch.distributed.ReduceOp.MAX, scheduler.tp_cpu_group)]
 
 
+def test_omni_scheduler_admission_waiting_collective_error_propagates(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.waiting_queue = []
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+
+    def fake_all_reduce(values, *, op, group):
+        raise RuntimeError("collective failed")
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    with pytest.raises(RuntimeError, match="collective failed"):
+        scheduler._admission_waiting_queue_depth()
+
+
 def test_omni_scheduler_admission_min_free_uses_tp_group_min(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.waiting_queue = []
@@ -672,8 +718,12 @@ def test_omni_scheduler_admission_min_free_uses_tp_group_min(monkeypatch) -> Non
     scheduler.tp_cpu_group = object()
     scheduler._admission_max_waiting = None
     scheduler._admission_min_free_gpu_memory_bytes = 4 * 1024 * 1024
-    scheduler._cuda_free_bytes = lambda: 5 * 1024 * 1024
     calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "cuda_memory_snapshot",
+        lambda gpu_id: {"cuda_free_bytes": 5 * 1024 * 1024},
+    )
 
     def fake_all_reduce(values, *, op, group):
         calls.append((op, group))
@@ -686,6 +736,28 @@ def test_omni_scheduler_admission_min_free_uses_tp_group_min(monkeypatch) -> Non
     assert reason is not None
     assert "free CUDA memory is below" in reason
     assert calls == [(torch.distributed.ReduceOp.MIN, scheduler.tp_cpu_group)]
+
+
+def test_omni_scheduler_admission_free_collective_error_propagates(
+    monkeypatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.tp_size = 2
+    scheduler.tp_cpu_group = object()
+    scheduler.gpu_id = 0
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "cuda_memory_snapshot",
+        lambda gpu_id: {"cuda_free_bytes": 5 * 1024 * 1024},
+    )
+
+    def fake_all_reduce(values, *, op, group):
+        raise RuntimeError("collective failed")
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    with pytest.raises(RuntimeError, match="collective failed"):
+        scheduler._admission_cuda_free_bytes()
 
 
 def test_omni_scheduler_telemetry_snapshot_reports_queue_and_kv(monkeypatch) -> None:
