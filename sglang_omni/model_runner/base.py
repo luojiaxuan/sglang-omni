@@ -7,6 +7,7 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,7 @@ from sglang_omni.scheduling.types import (
 from sglang_omni.utils.env import env_flag
 
 logger = logging.getLogger(__name__)
+_FORWARD_BATCH_MROPE_PATCH_LOCK = threading.Lock()
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -112,6 +114,8 @@ class ModelRunner:
         self._mrope_patch_enabled: bool = self._build_profile_on or env_flag(
             "SGLANG_OMNI_FAST_MROPE_DECODE"
         )
+        if self._mrope_patch_enabled:
+            self._install_forward_batch_mrope_patch()
 
     def _next_host_staging(self, device_staging: torch.Tensor) -> torch.Tensor:
         """Return a pinned host staging buffer mirroring ``device_staging``'s
@@ -325,9 +329,6 @@ class ModelRunner:
             ForwardBatch,
         )
 
-        if bool(getattr(self, "_mrope_patch_enabled", False)):
-            self._patch_forward_batch_mrope(ForwardBatch)
-
         if self.device.type == "cuda":
             torch.cuda.set_device(self.device)
 
@@ -374,96 +375,106 @@ class ModelRunner:
             }
         return forward_batch, schedule_batch, model_worker_batch, is_prefill
 
+    def _install_forward_batch_mrope_patch(self) -> None:
+        from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+        self._patch_forward_batch_mrope(ForwardBatch)
+
     def _patch_forward_batch_mrope(self, forward_batch_cls: Any) -> None:
         """Install an env-gated text-decode MRoPE fast path and profiler hook."""
 
-        if getattr(forward_batch_cls, "_sglang_omni_mrope_patch", False):
-            if not getattr(
-                forward_batch_cls, "_sglang_omni_mrope_patch_reuse_logged", False
-            ):
-                logger.debug(
-                    "SGLang Omni MRoPE patch already installed on %s",
-                    getattr(forward_batch_cls, "__name__", forward_batch_cls),
-                )
-                forward_batch_cls._sglang_omni_mrope_patch_reuse_logged = True
-            return
-        if not hasattr(forward_batch_cls, "_compute_mrope_positions"):
-            if not getattr(
-                forward_batch_cls, "_sglang_omni_mrope_patch_missing_logged", False
-            ):
-                logger.warning(
-                    "SGLang Omni MRoPE patch requested but %s has no "
-                    "_compute_mrope_positions; skipping fast path/profile hook",
-                    getattr(forward_batch_cls, "__name__", forward_batch_cls),
-                )
-                forward_batch_cls._sglang_omni_mrope_patch_missing_logged = True
-            return
-
-        original = forward_batch_cls._compute_mrope_positions
-
-        def mrope_delta_is_zero(mm_input: Any) -> bool:
-            if mm_input is None:
-                return True
-            contains_mm_input = getattr(mm_input, "contains_mm_input", None)
-            if callable(contains_mm_input) and contains_mm_input():
-                return False
-            cached = getattr(mm_input, "_sglang_omni_zero_mrope_delta", None)
-            if cached is not None:
-                return bool(cached)
-            delta = getattr(mm_input, "mrope_position_delta", None)
-            if delta is None:
-                return False
-            if isinstance(delta, torch.Tensor):
-                if delta.device.type != "cpu":
-                    return False
-                is_zero = bool(delta.numel() > 0 and torch.all(delta == 0).item())
-            else:
-                try:
-                    is_zero = all(int(value) == 0 for value in delta)
-                except TypeError:
-                    is_zero = int(delta) == 0
-            try:
-                setattr(mm_input, "_sglang_omni_zero_mrope_delta", is_zero)
-            except Exception:
-                pass
-            return is_zero
-
-        def patched_mrope(forward_batch, model_runner, batch):
-            prof = env_flag("SGLANG_OMNI_BUILD_PROFILE")
-            fast = env_flag("SGLANG_OMNI_FAST_MROPE_DECODE")
-            t0 = time.perf_counter() if prof else 0.0
-            used_fast = False
-            try:
-                mm_inputs = getattr(batch, "multimodal_inputs", None)
-                text_only = mm_inputs is None or all(
-                    mrope_delta_is_zero(mm) for mm in mm_inputs
-                )
-                if (
-                    fast
-                    and text_only
-                    and forward_batch.forward_mode.is_decode()
-                    and forward_batch.positions is not None
-                    and getattr(forward_batch, "spec_info", None) is None
+        with _FORWARD_BATCH_MROPE_PATCH_LOCK:
+            if getattr(forward_batch_cls, "_sglang_omni_mrope_patch", False):
+                if not getattr(
+                    forward_batch_cls,
+                    "_sglang_omni_mrope_patch_reuse_logged",
+                    False,
                 ):
-                    positions = forward_batch.positions
-                    if positions.dtype != torch.int64:
-                        positions = positions.to(dtype=torch.int64)
-                    forward_batch.mrope_positions = (
-                        positions.reshape(1, -1).expand(3, -1).clone()
+                    logger.debug(
+                        "SGLang Omni MRoPE patch already installed on %s",
+                        getattr(forward_batch_cls, "__name__", forward_batch_cls),
                     )
-                    used_fast = True
-                    return None
-                return original(forward_batch, model_runner, batch)
-            finally:
-                if prof:
-                    forward_batch._sglang_omni_mrope_seconds = (
-                        time.perf_counter() - t0
+                    forward_batch_cls._sglang_omni_mrope_patch_reuse_logged = True
+                return
+            if not hasattr(forward_batch_cls, "_compute_mrope_positions"):
+                if not getattr(
+                    forward_batch_cls,
+                    "_sglang_omni_mrope_patch_missing_logged",
+                    False,
+                ):
+                    logger.warning(
+                        "SGLang Omni MRoPE patch requested but %s has no "
+                        "_compute_mrope_positions; skipping fast path/profile hook",
+                        getattr(forward_batch_cls, "__name__", forward_batch_cls),
                     )
-                    forward_batch._sglang_omni_mrope_fast = used_fast
+                    forward_batch_cls._sglang_omni_mrope_patch_missing_logged = True
+                return
 
-        forward_batch_cls._sglang_omni_orig_compute_mrope_positions = original
-        forward_batch_cls._compute_mrope_positions = patched_mrope
-        forward_batch_cls._sglang_omni_mrope_patch = True
+            original = forward_batch_cls._compute_mrope_positions
+
+            def mrope_delta_is_zero(mm_input: Any) -> bool:
+                if mm_input is None:
+                    return True
+                contains_mm_input = getattr(mm_input, "contains_mm_input", None)
+                if callable(contains_mm_input) and contains_mm_input():
+                    return False
+                cached = getattr(mm_input, "_sglang_omni_zero_mrope_delta", None)
+                if cached is not None:
+                    return bool(cached)
+                delta = getattr(mm_input, "mrope_position_delta", None)
+                if delta is None:
+                    return False
+                if isinstance(delta, torch.Tensor):
+                    if delta.device.type != "cpu":
+                        return False
+                    is_zero = bool(delta.numel() > 0 and torch.all(delta == 0).item())
+                else:
+                    try:
+                        is_zero = all(int(value) == 0 for value in delta)
+                    except TypeError:
+                        is_zero = int(delta) == 0
+                try:
+                    setattr(mm_input, "_sglang_omni_zero_mrope_delta", is_zero)
+                except Exception:
+                    pass
+                return is_zero
+
+            def patched_mrope(forward_batch, model_runner, batch):
+                prof = env_flag("SGLANG_OMNI_BUILD_PROFILE")
+                fast = env_flag("SGLANG_OMNI_FAST_MROPE_DECODE")
+                t0 = time.perf_counter() if prof else 0.0
+                used_fast = False
+                try:
+                    mm_inputs = getattr(batch, "multimodal_inputs", None)
+                    text_only = mm_inputs is None or all(
+                        mrope_delta_is_zero(mm) for mm in mm_inputs
+                    )
+                    if (
+                        fast
+                        and text_only
+                        and forward_batch.forward_mode.is_decode()
+                        and forward_batch.positions is not None
+                        and getattr(forward_batch, "spec_info", None) is None
+                    ):
+                        positions = forward_batch.positions
+                        if positions.dtype != torch.int64:
+                            positions = positions.to(dtype=torch.int64)
+                        forward_batch.mrope_positions = (
+                            positions.reshape(1, -1).expand(3, -1).clone()
+                        )
+                        used_fast = True
+                        return None
+                    return original(forward_batch, model_runner, batch)
+                finally:
+                    if prof:
+                        forward_batch._sglang_omni_mrope_seconds = (
+                            time.perf_counter() - t0
+                        )
+                        forward_batch._sglang_omni_mrope_fast = used_fast
+
+            forward_batch_cls._sglang_omni_orig_compute_mrope_positions = original
+            forward_batch_cls._compute_mrope_positions = patched_mrope
+            forward_batch_cls._sglang_omni_mrope_patch = True
 
     def _prepare_and_forward(
         self,

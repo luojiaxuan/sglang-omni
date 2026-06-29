@@ -427,6 +427,23 @@ def test_mrope_patch_warns_when_hook_missing(caplog: pytest.LogCaptureFixture) -
     assert ForwardBatch._sglang_omni_mrope_patch_missing_logged is True
 
 
+def test_mrope_patch_keeps_original_method_on_reentry() -> None:
+    class ForwardBatch:
+        def _compute_mrope_positions(self, model_runner, batch):
+            del model_runner, batch
+            return "original"
+
+    original = ForwardBatch._compute_mrope_positions
+    runner = object.__new__(ModelRunner)
+
+    runner._patch_forward_batch_mrope(ForwardBatch)
+    patched = ForwardBatch._compute_mrope_positions
+    runner._patch_forward_batch_mrope(ForwardBatch)
+
+    assert ForwardBatch._sglang_omni_orig_compute_mrope_positions is original
+    assert ForwardBatch._compute_mrope_positions is patched
+
+
 def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
     calls: list[tuple[str, int]] = []
 
