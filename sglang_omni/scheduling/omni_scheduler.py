@@ -844,7 +844,12 @@ class OmniScheduler:
         ):
             ready_room = self._pd_ready_decode_limit - self._pd_ready_decode_req_count()
             if ready_room > 0:
-                return min(ready_room, self.req_to_token_pool.available_size())
+                decode_capacity = max(int(self.max_running_requests), 1)
+                return min(
+                    ready_room,
+                    decode_capacity,
+                    self.req_to_token_pool.available_size(),
+                )
         return _Upstream.get_num_allocatable_reqs(self, running_bs)
 
     def get_next_batch_to_run(self):

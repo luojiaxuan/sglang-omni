@@ -150,6 +150,16 @@ def test_pd_allocatable_reqs_uses_ready_decode_room(monkeypatch):
     assert OmniScheduler.get_num_allocatable_reqs(scheduler, running_bs=4) == 7
 
 
+def test_pd_allocatable_reqs_never_builds_oversized_ready_decode_batch():
+    scheduler = _scheduler()
+    scheduler._pd_ready_decode_limit = 32
+    scheduler.max_running_requests = 4
+    scheduler.req_to_token_pool = _FakePool(available=32)
+    scheduler._pd_prefill_admission_active = True
+
+    assert OmniScheduler.get_num_allocatable_reqs(scheduler, running_bs=0) == 4
+
+
 def test_pd_prefill_admission_temporarily_disables_mixed_chunk(monkeypatch):
     scheduler = _scheduler()
     scheduler.is_mixed_chunk = True
