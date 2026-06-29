@@ -1030,8 +1030,7 @@ def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> No
     _apply_tensor_parallel_server_args_overrides(config)
 
     assert (
-        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"]
-        is False
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False
     )
 
 

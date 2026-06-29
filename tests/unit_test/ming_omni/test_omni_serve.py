@@ -261,12 +261,10 @@ def test_topology_gated_custom_all_reduce_reuses_topology_decision(
 
     assert calls == [(0, 1)]
     assert (
-        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"]
-        is False
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False
     )
     assert (
-        _server_args_overrides(config, "encoder")["disable_custom_all_reduce"]
-        is False
+        _server_args_overrides(config, "encoder")["disable_custom_all_reduce"] is False
     )
 
 
