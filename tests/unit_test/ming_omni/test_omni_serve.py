@@ -209,6 +209,67 @@ def test_hard_custom_all_reduce_disable_is_not_topology_relaxed(
     )
 
 
+def test_topology_gated_custom_all_reduce_reuses_topology_decision(
+    monkeypatch,
+) -> None:
+    from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
+
+    class TwoStageTopologyGatedConfig(PipelineConfig):
+        @classmethod
+        def tensor_parallel_server_args_overrides(
+            cls,
+            *,
+            stage_name: str,
+            tp_size: int,
+        ) -> dict[str, object]:
+            if stage_name in {"thinker", "encoder"} and tp_size > 1:
+                return {"disable_custom_all_reduce": True}
+            return {}
+
+        @classmethod
+        def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
+            return {"thinker", "encoder"}
+
+    calls = []
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        lambda gpu_ids: calls.append(tuple(gpu_ids)) or False,
+    )
+    config = TwoStageTopologyGatedConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="thinker",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                gpu=[0, 1],
+                tp_size=2,
+                process="thinker",
+                terminal=True,
+            ),
+            StageConfig(
+                name="encoder",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                gpu=[0, 1],
+                tp_size=2,
+                process="encoder",
+                terminal=True,
+            ),
+        ],
+    )
+
+    _apply_tensor_parallel_server_args_overrides(config)
+
+    assert calls == [(0, 1)]
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"]
+        is False
+    )
+    assert (
+        _server_args_overrides(config, "encoder")["disable_custom_all_reduce"]
+        is False
+    )
+
+
 def test_ming_cli_applies_image_encoder_tp_and_gpus() -> None:
     config = MingOmniPipelineConfig(model_path="dummy")
 

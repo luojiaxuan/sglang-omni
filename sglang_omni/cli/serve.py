@@ -492,6 +492,8 @@ def _stage_tp_gpu_ids(stage: object) -> list[int]:
 def _gate_custom_all_reduce_on_topology(
     stage: object,
     updates: dict[str, object],
+    *,
+    disable_custom_all_reduce: bool | None = None,
 ) -> dict[str, object]:
     """Relax a TP ``disable_custom_all_reduce=True`` override on capable topologies.
 
@@ -504,7 +506,12 @@ def _gate_custom_all_reduce_on_topology(
     if updates.get("disable_custom_all_reduce") is not True:
         return updates
     gpu_ids = _stage_tp_gpu_ids(stage)
-    if should_disable_thinker_custom_all_reduce(gpu_ids):
+    should_disable = (
+        should_disable_thinker_custom_all_reduce(gpu_ids)
+        if disable_custom_all_reduce is None
+        else disable_custom_all_reduce
+    )
+    if should_disable:
         return updates
     refined = dict(updates)
     refined["disable_custom_all_reduce"] = False
@@ -523,6 +530,7 @@ def _apply_tensor_parallel_server_args_overrides(
     topology_gated_custom_ar_stages = (
         config_cls.topology_gated_custom_all_reduce_stages()
     )
+    topology_gated_custom_ar_cache: dict[tuple[int, ...], bool] = {}
     for stage in pipeline_config.stages:
         updates = config_cls.tensor_parallel_server_args_overrides(
             stage_name=stage.name,
@@ -531,7 +539,16 @@ def _apply_tensor_parallel_server_args_overrides(
         if not updates:
             continue
         if stage.name in topology_gated_custom_ar_stages:
-            updates = _gate_custom_all_reduce_on_topology(stage, updates)
+            gpu_ids = tuple(_stage_tp_gpu_ids(stage))
+            if gpu_ids not in topology_gated_custom_ar_cache:
+                topology_gated_custom_ar_cache[gpu_ids] = (
+                    should_disable_thinker_custom_all_reduce(gpu_ids)
+                )
+            updates = _gate_custom_all_reduce_on_topology(
+                stage,
+                updates,
+                disable_custom_all_reduce=topology_gated_custom_ar_cache[gpu_ids],
+            )
         _apply_stage_server_args_override(
             pipeline_config,
             stage_name=stage.name,
