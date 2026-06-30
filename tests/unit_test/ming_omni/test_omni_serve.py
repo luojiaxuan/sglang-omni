@@ -336,7 +336,11 @@ def test_ming_cli_leaves_image_encoder_untouched_when_flags_omitted() -> None:
     assert image_encoder.gpu == before_gpu
 
 
-def test_ming_cli_applies_tp_server_args_for_config_mutated_tp() -> None:
+def test_ming_cli_applies_tp_server_args_for_config_mutated_tp(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
+        lambda *args, **kwargs: True,
+    )
     config = MingOmniPipelineConfig(model_path="dummy")
     thinker = _stage(config, "thinker")
     thinker.tp_size = 2
@@ -635,6 +639,11 @@ def test_registry_rejects_duplicate_architecture_aliases(tmp_path, monkeypatch) 
 
 
 def test_omni_serve_builds_ming_text_config_without_launching(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
+        lambda *args, **kwargs: True,
+    )
+
     from typer.testing import CliRunner
 
     from sglang_omni.cli import app
@@ -695,6 +704,11 @@ def test_omni_serve_builds_ming_text_config_without_launching(monkeypatch) -> No
 
 
 def test_omni_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
+        lambda *args, **kwargs: True,
+    )
+
     from typer.testing import CliRunner
 
     from sglang_omni.cli import app
