@@ -1016,7 +1016,7 @@ def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> No
     from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
 
     monkeypatch.setattr(
-        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: False,
     )
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")

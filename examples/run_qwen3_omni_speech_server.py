@@ -254,7 +254,7 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
         Qwen3OmniSpeechPipelineConfig,
     )
     from sglang_omni.serve import launch_server
-    from sglang_omni.utils.gpu_compat import should_disable_thinker_custom_all_reduce
+    from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 
     for flag_name, value in (
         ("--mem-fraction-static", args.mem_fraction_static),
@@ -352,7 +352,7 @@ def _launch_speech_server(args: argparse.Namespace) -> None:
             config,
             stage_name="thinker",
             server_arg_updates={
-                "disable_custom_all_reduce": should_disable_thinker_custom_all_reduce(
+                "disable_custom_all_reduce": should_disable_custom_all_reduce_for_gpus(
                     thinker_gpu_ids
                 ),
             },

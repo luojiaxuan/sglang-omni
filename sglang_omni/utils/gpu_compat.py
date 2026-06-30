@@ -210,7 +210,7 @@ def gpu_ids_support_p2p_mesh(
         _shutdown_nvml(pynvml)
 
 
-def should_disable_thinker_custom_all_reduce(
+def should_disable_custom_all_reduce_for_gpus(
     logical_gpu_ids: Sequence[int] | None,
     env: Mapping[str, str] | None = None,
 ) -> bool:

@@ -122,7 +122,7 @@ def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
 
 def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce(monkeypatch) -> None:
     monkeypatch.setattr(
-        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: True,
     )
     config = MingOmniPipelineConfig(model_path="dummy")
@@ -145,7 +145,7 @@ def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce(monkeypatch) -> 
 
 def test_ming_cli_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
     monkeypatch.setattr(
-        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: False,
     )
     config = MingOmniPipelineConfig(model_path="dummy")
@@ -179,7 +179,7 @@ def test_hard_custom_all_reduce_disable_is_not_topology_relaxed(
             return {}
 
     monkeypatch.setattr(
-        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: False,
     )
     config = HardDisableConfig(
@@ -232,7 +232,7 @@ def test_topology_gated_custom_all_reduce_reuses_topology_decision(
 
     calls = []
     monkeypatch.setattr(
-        "sglang_omni.cli.serve.should_disable_thinker_custom_all_reduce",
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda gpu_ids: calls.append(tuple(gpu_ids)) or False,
     )
     config = TwoStageTopologyGatedConfig(
