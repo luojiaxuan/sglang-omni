@@ -103,6 +103,98 @@ _BACKGROUND_REF_TASKS: set[asyncio.Task] = set()
 _LOGGED_REF_EDGES: set[tuple[str, str]] = set()
 
 
+def collect_tensor_refs(obj: Any, seen: set[int] | None = None) -> list[TensorRef]:
+    """Collect unresolved TensorRef leaves from a nested payload."""
+    if obj is None:
+        return []
+    seen = set() if seen is None else seen
+    obj_id = id(obj)
+    if obj_id in seen:
+        return []
+    seen.add(obj_id)
+
+    if is_tensor_ref_dict(obj):
+        return [TensorRef.from_dict(obj)]
+    if isinstance(obj, dict):
+        refs: list[TensorRef] = []
+        for value in obj.values():
+            refs.extend(collect_tensor_refs(value, seen))
+        return refs
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        refs = []
+        for value in obj:
+            refs.extend(collect_tensor_refs(value, seen))
+        return refs
+    return []
+
+
+def _release_shm_transfer(relay_info: dict[str, Any]) -> bool:
+    transfer_info = relay_info.get("transfer_info", {})
+    shm_name = (
+        transfer_info.get("shm_name") if isinstance(transfer_info, dict) else None
+    )
+    if not isinstance(shm_name, str) or not shm_name:
+        return False
+
+    from multiprocessing import shared_memory as _shm
+
+    try:
+        shm = _shm.SharedMemory(name=shm_name)
+    except FileNotFoundError:
+        return False
+    try:
+        shm.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    finally:
+        shm.close()
+
+
+def release_blob(relay: Relay, key: str, metadata: dict[str, Any]) -> bool:
+    """Best-effort release for a raw relay blob that will never be read."""
+    release_fn = getattr(relay, "release_blob", None)
+    if release_fn is not None:
+        release_fn(key, metadata)
+        return True
+
+    relay_info = metadata.get("relay_info", {})
+    if isinstance(relay_info, dict) and _release_shm_transfer(relay_info):
+        return True
+
+    storage = getattr(relay, "storage", None)
+    if isinstance(storage, dict) and key in storage:
+        storage.pop(key, None)
+        return True
+
+    return False
+
+
+def release_tensor_refs(relay: Relay, refs: list[TensorRef]) -> int:
+    """Release unresolved TensorRef blobs for requests that abort before consume."""
+    released = 0
+    seen: set[str] = set()
+    for ref in refs:
+        if ref.blob_key in seen:
+            continue
+        seen.add(ref.blob_key)
+        if release_blob(relay, ref.blob_key, ref.blob_metadata):
+            released += 1
+    return released
+
+
+def release_tensor_ref_blobs_from_metadata(
+    relay: Relay, metadata: dict[str, Any]
+) -> int:
+    if not isinstance(metadata, dict):
+        return 0
+    raw_refs = metadata.get("tensor_ref_blobs", [])
+    if not isinstance(raw_refs, list):
+        return 0
+    refs = [TensorRef.from_dict(item) for item in raw_refs if is_tensor_ref_dict(item)]
+    return release_tensor_refs(relay, refs)
+
+
 def _track_background_op(op: Any, ref_id: str) -> None:
     async def _wait() -> None:
         try:
@@ -406,6 +498,9 @@ async def write_payload(
         "payload_pickle": base64.b64encode(metadata_bytes).decode("ascii"),
         "tensor_info": tensor_info,
     }
+    tensor_ref_blobs = collect_tensor_refs(modified_data)
+    if tensor_ref_blobs:
+        metadata["tensor_ref_blobs"] = [ref.to_dict() for ref in tensor_ref_blobs]
     if stats is not None:
         metadata["tensor_ref_stats"] = stats
     return metadata, op

@@ -238,6 +238,46 @@ def test_write_payload_keeps_small_allowlisted_tensor_inline_with_policy() -> No
     asyncio.run(_run())
 
 
+def test_release_tensor_ref_blobs_from_metadata_drops_unconsumed_blob() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        payload = make_stage_payload(
+            request_id="req-1",
+            data={"encoder_outs": {"image_encoder": {"video_embeds": tensor}}},
+        )
+        policy = TensorRefPolicy(
+            threshold_bytes=1,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("video_embeds",),
+        )
+
+        metadata, op = await relay_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            tensor_ref_policy=policy,
+        )
+        await op.wait_for_completion()
+
+        ref_blob = metadata["tensor_ref_blobs"][0]
+        blob_key = ref_blob["blob_key"]
+        assert blob_key in relay.storage
+
+        released = relay_io.release_tensor_ref_blobs_from_metadata(relay, metadata)
+        assert released == 1
+        assert blob_key not in relay.storage
+
+        for task in list(relay_io._BACKGROUND_REF_TASKS):
+            await task
+
+    asyncio.run(_run())
+
+
 def test_destructive_relay_blob_read_is_single_use() -> None:
     """A blob read is destructive on the SHM backend (unlink-on-read): the first
     resolve succeeds, a second independent resolve of the same blob fails. This

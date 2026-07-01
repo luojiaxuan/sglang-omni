@@ -14,7 +14,11 @@ from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
-from sglang_omni.pipeline.tensor_ref import TensorRef, is_tensor_ref_dict
+from sglang_omni.pipeline.tensor_ref import (
+    TensorRef,
+    TensorRefPolicy,
+    is_tensor_ref_dict,
+)
 from sglang_omni.pipeline.tp_control import TPLeaderFanout
 from sglang_omni.proto import DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -379,6 +383,83 @@ def test_send_to_stage_does_not_block_on_externalized_tensor_ref_blob(
         await asyncio.wait_for(task, timeout=1.0)
         await asyncio.sleep(0)
         assert relay_io._BACKGROUND_REF_TASKS == set()
+
+    asyncio.run(_run())
+
+
+def test_stage_discards_aborted_tensor_ref_payload_releases_blob() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        payload = make_stage_payload(request_id="req-1", data={"video_embeds": tensor})
+        policy = TensorRefPolicy(
+            threshold_bytes=1,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("video_embeds",),
+        )
+        metadata, op = await relay_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            tensor_ref_policy=policy,
+        )
+        await op.wait_for_completion()
+        blob_key = metadata["tensor_ref_blobs"][0]["blob_key"]
+        assert blob_key in relay.storage
+
+        stage_obj = make_stage(name="mm_aggregate", relay=relay)
+        stage_obj._record_aborted_request_id("req-1")
+        await stage_obj._on_data_ready(
+            DataReadyMessage("req-1", "image_encoder", "mm_aggregate", metadata)
+        )
+
+        assert blob_key not in relay.storage
+
+        for task in list(relay_io._BACKGROUND_REF_TASKS):
+            await task
+
+    asyncio.run(_run())
+
+
+def test_stage_abort_releases_tracked_unresolved_tensor_ref_payload() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        payload = make_stage_payload(request_id="req-1", data={"video_embeds": tensor})
+        policy = TensorRefPolicy(
+            threshold_bytes=1,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            consumer_stage="thinker",
+            path_allowlist=("video_embeds",),
+        )
+        metadata, op = await relay_io.write_payload(
+            relay,
+            payload.request_id,
+            payload,
+            from_stage="image_encoder",
+            to_stage="mm_aggregate",
+            tensor_ref_policy=policy,
+        )
+        await op.wait_for_completion()
+        blob_key = metadata["tensor_ref_blobs"][0]["blob_key"]
+        mid_payload = await relay_io.read_payload(relay, payload.request_id, metadata)
+        assert blob_key in relay.storage
+
+        stage_obj = make_stage(name="mm_aggregate", relay=relay)
+        await stage_obj._receive_payload_from_stage(
+            "req-1", "image_encoder", mid_payload
+        )
+        stage_obj._on_abort("req-1")
+
+        assert blob_key not in relay.storage
+
+        for task in list(relay_io._BACKGROUND_REF_TASKS):
+            await task
 
     asyncio.run(_run())
 

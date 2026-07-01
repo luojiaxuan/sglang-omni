@@ -143,6 +143,7 @@ class Stage:
         self._first_stream_chunk_seen: set[str] = set()
         self._local_stream_targets: dict[str, set[str]] = {}
         self._nonlocal_stream_targets: dict[str, set[str]] = {}
+        self._unresolved_tensor_refs: dict[str, dict[str, Any]] = {}
         self._scheduler_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_crash_error: BaseException | None = None
@@ -369,14 +370,17 @@ class Stage:
         payload: Any,
     ) -> None:
         if request_id in self._aborted:
+            self._release_payload_tensor_refs(payload)
             return
         self._active_requests.add(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
 
         if request_id in self._aborted:
+            self._release_payload_tensor_refs(payload)
             return
 
+        self._remember_payload_tensor_refs(request_id, payload)
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -537,8 +541,11 @@ class Stage:
 
     async def _discard_payload_data(self, msg: DataReadyMessage) -> None:
         request_id = msg.request_id
+        payload = None
         try:
-            await relay_io.read_payload(self.relay, request_id, msg.shm_metadata)
+            payload = await relay_io.read_payload(
+                self.relay, request_id, msg.shm_metadata
+            )
         except Exception:
             logger.debug(
                 "Stage %s: failed to drain aborted payload for %s",
@@ -547,6 +554,12 @@ class Stage:
                 exc_info=True,
             )
             self.relay.cleanup(request_id)
+        finally:
+            relay_io.release_tensor_ref_blobs_from_metadata(
+                self.relay, msg.shm_metadata
+            )
+            if payload is not None:
+                self._release_payload_tensor_refs(payload)
 
     async def _discard_stream_chunk_data(self, msg: DataReadyMessage) -> None:
         if isinstance(msg.shm_metadata, dict) and msg.shm_metadata.get("_ipc"):
@@ -672,6 +685,7 @@ class Stage:
             payload_for_scheduler = await relay_io.materialize_payload_tensor_refs(
                 self.relay, payload, current_stage=self.name
             )
+            self._remember_payload_tensor_refs(request_id, payload_for_scheduler)
         self.scheduler.inbox.put(
             IncomingMessage(
                 request_id=request_id, type="new_request", data=payload_for_scheduler
@@ -1016,8 +1030,12 @@ class Stage:
             event_name="stage_hop_sent",
             metadata=hop_metadata,
         )
-        await self.control_plane.send_to_stage(target, endpoint, msg)
-        await op.wait_for_completion()
+        try:
+            await self.control_plane.send_to_stage(target, endpoint, msg)
+            await op.wait_for_completion()
+        except Exception:
+            relay_io.release_tensor_ref_blobs_from_metadata(self.relay, metadata)
+            raise
 
     @staticmethod
     def _is_isolated_projected_payload(
@@ -1278,6 +1296,7 @@ class Stage:
     async def _send_failure(self, request_id: str, error: str) -> None:
         self._record_aborted_request_id(request_id)
         if not self._owns_external_io:
+            self._release_tracked_tensor_refs(request_id)
             self._clear_request_state(request_id)
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
         await self.control_plane.send_complete(
@@ -1288,6 +1307,7 @@ class Stage:
                 error=error,
             )
         )
+        self._release_tracked_tensor_refs(request_id)
         self._clear_request_state(request_id)
 
     def _clear_request_state(self, request_id: str) -> None:
@@ -1303,6 +1323,7 @@ class Stage:
         self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
+        self._unresolved_tensor_refs.pop(request_id, None)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:
@@ -1348,9 +1369,28 @@ class Stage:
 
     def _on_abort(self, request_id: str) -> None:
         self._record_aborted_request_id(request_id)
+        self._release_tracked_tensor_refs(request_id)
         self.relay.cleanup(request_id)
         self._clear_request_state(request_id)
         self.scheduler.abort(request_id)
+
+    def _remember_payload_tensor_refs(self, request_id: str, payload: Any) -> None:
+        data = getattr(payload, "data", payload)
+        refs = relay_io.collect_tensor_refs(data)
+        if refs:
+            self._unresolved_tensor_refs[request_id] = {
+                ref.blob_key: ref for ref in refs
+            }
+        else:
+            self._unresolved_tensor_refs.pop(request_id, None)
+
+    def _release_payload_tensor_refs(self, payload: Any) -> None:
+        data = getattr(payload, "data", payload)
+        relay_io.release_tensor_refs(self.relay, relay_io.collect_tensor_refs(data))
+
+    def _release_tracked_tensor_refs(self, request_id: str) -> None:
+        refs = list(self._unresolved_tensor_refs.pop(request_id, {}).values())
+        relay_io.release_tensor_refs(self.relay, refs)
 
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id

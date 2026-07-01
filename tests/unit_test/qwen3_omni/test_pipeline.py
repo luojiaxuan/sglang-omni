@@ -1133,7 +1133,6 @@ def test_qwen_merge_preserves_unresolved_video_tensor_ref() -> None:
         path="encoder_outs.image_encoder.video_embeds",
         shape=(4, 8),
         dtype="torch.bfloat16",
-        device="cuda:0",
         nbytes=4 * 8 * 2,
         blob_key="req-qwen:tensor_ref:image_encoder:mm_aggregate:abc:video_embeds",
         blob_metadata={"relay_info": {}, "tensor_shape": [4, 8]},
