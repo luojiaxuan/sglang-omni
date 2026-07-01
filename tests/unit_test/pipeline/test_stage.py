@@ -464,6 +464,80 @@ def test_stage_abort_releases_tracked_unresolved_tensor_ref_payload() -> None:
     asyncio.run(_run())
 
 
+def test_stage_abort_preserves_tracked_refs_across_ref_free_fanin(monkeypatch) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_ENABLE_TENSOR_REFS", "1")
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        tensor = torch.arange(8, dtype=torch.float32)
+        blob_metadata, blob_op = await relay_io.write_blob(relay, "req-1:blob", tensor)
+        await blob_op.wait_for_completion()
+        ref = TensorRef(
+            ref_id="req-1:blob",
+            request_id="req-1",
+            producer_stage="image_encoder",
+            consumer_stage="thinker",
+            path="video_embeds",
+            shape=tuple(tensor.shape),
+            dtype=str(tensor.dtype),
+            nbytes=tensor.numel() * tensor.element_size(),
+            blob_key="req-1:blob",
+            blob_metadata=blob_metadata,
+        )
+
+        def _merge(payloads):
+            image_payload = payloads["image_encoder"]
+            return make_stage_payload(
+                request_id="req-1",
+                data={"video_embeds": image_payload.data["video_embeds"]},
+            )
+
+        stage_obj = make_stage(
+            name="mm_aggregate",
+            relay=relay,
+            input_handler=AggregatedInput({"image_encoder", "preprocessing"}, _merge),
+        )
+        started_materialize = asyncio.Event()
+        release_materialize = asyncio.Event()
+        original_materialize = relay_io.materialize_payload_tensor_refs
+
+        async def _blocking_materialize(relay_arg, payload, *, current_stage):
+            started_materialize.set()
+            await release_materialize.wait()
+            return await original_materialize(
+                relay_arg, payload, current_stage=current_stage
+            )
+
+        monkeypatch.setattr(
+            relay_io, "materialize_payload_tensor_refs", _blocking_materialize
+        )
+        await stage_obj._receive_payload_from_stage(
+            "req-1",
+            "image_encoder",
+            make_stage_payload(
+                request_id="req-1", data={"video_embeds": ref.to_dict()}
+            ),
+        )
+        assert "req-1:blob" in relay.storage
+
+        second_payload = asyncio.create_task(
+            stage_obj._receive_payload_from_stage(
+                "req-1",
+                "preprocessing",
+                make_stage_payload(request_id="req-1", data={"plain": 1}),
+            )
+        )
+        await asyncio.wait_for(started_materialize.wait(), timeout=2.0)
+
+        stage_obj._on_abort("req-1")
+        assert "req-1:blob" not in relay.storage
+
+        release_materialize.set()
+        await asyncio.wait_for(second_payload, timeout=2.0)
+
+    asyncio.run(_run())
+
+
 def test_stage_relay_read_failure_completes_with_error() -> None:
     """Preserves failure reporting when a stage cannot read its relay payload."""
 

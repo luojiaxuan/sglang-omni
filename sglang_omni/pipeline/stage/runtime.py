@@ -1378,11 +1378,8 @@ class Stage:
         data = getattr(payload, "data", payload)
         refs = relay_io.collect_tensor_refs(data)
         if refs:
-            self._unresolved_tensor_refs[request_id] = {
-                ref.blob_key: ref for ref in refs
-            }
-        else:
-            self._unresolved_tensor_refs.pop(request_id, None)
+            tracked = self._unresolved_tensor_refs.setdefault(request_id, {})
+            tracked.update({ref.blob_key: ref for ref in refs})
 
     def _release_payload_tensor_refs(self, payload: Any) -> None:
         data = getattr(payload, "data", payload)
