@@ -128,9 +128,7 @@ def _repeat_samples(
     for index in range(request_count):
         sample = samples[index % len(samples)]
         sample_id = f"{stage_id}_{index:05d}_{_safe_id(sample.sample_id)}"
-        repeated.append(
-            replace(sample, sample_id=sample_id, question_id=sample_id)
-        )
+        repeated.append(replace(sample, sample_id=sample_id, question_id=sample_id))
     return repeated
 
 
