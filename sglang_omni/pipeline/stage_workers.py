@@ -70,6 +70,8 @@ class StageLaunchConfig:
 
     # Relay
     relay_config: dict[str, Any] = field(default_factory=dict)
+    trace_stage_io: bool = False
+    trace_stage_io_sync: bool = False
 
     # Endpoints
     recv_endpoint: str = ""
@@ -616,6 +618,8 @@ def _construct_stage(
         can_accept_stream_before_payload=spec.can_accept_stream_before_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        trace_stage_io=spec.trace_stage_io,
+        trace_stage_io_sync=spec.trace_stage_io_sync,
     )
 
     if spec.is_stream_receiver:
