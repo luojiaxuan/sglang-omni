@@ -19,7 +19,6 @@ _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 THINKER_STAGE = "thinker"
 MIN_PARTIAL_START_CHUNKS = 3
 _VISUAL_TENSOR_REF_PATHS = (
-    "video_embeds",
     "deepstack_visual_embeds_image",
     "deepstack_visual_embeds_video",
 )
