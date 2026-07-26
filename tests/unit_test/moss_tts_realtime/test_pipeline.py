@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from transformers import AutoConfig
 
@@ -141,6 +142,39 @@ def test_local_incremental_sdpa_matches_full_causal_attention():
         dim=1,
     )
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=2e-5)
+
+
+def test_local_attention_backend_validation_and_cpu_fallback():
+    with pytest.raises(ValueError, match="attention_backend"):
+        MossTTSRealtimeLocalTransformer(
+            _local_config(),
+            attention_backend="unknown",
+        )
+
+    module = MossTTSRealtimeLocalTransformer(
+        _local_config(),
+        attention_backend="auto",
+    )
+    module.ensure_kv_cache(2, torch.device("cpu"), torch.float32)
+    assert module.model._resolved_attention_backend == "sdpa"
+    assert module.model._kv_cache[0][0].shape == (2, 2, 4, 4)
+
+
+def test_fused_qkv_projection_matches_split_projection():
+    torch.manual_seed(9)
+    module = MossTTSRealtimeLocalTransformer(
+        _local_config(),
+        attention_backend="sdpa",
+    )
+    attention = module.model.layers[0].self_attn
+    hidden_states = torch.randn(3, 16)
+    expected = attention.project(hidden_states)
+    attention.refresh_fused_qkv()
+    actual = attention.project(hidden_states)
+
+    assert not attention._fused_qkv_weight.requires_grad
+    for fused, split in zip(actual, expected, strict=True):
+        torch.testing.assert_close(fused, split)
 
 
 def test_local_checkpoint_names_match_upstream_layout():

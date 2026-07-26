@@ -11,7 +11,7 @@ zero-shot voice cloning.
 | Component | SGLang-Omni implementation |
 |---|---|
 | Global backbone | SGLang Qwen3 paged attention, RadixAttention, and CUDA graph |
-| Local Transformer | PyTorch SDPA with GQA, captured as one frame CUDA graph |
+| Local Transformer | FlashAttention-3 fused RoPE/KV update/GQA on Hopper; SDPA fallback |
 | Audio tokenizer | Causal MOSS-Audio-Tokenizer, 16 codebooks |
 | Output | 24 kHz mono PCM/WAV |
 | Concurrency | One active request |
@@ -79,7 +79,9 @@ The reproducible driver is
 used one NVIDIA H200, the same model and codec revisions, the upstream
 `prompt_audio1.mp3`, identical sampling settings, two warmups, and five
 sequential measured requests. The native baseline was the upstream FastAPI
-server with SDPA and `torch.compile(fullgraph=True)`.
+server with SDPA and `torch.compile(fullgraph=True)`. This serving run predates
+the local FlashAttention-3 optimization below, so it does not include that
+additional speedup.
 
 | Backend | TTFA median | E2E mean | Audio mean | RTF mean |
 |---|---:|---:|---:|---:|
@@ -101,6 +103,42 @@ python benchmarks/eval/benchmark_moss_tts_realtime_serving.py \
   --backend omni \
   --base-url http://127.0.0.1:8000 \
   --prompt-audio /path/to/MOSS-TTS/moss_tts_realtime/audio/prompt_audio1.mp3
+```
+
+## Local Transformer Kernels
+
+On Hopper GPUs, the local Transformer selects FlashAttention-3 and fuses rotary
+embedding, KV-cache append, and grouped-query attention. Its QKV projections
+also use one linear operation. Other devices retain the SDPA path.
+
+The following H100 results measure one complete 16-codebook local frame,
+including all four Transformer layers and LM heads. Each value is the median
+of five runs with 20 warmups and 50 measured iterations. The eager process was
+pinned to one otherwise idle CPU to avoid host scheduling noise.
+
+| Batch | Mode | SDPA | SDPA + fused QKV | FA3 + fused QKV | FA3 speedup |
+|---:|---|---:|---:|---:|---:|
+| 1 | Eager | 42.260 ms | 37.862 ms | **28.877 ms** | **1.463x** |
+| 1 | CUDA Graph | 8.713 ms | 8.170 ms | **8.073 ms** | **1.079x** |
+| 16 | Eager | 50.400 ms | 36.368 ms | **29.984 ms** | **1.681x** |
+| 16 | CUDA Graph | 11.947 ms | 11.470 ms | **10.840 ms** | **1.102x** |
+
+Nsight Compute recorded 20.8% fewer kernel launches for both batches. Profiled
+GPU kernel time fell from 16.29 to 13.88 ms at batch 1 and from 18.60 to
+15.92 ms at batch 16. Against SDPA, BF16 output cosine similarity was at least
+0.999989; the maximum absolute difference was 0.0391.
+
+Reproduce the measurements with
+`benchmarks/eval/benchmark_moss_tts_realtime_local_attention.py`. Raw summary
+data is stored in
+`benchmarks/results/moss_tts_realtime_h100_local_attention.json` and
+`benchmarks/results/moss_tts_realtime_h100_local_attention_nsight.json`.
+
+```bash
+IDLE_CPU=27
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python -m benchmarks.eval.benchmark_moss_tts_realtime_local_attention \
+  --cpu-affinity "${IDLE_CPU}" --batches 1,16
 ```
 
 ## Current Limits
