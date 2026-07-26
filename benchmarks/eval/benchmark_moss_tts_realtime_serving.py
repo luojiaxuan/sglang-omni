@@ -194,10 +194,7 @@ class _NativeSession:
 def _benchmark_native(args: argparse.Namespace) -> list[Sample]:
     session = _NativeSession(args)
     try:
-        return [
-            session.run(index)
-            for index in range(args.warmup + args.requests)
-        ]
+        return [session.run(index) for index in range(args.warmup + args.requests)]
     finally:
         session.close()
 

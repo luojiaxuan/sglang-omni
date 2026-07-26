@@ -18,9 +18,7 @@ class MossTTSRealtimeDecodeStatePool(MossTTSLocalDecodeStatePool):
 
     def __init__(self, model: Any) -> None:
         super().__init__(model)
-        self.repetition_window = int(
-            getattr(model.config, "repetition_window", 50)
-        )
+        self.repetition_window = int(getattr(model.config, "repetition_window", 50))
         self.audio_recent_tokens = torch.full(
             (self.num_rows, self.n_vq, self.repetition_window),
             -1,
@@ -39,9 +37,7 @@ class MossTTSRealtimeDecodeStatePool(MossTTSLocalDecodeStatePool):
             self.audio_recent_tokens[row_idx].fill_(-1)
             self.audio_recent_count[row_idx] = 0
 
-    def update_audio_history(
-        self, row_t: torch.Tensor, rows: torch.Tensor
-    ) -> None:
+    def update_audio_history(self, row_t: torch.Tensor, rows: torch.Tensor) -> None:
         if row_t.numel() == 0:
             return
         if rows.ndim != 2 or int(rows.shape[1]) != self.n_vq + 1:
@@ -83,9 +79,7 @@ class MossTTSRealtimeDecodeStatePool(MossTTSLocalDecodeStatePool):
             history[valid],
         ] = True
 
-    def rebuild_audio_history(
-        self, rid: str, output_rows: list[torch.Tensor]
-    ) -> bool:
+    def rebuild_audio_history(self, rid: str, output_rows: list[torch.Tensor]) -> bool:
         row_idx = self.row_for(rid)
         if row_idx is None:
             return False

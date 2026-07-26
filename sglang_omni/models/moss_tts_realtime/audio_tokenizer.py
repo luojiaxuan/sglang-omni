@@ -12,10 +12,7 @@ from typing import Any
 
 import torch
 
-from sglang_omni.models.moss_tts_realtime.payload_types import (
-    N_CODEBOOKS,
-    SAMPLE_RATE,
-)
+from sglang_omni.models.moss_tts_realtime.payload_types import N_CODEBOOKS, SAMPLE_RATE
 from sglang_omni.preprocessing.audio import AudioMediaIO
 
 logger = logging.getLogger(__name__)

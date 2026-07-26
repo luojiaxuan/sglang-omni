@@ -108,9 +108,7 @@ class MossTTSRealtimePipelineConfig(PipelineConfig):
         if self.stream_chunk_frames < 1:
             raise ValueError("stream_chunk_frames must be >= 1")
         if not 1 <= self.initial_chunk_frames <= self.stream_chunk_frames:
-            raise ValueError(
-                "initial_chunk_frames must be in [1, stream_chunk_frames]"
-            )
+            raise ValueError("initial_chunk_frames must be in [1, stream_chunk_frames]")
         for stage in self.stages:
             if stage.factory.endswith("create_preprocessing_executor"):
                 stage.factory_args.setdefault(

@@ -37,9 +37,7 @@ class MossTTSRealtimePromptProcessor:
 
     def __init__(self, tokenizer: Any) -> None:
         self.tokenizer = tokenizer
-        self.audio_pad_token_id = int(
-            tokenizer.convert_tokens_to_ids("<|audio_pad|>")
-        )
+        self.audio_pad_token_id = int(tokenizer.convert_tokens_to_ids("<|audio_pad|>"))
 
     def _text_rows(self, text: str) -> np.ndarray:
         token_ids = self.tokenizer(text)["input_ids"]

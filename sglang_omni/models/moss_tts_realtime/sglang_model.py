@@ -64,16 +64,12 @@ class MossTTSRealtimeSGLangModel(MossTTSLocalSGLangModel):
         config.vocab_size_list = [config.vocab_size] + [
             config.audio_vocab_size
         ] * config.n_vq
-        config.audio_pad_code = int(
-            getattr(config, "audio_pad_token", AUDIO_PAD_TOKEN)
-        )
+        config.audio_pad_code = int(getattr(config, "audio_pad_token", AUDIO_PAD_TOKEN))
         config.pad_token_id = int(
             getattr(language_config, "pad_token_id", None)
             or getattr(language_config, "bos_token_id", 151643)
         )
-        config.pad_token = [config.pad_token_id] + [
-            config.audio_pad_code
-        ] * config.n_vq
+        config.pad_token = [config.pad_token_id] + [config.audio_pad_code] * config.n_vq
         config.audio_assistant_slot_token_id = TEXT_PAD_TOKEN
         config.audio_end_token_id = int(
             getattr(language_config, "eos_token_id", 151645)
@@ -186,9 +182,7 @@ class MossTTSRealtimeSGLangModel(MossTTSLocalSGLangModel):
                     (bucket,), 30, device=device, dtype=torch.long
                 ),
                 "seeds": torch.zeros(bucket, device=device, dtype=torch.long),
-                "base_positions": torch.zeros(
-                    bucket, device=device, dtype=torch.long
-                ),
+                "base_positions": torch.zeros(bucket, device=device, dtype=torch.long),
                 "audio_token_presence": torch.zeros(
                     bucket,
                     self.n_vq,
@@ -211,9 +205,7 @@ class MossTTSRealtimeSGLangModel(MossTTSLocalSGLangModel):
             with torch.cuda.graph(graph):
                 outputs = self._decode_frame_graphable(**static_inputs)
             self._frame_graphs[bucket] = (graph, static_inputs, *outputs)
-        logger.info(
-            "MOSS-TTS-Realtime frame CUDA graphs captured for bs=%s", buckets
-        )
+        logger.info("MOSS-TTS-Realtime frame CUDA graphs captured for bs=%s", buckets)
 
     @torch.no_grad()
     def decode_frame_graphed(
@@ -307,9 +299,7 @@ class MossTTSRealtimeSGLangModel(MossTTSLocalSGLangModel):
         embeds.extend(
             layer.weight for layer in self.local_transformer.model.embed_tokens
         )
-        heads = [
-            layer.weight for layer in self.local_transformer.local_lm_heads
-        ]
+        heads = [layer.weight for layer in self.local_transformer.local_lm_heads]
         return embeds, heads
 
 

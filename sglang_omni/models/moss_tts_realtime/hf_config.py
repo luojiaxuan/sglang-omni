@@ -80,9 +80,9 @@ class MossTTSRealtimeConfig(PretrainedConfig):
     def __init__(
         self,
         language_config: Qwen3Config | dict[str, Any] | None = None,
-        local_config: MossTTSRealtimeLocalTransformerConfig
-        | dict[str, Any]
-        | None = None,
+        local_config: (
+            MossTTSRealtimeLocalTransformerConfig | dict[str, Any] | None
+        ) = None,
         rvq: int = 16,
         audio_pad_token: int = 1024,
         audio_vocab_size: int = 1027,

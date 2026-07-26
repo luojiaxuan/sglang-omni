@@ -125,10 +125,7 @@ class LocalBackbone(nn.Module):
 
         inv_freq = 1.0 / (
             float(config.rope_theta)
-            ** (
-                torch.arange(0, self.head_dim, 2, dtype=torch.float32)
-                / self.head_dim
-            )
+            ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim)
         )
         positions = torch.arange(self.max_positions, dtype=torch.float32)
         freqs = torch.outer(positions, inv_freq)
@@ -183,9 +180,7 @@ class LocalBackbone(nn.Module):
         values = hidden_states
         for layer_index, layer in enumerate(self.layers):
             residual = values
-            query, key, value = layer.self_attn.project(
-                layer.input_layernorm(values)
-            )
+            query, key, value = layer.self_attn.project(layer.input_layernorm(values))
             query = query * cos + _rotate_half(query) * sin
             key = key * cos + _rotate_half(key) * sin
             key_cache, value_cache = self._kv_cache[layer_index]

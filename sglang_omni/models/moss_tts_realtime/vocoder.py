@@ -32,9 +32,7 @@ class _StreamState:
     latched: bool = False
 
 
-class MossTTSRealtimeVocoder(
-    StreamingVocoderBase[_StreamState, None]
-):
+class MossTTSRealtimeVocoder(StreamingVocoderBase[_StreamState, None]):
     """Decode one causal codec stream while retaining decoder KV state."""
 
     def __init__(
@@ -107,9 +105,7 @@ class MossTTSRealtimeVocoder(
             )
         return row[1 : N_CODEBOOKS + 1]
 
-    def ingest(
-        self, request_id: str, state: _StreamState, codes: torch.Tensor
-    ) -> None:
+    def ingest(self, request_id: str, state: _StreamState, codes: torch.Tensor) -> None:
         del request_id
         state.rows.append(codes)
 
@@ -137,9 +133,7 @@ class MossTTSRealtimeVocoder(
         state.threshold = self._stream_chunk_frames
         return waveform[0].detach().to(device="cpu", dtype=torch.float32).contiguous()
 
-    def release_stream_resources(
-        self, request_id: str, state: _StreamState
-    ) -> None:
+    def release_stream_resources(self, request_id: str, state: _StreamState) -> None:
         if state.context is not None:
             state.context.__exit__(None, None, None)
             state.context = None

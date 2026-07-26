@@ -80,9 +80,7 @@ class _ReferenceHook(TensorReferenceEncodeHook[_ReferenceInput]):
         with self._lock:
             return encode_reference_audio(self._codec, item.source)
 
-    def revalidate(
-        self, item: _ReferenceInput, key: ReferenceEncodeKey
-    ) -> bool:
+    def revalidate(self, item: _ReferenceInput, key: ReferenceEncodeKey) -> bool:
         return item.kind != "path" or self.input_key(item) == key.input_key
 
 

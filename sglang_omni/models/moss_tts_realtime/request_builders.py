@@ -30,9 +30,7 @@ from sglang_omni.models.moss_tts_realtime.processor import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.prepared_request_queue import PreparedRequestQueue
-from sglang_omni.scheduling.streaming_vocoder import (
-    INITIAL_CODEC_CHUNK_FRAMES_PARAM,
-)
+from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 _PREPARED_MARKER = "_moss_tts_realtime_prepared_request"
 
@@ -222,9 +220,7 @@ def _pop_prepared(payload: StagePayload) -> PreparedRequest:
     marker = payload.data.get(_PREPARED_MARKER)
     prepared = _QUEUE.pop(str(marker)) if marker is not None else None
     if prepared is None:
-        raise RuntimeError(
-            "MOSS-TTS-Realtime AR request requires preprocessing output"
-        )
+        raise RuntimeError("MOSS-TTS-Realtime AR request requires preprocessing output")
     return prepared
 
 

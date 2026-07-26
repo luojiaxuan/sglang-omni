@@ -16,9 +16,7 @@ from sglang_omni.models.moss_tts_realtime.local_transformer import (
     MossTTSRealtimeLocalTransformer,
     _rotate_half,
 )
-from sglang_omni.models.moss_tts_realtime.model_runner import (
-    MossTTSRealtimeModelRunner,
-)
+from sglang_omni.models.moss_tts_realtime.model_runner import MossTTSRealtimeModelRunner
 from sglang_omni.models.moss_tts_realtime.payload_types import (
     AUDIO_BOS_TOKEN,
     AUDIO_PAD_TOKEN,
@@ -28,9 +26,7 @@ from sglang_omni.models.moss_tts_realtime.payload_types import (
 from sglang_omni.models.moss_tts_realtime.processor import (
     MossTTSRealtimePromptProcessor,
 )
-from sglang_omni.models.moss_tts_realtime.request_builders import (
-    _generation_kwargs,
-)
+from sglang_omni.models.moss_tts_realtime.request_builders import _generation_kwargs
 from sglang_omni.models.moss_tts_realtime.state_pool import (
     MossTTSRealtimeDecodeStatePool,
 )
@@ -96,14 +92,10 @@ def _full_local_forward(
         residual = values
         normalized = layer.input_layernorm(values)
         query = layer.self_attn.q_norm(
-            layer.self_attn.q_proj(normalized).view(
-                batch, seq, num_heads, head_dim
-            )
+            layer.self_attn.q_proj(normalized).view(batch, seq, num_heads, head_dim)
         )
         key = layer.self_attn.k_norm(
-            layer.self_attn.k_proj(normalized).view(
-                batch, seq, num_kv_heads, head_dim
-            )
+            layer.self_attn.k_proj(normalized).view(batch, seq, num_kv_heads, head_dim)
         )
         value = layer.self_attn.v_proj(normalized).view(
             batch, seq, num_kv_heads, head_dim

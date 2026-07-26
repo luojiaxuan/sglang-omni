@@ -5,16 +5,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.models.moss_tts_local.engine_builder import (
-    MossTtsLocalEngineBuilder,
-)
+from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
 from sglang_omni.models.moss_tts_realtime import request_builders
 from sglang_omni.models.moss_tts_realtime.hf_config import (
     register_moss_tts_realtime_hf_config,
 )
-from sglang_omni.models.moss_tts_realtime.model_runner import (
-    MossTTSRealtimeModelRunner,
-)
+from sglang_omni.models.moss_tts_realtime.model_runner import MossTTSRealtimeModelRunner
 
 
 class MossTTSRealtimeEngineBuilder(MossTtsLocalEngineBuilder):
