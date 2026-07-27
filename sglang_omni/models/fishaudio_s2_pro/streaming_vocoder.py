@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,7 @@ class _StreamVocoderState:
     next_vocode_tokens: int = 0
     pending_tail: torch.Tensor | None = None
     total_tokens: int = 0
+    vocode_passes: int = 0
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ def build_stream_vocoder_chunk(
     stream_followup_stride: int,
     stream_overlap_tokens: int,
     stream_crossfade_samples: int,
+    stream_startup_followup_strides: Sequence[int] = (),
 ) -> dict[str, Any] | None:
     if not _append_stream_vocoder_codes(
         state,
@@ -78,8 +81,28 @@ def build_stream_vocoder_chunk(
         stream_crossfade_samples=stream_crossfade_samples,
         is_final=False,
     )
-    state.next_vocode_tokens = state.total_tokens + stream_followup_stride
+    _advance_stream_vocoder_cadence(
+        state,
+        stream_followup_stride=stream_followup_stride,
+        stream_startup_followup_strides=stream_startup_followup_strides,
+    )
     return chunk
+
+
+def _advance_stream_vocoder_cadence(
+    state: _StreamVocoderState,
+    *,
+    stream_followup_stride: int,
+    stream_startup_followup_strides: Sequence[int],
+) -> None:
+    pass_index = state.vocode_passes
+    stride = (
+        stream_startup_followup_strides[pass_index]
+        if pass_index < len(stream_startup_followup_strides)
+        else stream_followup_stride
+    )
+    state.vocode_passes += 1
+    state.next_vocode_tokens = state.total_tokens + stride
 
 
 def _append_stream_vocoder_codes(
@@ -344,15 +367,20 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         device: str,
         stream_stride: int = 10,
         stream_followup_stride: int = 90,
+        stream_startup_followup_strides: Sequence[int] | None = None,
         stream_overlap_tokens: int | None = 20,
         stream_crossfade_samples: int = 512,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
     ):
-        if stream_stride <= 0 or stream_followup_stride <= 0 or max_batch_size <= 0:
-            raise ValueError(
-                "stream_stride, stream_followup_stride, and max_batch_size must be > 0"
-            )
+        startup_followup_strides = tuple(stream_startup_followup_strides or ())
+        if (
+            stream_stride <= 0
+            or stream_followup_stride <= 0
+            or any(stride <= 0 for stride in startup_followup_strides)
+            or max_batch_size <= 0
+        ):
+            raise ValueError("stream strides and max_batch_size must be > 0")
         if stream_crossfade_samples < 0 or max_batch_wait_ms < 0:
             raise ValueError(
                 "stream_crossfade_samples and max_batch_wait_ms must be >= 0"
@@ -362,6 +390,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         self._device = torch.device(device)
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
+        self._stream_startup_followup_strides = startup_followup_strides
         self._stream_overlap_tokens = resolve_stream_overlap_tokens(
             codec, stream_overlap_tokens
         )
@@ -406,6 +435,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             stream_followup_stride=self._stream_followup_stride,
             stream_overlap_tokens=self._stream_overlap_tokens,
             stream_crossfade_samples=self._stream_crossfade_samples,
+            stream_startup_followup_strides=self._stream_startup_followup_strides,
         )
         if output is None:
             return []
@@ -458,9 +488,6 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
                         device=self._device,
                         stream_overlap_tokens=self._stream_overlap_tokens,
                     )
-                    state.next_vocode_tokens = (
-                        state.total_tokens + self._stream_followup_stride
-                    )
                     groups.setdefault(tuple(prepared.codebook_codes.shape), []).append(
                         (request_id, state, prepared)
                     )
@@ -485,6 +512,13 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
                             stream_crossfade_samples=self._stream_crossfade_samples,
                             overlap_samples=prepared.overlap_samples,
                             is_final=False,
+                        )
+                        _advance_stream_vocoder_cadence(
+                            state,
+                            stream_followup_stride=self._stream_followup_stride,
+                            stream_startup_followup_strides=(
+                                self._stream_startup_followup_strides
+                            ),
                         )
                         if output is not None and not self._is_aborted(request_id):
                             self.outbox.put(

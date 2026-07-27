@@ -169,6 +169,41 @@ def test_streaming_vocoder_chunk_cadence() -> None:
         _stop_scheduler(scheduler, thread)
 
 
+def test_streaming_vocoder_ramps_to_steady_cadence() -> None:
+    codec = _FakeCodec()
+    scheduler = S2ProVocoderScheduler(
+        codec,
+        device="cpu",
+        stream_stride=2,
+        stream_followup_stride=5,
+        stream_startup_followup_strides=(3, 4),
+        stream_overlap_tokens=0,
+        stream_crossfade_samples=0,
+        max_batch_size=8,
+    )
+
+    emitted_at = []
+    for token_index in range(1, 15):
+        scheduler.on_stream_chunk_batch(
+            [
+                ("req-1", _chunk(token_index)),
+                ("req-2", _chunk(token_index)),
+            ]
+        )
+        while not scheduler.outbox.empty():
+            scheduler.outbox.get_nowait()
+            if not emitted_at or emitted_at[-1] != token_index:
+                emitted_at.append(token_index)
+
+    assert emitted_at == [2, 5, 9, 14]
+    assert codec.calls == [
+        (2, 10, 2),
+        (2, 10, 3),
+        (2, 10, 4),
+        (2, 10, 5),
+    ]
+
+
 def test_streaming_vocoder_coalesces_equal_length_requests() -> None:
     codec = _FakeCodec()
     scheduler = S2ProVocoderScheduler(

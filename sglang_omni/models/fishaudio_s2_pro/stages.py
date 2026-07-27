@@ -335,7 +335,8 @@ def create_vocoder_executor(
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
     stream_stride: int = 10,
-    stream_followup_stride: int = 90,
+    stream_followup_stride: int = 45,
+    stream_startup_followup_strides: tuple[int, ...] | None = (20, 30),
     stream_overlap_tokens: int | None = 20,
     stream_crossfade_samples: int = 512,
 ):
@@ -353,6 +354,7 @@ def create_vocoder_executor(
         device=device,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
+        stream_startup_followup_strides=stream_startup_followup_strides,
         stream_overlap_tokens=stream_overlap_tokens,
         stream_crossfade_samples=stream_crossfade_samples,
         max_batch_size=max_batch_size,
