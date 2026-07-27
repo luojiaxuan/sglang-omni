@@ -194,6 +194,32 @@ def test_streaming_vocoder_coalesces_equal_length_requests() -> None:
     assert _audio_tensor(second.data)[0].item() == 2.0
 
 
+def test_streaming_vocoder_pump_coalesces_queued_requests() -> None:
+    codec = _FakeCodec()
+    scheduler = S2ProVocoderScheduler(
+        codec,
+        device="cpu",
+        stream_stride=1,
+        stream_followup_stride=1,
+        stream_overlap_tokens=0,
+        stream_crossfade_samples=0,
+        max_batch_size=8,
+    )
+    scheduler.inbox.put(IncomingMessage("req-1", "new_request", _payload("req-1")))
+    scheduler.inbox.put(IncomingMessage("req-2", "new_request", _payload("req-2")))
+    scheduler.inbox.put(IncomingMessage("req-1", "stream_chunk", _chunk(1)))
+    scheduler.inbox.put(IncomingMessage("req-2", "stream_chunk", _chunk(1)))
+
+    thread = threading.Thread(target=scheduler.start, daemon=True)
+    thread.start()
+    try:
+        outputs = [scheduler.outbox.get(timeout=2.0) for _ in range(2)]
+        assert codec.calls == [(2, 10, 1)]
+        assert [output.request_id for output in outputs] == ["req-1", "req-2"]
+    finally:
+        _stop_scheduler(scheduler, thread)
+
+
 def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:
     codec = _ContextCodec()
     state = _StreamVocoderState()
