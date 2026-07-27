@@ -30,6 +30,12 @@ class _StreamVocoderState:
     total_tokens: int = 0
 
 
+@dataclass(frozen=True)
+class _PreparedStreamVocoderChunk:
+    codebook_codes: torch.Tensor
+    overlap_samples: int
+
+
 def resolve_stream_overlap_tokens(
     codec: Any, requested_overlap_tokens: int | None
 ) -> int:
@@ -56,18 +62,12 @@ def build_stream_vocoder_chunk(
     stream_overlap_tokens: int,
     stream_crossfade_samples: int,
 ) -> dict[str, Any] | None:
-    assert codes.ndim == 2
-
-    state.codes.append(
-        codes.detach().to(device=device, dtype=torch.long, non_blocking=True)
-    )
-
-    total_tokens = state.total_tokens + int(codes.shape[1])
-    state.total_tokens = total_tokens
-
-    next_vocode_tokens = state.next_vocode_tokens or stream_stride
-    if total_tokens < next_vocode_tokens:
-        state.next_vocode_tokens = next_vocode_tokens
+    if not _append_stream_vocoder_codes(
+        state,
+        codes,
+        device=device,
+        stream_stride=stream_stride,
+    ):
         return None
 
     chunk = _build_stream_vocoder_chunk(
@@ -78,8 +78,27 @@ def build_stream_vocoder_chunk(
         stream_crossfade_samples=stream_crossfade_samples,
         is_final=False,
     )
-    state.next_vocode_tokens = total_tokens + stream_followup_stride
+    state.next_vocode_tokens = state.total_tokens + stream_followup_stride
     return chunk
+
+
+def _append_stream_vocoder_codes(
+    state: _StreamVocoderState,
+    codes: torch.Tensor,
+    *,
+    device: torch.device,
+    stream_stride: int,
+) -> bool:
+    assert codes.ndim == 2
+
+    state.codes.append(
+        codes.detach().to(device=device, dtype=torch.long, non_blocking=True)
+    )
+    state.total_tokens += int(codes.shape[1])
+
+    next_vocode_tokens = state.next_vocode_tokens or stream_stride
+    state.next_vocode_tokens = next_vocode_tokens
+    return state.total_tokens >= next_vocode_tokens
 
 
 def flush_stream_vocoder_chunk(
@@ -128,7 +147,6 @@ def _build_stream_vocoder_chunk(
     if not state.codes:
         return None
 
-    code_start_token = state.code_start_token
     total_tokens = state.total_tokens
     emitted_tokens = state.last_vocode_tokens
     if total_tokens <= emitted_tokens:
@@ -143,18 +161,56 @@ def _build_stream_vocoder_chunk(
             sample_rate=codec.sample_rate,
         )
 
+    prepared = _prepare_stream_vocoder_chunk(
+        state,
+        codec=codec,
+        device=device,
+        stream_overlap_tokens=stream_overlap_tokens,
+    )
+    with torch.no_grad():
+        audio = codec.from_indices(prepared.codebook_codes[None])
+
+    return _finish_stream_vocoder_chunk(
+        state,
+        audio[0, 0].float(),
+        codec=codec,
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_crossfade_samples=stream_crossfade_samples,
+        overlap_samples=prepared.overlap_samples,
+        is_final=is_final,
+    )
+
+
+def _prepare_stream_vocoder_chunk(
+    state: _StreamVocoderState,
+    *,
+    codec: Any,
+    device: torch.device,
+    stream_overlap_tokens: int,
+) -> _PreparedStreamVocoderChunk:
     output_codes = torch.cat(state.codes, dim=1)
+    code_start_token = state.code_start_token
+    emitted_tokens = state.last_vocode_tokens
     window_start_token = max(code_start_token, emitted_tokens - stream_overlap_tokens)
     window_offset = window_start_token - code_start_token
     window_codes = output_codes[:, window_offset:]
-    codebook_codes = window_codes[1:].to(device=device, dtype=torch.long)
-
-    with torch.no_grad():
-        audio = codec.from_indices(codebook_codes[None])
-
-    audio_tensor = audio[0, 0].float()
     overlap_token_count = emitted_tokens - window_start_token
-    overlap_samples = int(overlap_token_count * codec.frame_length)
+    return _PreparedStreamVocoderChunk(
+        codebook_codes=window_codes[1:].to(device=device, dtype=torch.long),
+        overlap_samples=int(overlap_token_count * codec.frame_length),
+    )
+
+
+def _finish_stream_vocoder_chunk(
+    state: _StreamVocoderState,
+    audio_tensor: torch.Tensor,
+    *,
+    codec: Any,
+    stream_overlap_tokens: int,
+    stream_crossfade_samples: int,
+    overlap_samples: int,
+    is_final: bool,
+) -> dict[str, Any] | None:
     if audio_tensor.shape[-1] <= overlap_samples:
         return None
 
@@ -167,18 +223,18 @@ def _build_stream_vocoder_chunk(
             is_final=is_final,
         )
         if delta_audio is None:
-            state.last_vocode_tokens = total_tokens
+            state.last_vocode_tokens = state.total_tokens
             trim_retained_stream_codes(
                 state,
-                keep_from_token=max(0, total_tokens - stream_overlap_tokens),
+                keep_from_token=max(0, state.total_tokens - stream_overlap_tokens),
             )
             return None
 
-    state.last_vocode_tokens = total_tokens
+    state.last_vocode_tokens = state.total_tokens
     if not is_final:
         trim_retained_stream_codes(
             state,
-            keep_from_token=max(0, total_tokens - stream_overlap_tokens),
+            keep_from_token=max(0, state.total_tokens - stream_overlap_tokens),
         )
 
     return _build_audio_chunk_payload(
@@ -277,6 +333,9 @@ def _build_audio_chunk_payload(
 class S2ProVocoderScheduler(StreamingSimpleScheduler):
     """Fish S2-Pro vocoder scheduler with streaming and batch final paths."""
 
+    _can_batch_stream_chunks = True
+    _stream_chunk_batch_distinct_requests = True
+
     def __init__(
         self,
         codec: Any,
@@ -307,6 +366,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         )
         self._stream_crossfade_samples = int(stream_crossfade_samples)
         self._stream_states: dict[str, _StreamVocoderState] = {}
+        self._stream_chunk_batch_max = int(max_batch_size)
 
         super().__init__(
             self._vocode_payload,
@@ -356,6 +416,92 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
                 metadata={"modality": "audio"},
             )
         ]
+
+    def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
+        groups: dict[
+            tuple[int, ...],
+            list[
+                tuple[
+                    str,
+                    _StreamVocoderState,
+                    _PreparedStreamVocoderChunk,
+                ]
+            ],
+        ] = {}
+        failed_request_ids: list[str] = []
+
+        with self._state_lock:
+            for request_id, chunk in items:
+                if self._is_aborted(request_id):
+                    continue
+                try:
+                    codes = chunk.data
+                    if not isinstance(codes, torch.Tensor):
+                        raise TypeError(
+                            f"S2-Pro stream chunk for {request_id!r} must carry "
+                            f"a torch.Tensor, got {type(codes).__name__}"
+                        )
+                    state = self._stream_states.setdefault(
+                        request_id, _StreamVocoderState()
+                    )
+                    if not _append_stream_vocoder_codes(
+                        state,
+                        codes,
+                        device=self._device,
+                        stream_stride=self._stream_stride,
+                    ):
+                        continue
+                    prepared = _prepare_stream_vocoder_chunk(
+                        state,
+                        codec=self._codec,
+                        device=self._device,
+                        stream_overlap_tokens=self._stream_overlap_tokens,
+                    )
+                    state.next_vocode_tokens = (
+                        state.total_tokens + self._stream_followup_stride
+                    )
+                    groups.setdefault(tuple(prepared.codebook_codes.shape), []).append(
+                        (request_id, state, prepared)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self._emit_error(request_id, exc)
+                    self._abort_state(request_id)
+                    failed_request_ids.append(request_id)
+
+            for group in groups.values():
+                try:
+                    batch_codes = torch.stack(
+                        [prepared.codebook_codes for _, _, prepared in group]
+                    )
+                    with torch.no_grad():
+                        audio = self._codec.from_indices(batch_codes)
+                    for index, (request_id, state, prepared) in enumerate(group):
+                        output = _finish_stream_vocoder_chunk(
+                            state,
+                            audio[index, 0].float(),
+                            codec=self._codec,
+                            stream_overlap_tokens=self._stream_overlap_tokens,
+                            stream_crossfade_samples=self._stream_crossfade_samples,
+                            overlap_samples=prepared.overlap_samples,
+                            is_final=False,
+                        )
+                        if output is not None and not self._is_aborted(request_id):
+                            self.outbox.put(
+                                OutgoingMessage(
+                                    request_id=request_id,
+                                    type="stream",
+                                    data=output,
+                                    metadata={"modality": "audio"},
+                                )
+                            )
+                except Exception as exc:  # noqa: BLE001
+                    for request_id, _, _ in group:
+                        self._emit_error(request_id, exc)
+                        self._abort_state(request_id)
+                        failed_request_ids.append(request_id)
+
+        for request_id in failed_request_ids:
+            self._cleanup_aborted_request(request_id)
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
         state = self._stream_states.get(request_id)

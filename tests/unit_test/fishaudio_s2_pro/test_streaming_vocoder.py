@@ -169,6 +169,31 @@ def test_streaming_vocoder_chunk_cadence() -> None:
         _stop_scheduler(scheduler, thread)
 
 
+def test_streaming_vocoder_coalesces_equal_length_requests() -> None:
+    codec = _FakeCodec()
+    scheduler = S2ProVocoderScheduler(
+        codec,
+        device="cpu",
+        stream_stride=2,
+        stream_followup_stride=2,
+        stream_overlap_tokens=0,
+        stream_crossfade_samples=0,
+        max_batch_size=8,
+    )
+
+    scheduler.on_stream_chunk_batch([("req-1", _chunk(1)), ("req-2", _chunk(1))])
+    assert scheduler.outbox.empty()
+
+    scheduler.on_stream_chunk_batch([("req-1", _chunk(2)), ("req-2", _chunk(2))])
+
+    assert codec.calls == [(2, 10, 2)]
+    first = scheduler.outbox.get_nowait()
+    second = scheduler.outbox.get_nowait()
+    assert [first.request_id, second.request_id] == ["req-1", "req-2"]
+    assert _audio_tensor(first.data)[0].item() == 1.0
+    assert _audio_tensor(second.data)[0].item() == 2.0
+
+
 def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:
     codec = _ContextCodec()
     state = _StreamVocoderState()
@@ -434,11 +459,11 @@ def test_streaming_vocoder_abort_does_not_block_other_request() -> None:
 def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> None:
     scheduler, thread = _start_scheduler()
 
-    def _raise_on_chunk(request_id, chunk) -> None:
-        del request_id, chunk
+    def _raise_on_chunk_batch(items) -> None:
+        del items
         raise RuntimeError("chunk failed")
 
-    scheduler._on_chunk = _raise_on_chunk
+    scheduler.on_stream_chunk_batch = _raise_on_chunk_batch
     try:
         scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
         scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
