@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import queue
+import threading
+import time
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -205,6 +207,10 @@ class _DistinctBatchStreamingScheduler(_BatchStreamingScheduler):
     _stream_chunk_batch_distinct_requests = True
 
 
+class _WaitingBatchStreamingScheduler(_BatchStreamingScheduler):
+    _stream_chunk_batch_wait = True
+
+
 def test_stream_chunk_batch_opt_out_dispatches_one_at_a_time() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("b", "y"))
@@ -220,6 +226,25 @@ def test_stream_chunk_batch_coalesces_queued_chunks_into_one_pump() -> None:
     scheduler._handle_message(_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "b", "c"]]
     assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y", "z"]
+
+
+def test_stream_chunk_batch_waits_for_a_late_chunk() -> None:
+    scheduler = _WaitingBatchStreamingScheduler(
+        max_batch_size=4,
+        max_batch_wait_ms=100,
+    )
+
+    def _enqueue_late_chunk() -> None:
+        time.sleep(0.01)
+        scheduler.inbox.put(_chunk("b", "y"))
+
+    producer = threading.Thread(target=_enqueue_late_chunk)
+    producer.start()
+    scheduler._handle_message(_chunk("a", "x"), None)
+    producer.join(timeout=1.0)
+
+    assert scheduler.pump_batches == [["a", "b"]]
+    assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y"]
 
 
 def test_stream_chunk_batch_can_stop_before_duplicate_request() -> None:

@@ -42,6 +42,7 @@ class StreamingSimpleScheduler:
     _can_batch_stream_chunks: bool = False
     _stream_chunk_batch_max: int | None = None
     _stream_chunk_batch_distinct_requests: bool = False
+    _stream_chunk_batch_wait: bool = False
 
     def __init__(
         self,
@@ -302,8 +303,7 @@ class StreamingSimpleScheduler:
     def _collect_stream_chunk_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
-        """Front-pushback of the first non-chunk message preserves arrival order; no blocking
-        wait, so only already-queued chunks coalesce."""
+        """Collect queued chunks, optionally waiting up to the batch deadline."""
         batch = [first_msg]
         seen_request_ids = (
             {first_msg.request_id}
@@ -313,11 +313,20 @@ class StreamingSimpleScheduler:
         cap = self._stream_chunk_batch_max or max(self._max_batch_size, 1)
         if cap <= 1:
             return batch
+        deadline = time.monotonic() + self._max_batch_wait_s
         while len(batch) < cap:
             try:
                 msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
-                break
+                if not self._stream_chunk_batch_wait:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    msg = self.inbox.get(timeout=remaining)
+                except _queue_mod.Empty:
+                    break
             if msg.type != "stream_chunk":
                 self._pending_messages.appendleft(msg)
                 break

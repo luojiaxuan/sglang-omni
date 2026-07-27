@@ -335,6 +335,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
 
     _can_batch_stream_chunks = True
     _stream_chunk_batch_distinct_requests = True
+    _stream_chunk_batch_wait = True
 
     def __init__(
         self,
