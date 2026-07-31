@@ -26,7 +26,11 @@ Plain TTS:
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"input": "Hello, how are you?"}' \
+  -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
+    "input": "Hello, how are you?"
+  }' \
   --output output.wav
 ```
 
@@ -36,6 +40,8 @@ Voice cloning:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -51,6 +57,8 @@ Streaming:
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -66,6 +74,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
+| `model` | string | served model | Served model identifier |
 | `input` | string | required | Text to synthesize |
 | `voice` | string | `default` | Voice identifier for non-reference requests |
 | `response_format` | string | `wav` | Output audio format |
@@ -76,7 +85,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 | `max_new_tokens` | int | `2048` | Maximum generated semantic tokens |
 | `temperature` | float | `0.8` | Sampling temperature |
 | `top_p` | float | `0.8` | Top-p sampling |
-| `top_k` | int | `30` | Top-k sampling; must be `-1` or between `1` and `30` |
+| `top_k` | int | `30` | Top-k sampling. It must be `-1` or between `1` and `30` |
 | `repetition_penalty` | float | `1.1` | Repetition penalty |
 
 ## Known Limitations

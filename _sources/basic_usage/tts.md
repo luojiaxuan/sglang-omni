@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, and MOSS-TTS.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as an example TTS (text-to-speech) model with SGLang-Omni and the OpenAI-compatible API. The same `/v1/audio/speech` endpoint also supports Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, and MOSS-TTS.
 
 ## Prerequisites
 
@@ -121,7 +121,11 @@ Qwen3-TTS CustomVoice, Voxtral, and S2-Pro. It is not valid for Qwen3-TTS Base.
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
     -H "Content-Type: application/json" \
-    -d '{"input": "Hello, how are you?"}' \
+    -d '{
+      "model": "fishaudio/s2-pro",
+      "voice": "default",
+      "input": "Hello, how are you?"
+    }' \
     --output output.wav
 ```
 
@@ -131,6 +135,8 @@ Qwen3-TTS Base requires reference audio:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his."
@@ -144,6 +150,8 @@ Qwen3-TTS VoiceDesign uses text plus voice instructions:
 curl -X POST http://localhost:8000/v1/audio/speech \
     -H "Content-Type: application/json" \
     -d '{
+      "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+      "voice": "default",
       "input": "Hello, how are you?",
       "task_type": "VoiceDesign",
       "instructions": "A warm, natural young adult voice."
@@ -163,6 +171,8 @@ The examples below use a sample clip from [`seed-tts-eval-mini`](https://hugging
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -181,6 +191,8 @@ requires both `"stream": true` and `"response_format": "pcm"`:
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
@@ -352,7 +364,11 @@ import requests
 
 resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
-    json={"input": "Hello, how are you?"},
+    json={
+        "model": "fishaudio/s2-pro",
+        "voice": "default",
+        "input": "Hello, how are you?",
+    },
 )
 resp.raise_for_status()
 with open("output.wav", "wb") as f:
@@ -397,6 +413,8 @@ import requests
 resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
+        "model": "fishaudio/s2-pro",
+        "voice": "default",
         "input": SPEECH_INPUT,
         "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
     },
@@ -414,6 +432,8 @@ import wave
 import requests
 
 payload = {
+    "model": "fishaudio/s2-pro",
+    "voice": "default",
     "input": SPEECH_INPUT,
     "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
     "stream": True,
@@ -446,6 +466,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
+| `model` | string | served model | Served model identifier |
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |

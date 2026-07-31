@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
   <title>TTS Refactor Progress</title>
   <style>
     :root {
@@ -131,8 +132,8 @@
       font-size: 16px;
       font-weight: 700;
     }
-    .positive { color: var(--green); }
-    .negative { color: var(--red); }
+    .decrease { color: var(--green); }
+    .increase { color: var(--red); }
     .zero { color: var(--amber); }
     .context {
       background: var(--panel);
@@ -247,7 +248,7 @@
       <div>
         <h1>TTS Refactor Progress</h1>
         <div class="subline">
-          <span>Frozen snapshot 2026-07-30 07:27:34 UTC</span>
+          <span>Generated 2026-07-31 20:05:05 UTC</span>
           <span>Diff <code>20 allowlisted commits in 4e4c98a^1..origin/main</code></span>
           <span>Mode <code>commit-sum</code></span>
           <span>Paths <code>(entire repository)</code></span>
@@ -256,7 +257,7 @@
       </div>
       <div class="status met">
         <span class="label">On track</span>
-        <div class="target">non-test net deleted &gt; 0</div>
+        <div class="target">non-test net change &lt; 0</div>
       </div>
     </header>
 
@@ -265,8 +266,8 @@
       <article class="card">
         <h2>Non-test</h2>
         <div class="net">
-          <strong class="positive">+2840</strong>
-          <span>net deleted</span>
+          <strong class="decrease">-2840</strong>
+          <span>net change</span>
         </div>
         <div class="metric-row">
           <div class="metric"><div class="name">Added</div><div class="value">5923</div></div>
@@ -279,8 +280,8 @@
       <article class="card">
         <h2>Test</h2>
         <div class="net">
-          <strong class="negative">-2982</strong>
-          <span>net deleted</span>
+          <strong class="increase">+2982</strong>
+          <span>net change</span>
         </div>
         <div class="metric-row">
           <div class="metric"><div class="name">Added</div><div class="value">4175</div></div>
@@ -293,8 +294,8 @@
       <article class="card">
         <h2>All</h2>
         <div class="net">
-          <strong class="negative">-142</strong>
-          <span>net deleted</span>
+          <strong class="increase">+142</strong>
+          <span>net change</span>
         </div>
         <div class="metric-row">
           <div class="metric"><div class="name">Added</div><div class="value">10098</div></div>
@@ -306,9 +307,10 @@
     </section>
 
     <section class="context">
-      Progress is measured as <code>deleted non-test lines - added non-test lines</code>.
-      Files classified as tests are reported separately and do not offset the
-      implementation deletion target.
+      Net change is displayed as <code>added lines - deleted lines</code>.
+      Negative values mean the repository has fewer lines. Files classified as
+      tests are reported separately and do not offset the implementation
+      deletion target.
       <div class="scope-note">Counts only merge commits in scripts/tts_refactor_commits.json. Model integrations #858 and #1112 and unrelated main commits are excluded.</div>
     </section>
 
@@ -327,7 +329,7 @@
               <th>Test net</th>
             </tr>
           </thead>
-          <tbody><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/4e4c98a548383bedfe886b02e8b435c5eb45c5fd">4e4c98a5</a></td><td>T1: shared pipeline-state base + all 6 TTS migrations (+ quick-wins) (#807)</td><td>266</td><td>275</td><td>+9</td><td>-287</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/dd66537ebf8981973e9eaf143ac5ce9c2c0eadea">dd66537e</a></td><td>[TTS Refactor, M2] TTS engine factory: Extract shared TTS engine builder (#923)</td><td>906</td><td>670</td><td>-236</td><td>-439</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/aec541f3152ca8357db2b118e9355006c9ecf614">aec541f3</a></td><td>[TTS Refactor][M8] Model capabilities: Add static TTS model capability metadata (#957)</td><td>189</td><td>5</td><td>-184</td><td>-233</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/6c2d31b13f7773b6d1dddc01ea461860b2a96362">6c2d31b1</a></td><td>[TTS Refactor][M4a] ReferenceEncodeService: base + FishAudio S2-Pro migration (#926)</td><td>490</td><td>41</td><td>-449</td><td>-565</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/370ae2ce6147ed8775e2a69b6f5d54a7ba2b631c">370ae2ce</a></td><td>[TTS Refactor][T5a]Batch Vocoder Base (non-streaming) (#940)</td><td>200</td><td>100</td><td>-100</td><td>-127</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/2789e55f61ae33f58f3b9bee19313aeaac4f1a31">2789e55f</a></td><td>[TTS Refactor][M4a] ReferenceEncodeService: Qwen3-TTS taxonomy migration (#927)</td><td>329</td><td>168</td><td>-161</td><td>-288</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/0a257ff426c16ceb62400dea94920c3881de974a">0a257ff4</a></td><td>[TTS Refactor][M6] StreamingVocoderBase: base + MOSS-TTS-Local migration (#936)</td><td>683</td><td>270</td><td>-413</td><td>-612</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/5cefa39efe82e3c3ff77c99be46a0f7043ff3673">5cefa39e</a></td><td>[TTS Refactor][M9] Fish -&gt; OmniScheduler: migrate the AR stage, delete FishScheduler (#937)</td><td>122</td><td>656</td><td>+534</td><td>+236</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/0ffb9b38fc6e31de3bcea78498afd08ccfd43c44">0ffb9b38</a></td><td>Migrate Higgs streaming vocoder onto StreamingVocoderBase (#939)</td><td>147</td><td>241</td><td>+94</td><td>-36</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/1618b7ce26f5ea464e849cfcd943c0e429a711a6">1618b7ce</a></td><td>[TTS Refactor] Prune migrated-surface duplicate unit tests (moss / moss-local / qwen3-tts) (#1019)</td><td>0</td><td>0</td><td>+0</td><td>+285</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/847b5019caae8c4a91a2a3b9c53f4c14a4736fda">847b5019</a></td><td>[TTS Refactor] Use upstream Transformers Higgs tokenizer (#1057)</td><td>12</td><td>964</td><td>+952</td><td>-39</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/96da8294a7caa91996a610e0c945a311a2817397">96da8294</a></td><td>[TTS Refactor][M4a] Higgs: route ad-hoc reference codes through ReferenceEncodeService (#1051)</td><td>84</td><td>21</td><td>-63</td><td>-102</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/9498ae96770168bce8b0585c6378ec7e1432d009">9498ae96</a></td><td>[Fish S2-Pro] Simplify inference prompt encoding (#1058)</td><td>67</td><td>788</td><td>+721</td><td>-215</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/bb15a35997cfd758589d3338ce44f4c702ae5040">bb15a359</a></td><td>[TTS Refactor] Remove unreachable implementation code (#1069)</td><td>1</td><td>267</td><td>+266</td><td>+0</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/e795c35286cf37321e19d35cb6e8c56f6765eae1">e795c352</a></td><td>[TTS Refactor] Declarative wire serialization for TTS pipeline states (#1050)</td><td>282</td><td>398</td><td>+116</td><td>-93</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/56b4d808630197305b19511962be95bdfc407017">56b4d808</a></td><td>[TTS Refactor] Load Fish Fast Audio Decoder Directly (#1083)</td><td>393</td><td>1554</td><td>+1161</td><td>-139</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/10e7e54197af9b384af0c9fa5563723f09eb25bf">10e7e541</a></td><td>[TTS Refactor] Remove TTS engine builder forwarding (#1068)</td><td>5</td><td>39</td><td>+34</td><td>-50</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/98b634332517ad2c9a88ff7f96880aae251a375c">98b63433</a></td><td>[TTS Refactor] Unify Omni example launchers (#1070)</td><td>1502</td><td>1696</td><td>+194</td><td>-231</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/4d4df5a8f047f5bf6ef6eb4a65b5ec0951d9c6e6">4d4df5a8</a></td><td>[TTS Refactor] Reduce reference encode hook boilerplate (#1096)</td><td>141</td><td>121</td><td>-20</td><td>-34</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/24d7fb573576359687bcbebbd25e998ec68d436d">24d7fb57</a></td><td>[TTS Refactor] Adopt shared state serialization and checkpoint/config reuse for Ming-Omni-TTS (#1103)</td><td>104</td><td>489</td><td>+385</td><td>-13</td></tr></tbody>
+          <tbody><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/4e4c98a548383bedfe886b02e8b435c5eb45c5fd">4e4c98a5</a></td><td>T1: shared pipeline-state base + all 6 TTS migrations (+ quick-wins) (#807)</td><td>266</td><td>275</td><td>-9</td><td>+287</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/dd66537ebf8981973e9eaf143ac5ce9c2c0eadea">dd66537e</a></td><td>[TTS Refactor, M2] TTS engine factory: Extract shared TTS engine builder (#923)</td><td>906</td><td>670</td><td>+236</td><td>+439</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/aec541f3152ca8357db2b118e9355006c9ecf614">aec541f3</a></td><td>[TTS Refactor][M8] Model capabilities: Add static TTS model capability metadata (#957)</td><td>189</td><td>5</td><td>+184</td><td>+233</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/6c2d31b13f7773b6d1dddc01ea461860b2a96362">6c2d31b1</a></td><td>[TTS Refactor][M4a] ReferenceEncodeService: base + FishAudio S2-Pro migration (#926)</td><td>490</td><td>41</td><td>+449</td><td>+565</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/370ae2ce6147ed8775e2a69b6f5d54a7ba2b631c">370ae2ce</a></td><td>[TTS Refactor][T5a]Batch Vocoder Base (non-streaming) (#940)</td><td>200</td><td>100</td><td>+100</td><td>+127</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/2789e55f61ae33f58f3b9bee19313aeaac4f1a31">2789e55f</a></td><td>[TTS Refactor][M4a] ReferenceEncodeService: Qwen3-TTS taxonomy migration (#927)</td><td>329</td><td>168</td><td>+161</td><td>+288</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/0a257ff426c16ceb62400dea94920c3881de974a">0a257ff4</a></td><td>[TTS Refactor][M6] StreamingVocoderBase: base + MOSS-TTS-Local migration (#936)</td><td>683</td><td>270</td><td>+413</td><td>+612</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/5cefa39efe82e3c3ff77c99be46a0f7043ff3673">5cefa39e</a></td><td>[TTS Refactor][M9] Fish -&gt; OmniScheduler: migrate the AR stage, delete FishScheduler (#937)</td><td>122</td><td>656</td><td>-534</td><td>-236</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/0ffb9b38fc6e31de3bcea78498afd08ccfd43c44">0ffb9b38</a></td><td>Migrate Higgs streaming vocoder onto StreamingVocoderBase (#939)</td><td>147</td><td>241</td><td>-94</td><td>+36</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/1618b7ce26f5ea464e849cfcd943c0e429a711a6">1618b7ce</a></td><td>[TTS Refactor] Prune migrated-surface duplicate unit tests (moss / moss-local / qwen3-tts) (#1019)</td><td>0</td><td>0</td><td>+0</td><td>-285</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/847b5019caae8c4a91a2a3b9c53f4c14a4736fda">847b5019</a></td><td>[TTS Refactor] Use upstream Transformers Higgs tokenizer (#1057)</td><td>12</td><td>964</td><td>-952</td><td>+39</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/96da8294a7caa91996a610e0c945a311a2817397">96da8294</a></td><td>[TTS Refactor][M4a] Higgs: route ad-hoc reference codes through ReferenceEncodeService (#1051)</td><td>84</td><td>21</td><td>+63</td><td>+102</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/9498ae96770168bce8b0585c6378ec7e1432d009">9498ae96</a></td><td>[Fish S2-Pro] Simplify inference prompt encoding (#1058)</td><td>67</td><td>788</td><td>-721</td><td>+215</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/bb15a35997cfd758589d3338ce44f4c702ae5040">bb15a359</a></td><td>[TTS Refactor] Remove unreachable implementation code (#1069)</td><td>1</td><td>267</td><td>-266</td><td>+0</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/e795c35286cf37321e19d35cb6e8c56f6765eae1">e795c352</a></td><td>[TTS Refactor] Declarative wire serialization for TTS pipeline states (#1050)</td><td>282</td><td>398</td><td>-116</td><td>+93</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/56b4d808630197305b19511962be95bdfc407017">56b4d808</a></td><td>[TTS Refactor] Load Fish Fast Audio Decoder Directly (#1083)</td><td>393</td><td>1554</td><td>-1161</td><td>+139</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/10e7e54197af9b384af0c9fa5563723f09eb25bf">10e7e541</a></td><td>[TTS Refactor] Remove TTS engine builder forwarding (#1068)</td><td>5</td><td>39</td><td>-34</td><td>+50</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/98b634332517ad2c9a88ff7f96880aae251a375c">98b63433</a></td><td>[TTS Refactor] Unify Omni example launchers (#1070)</td><td>1502</td><td>1696</td><td>-194</td><td>+231</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/4d4df5a8f047f5bf6ef6eb4a65b5ec0951d9c6e6">4d4df5a8</a></td><td>[TTS Refactor] Reduce reference encode hook boilerplate (#1096)</td><td>141</td><td>121</td><td>+20</td><td>+34</td></tr><tr><td><a class="link" href="https://github.com/sgl-project/sglang-omni/commit/24d7fb573576359687bcbebbd25e998ec68d436d">24d7fb57</a></td><td>[TTS Refactor] Adopt shared state serialization and checkpoint/config reuse for Ming-Omni-TTS (#1103)</td><td>104</td><td>489</td><td>-385</td><td>+13</td></tr></tbody>
         </table>
       </div>
     </section>
