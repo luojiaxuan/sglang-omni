@@ -29,6 +29,10 @@ class MossTTSRealtimeState(DeclarativeStateBase):
         default_factory=dict, codec="dict"
     )
     audio_codes: Any | None = wire(None, codec="tensor_cpu")  # noqa: RUF009
+    # note (luojiaxuan): optional sliding-window session history; each item is
+    # {"text": str, "audio_codes": [[...16 codebooks...]]} for one completed
+    # assistant turn. Consumed at preprocessing time only.
+    history: Any | None = None
 
 
 __all__ = [

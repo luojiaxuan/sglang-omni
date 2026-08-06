@@ -165,10 +165,26 @@ def build_state(payload: StagePayload) -> MossTTSRealtimeState:
     ref_audio, _ = resolve_moss_reference(references, tts_params)
     if not text.strip():
         raise ValueError("MOSS-TTS-Realtime input text must not be empty")
+    history = tts_params.get("history")
+    if history is not None:
+        if not isinstance(history, list):
+            raise ValueError("MOSS-TTS-Realtime history must be a list of turns")
+        for turn in history:
+            if (
+                not isinstance(turn, dict)
+                or not isinstance(turn.get("text"), str)
+                or not turn.get("text").strip()
+                or (turn.get("audio_codes") is None and turn.get("audio") is None)
+            ):
+                raise ValueError(
+                    "MOSS-TTS-Realtime history turns need non-empty text and "
+                    "audio_codes or audio"
+                )
     return MossTTSRealtimeState(
         text=text,
         ref_audio=ref_audio,
         generation_kwargs=_generation_kwargs(params, tts_params),
+        history=history,
     )
 
 
@@ -179,8 +195,24 @@ def _prepare(payload: StagePayload, context: PreprocessingContext) -> PreparedRe
         if state.ref_audio is not None
         else None
     )
+    history_turns = None
+    if state.history:
+        import numpy as np
+
+        history_turns = []
+        for turn in state.history:
+            if turn.get("audio_codes") is not None:
+                codes = np.asarray(turn["audio_codes"], dtype=np.int64)
+            else:
+                # note (luojiaxuan): re-encode the turn's returned audio through
+                # the same encoder used for reference audio; slightly lossy vs
+                # the originally generated codes but avoids response plumbing.
+                codes = context.reference_encoder(turn["audio"])
+            history_turns.append((turn["text"], codes))
     prompt_rows, text_token_ids, prefill_text_tokens = (
-        context.processor.build_generation_prompt(state.text, reference_codes)
+        context.processor.build_generation_prompt(
+            state.text, reference_codes, history=history_turns
+        )
     )
     prompt_rows = prompt_rows.to(dtype=torch.long, device="cpu")
     input_ids_list = build_row_cache_key_ids(prompt_rows)
