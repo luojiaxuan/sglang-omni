@@ -174,7 +174,7 @@ to let the model infer from the text):
 | `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `stream` | `false` | Stream raw PCM audio chunks |
-| `language` | `null` | Optional target-language hint; omit to let the model infer |
+| `language` | `null` | Optional target-language hint. Omit to let the model infer |
 | `instructions` / `instruct` | `null` | Optional free-text style directive |
 | `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames. It must be `> 0` |
 | `max_new_tokens` | `4096` | Maximum generated frames. An explicit value must be `> 0` |

@@ -61,7 +61,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.0" />
-    <meta name="docbuild:last-update" content="Jun 26, 2026"/>
+    <meta name="docbuild:last-update" content="Aug 07, 2026"/>
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
   </head>
   <body data-default-mode="">
   
@@ -211,6 +217,7 @@
 <li class="toctree-l1"><a class="reference internal" href="ming_tts.html">Ming-Omni-TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="moss_tts.html">MOSS-TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l1"><a class="reference internal" href="zonos2.html">ZONOS2</a></li>
 <li class="toctree-l1"><a class="reference internal" href="qwen3_asr.html">Qwen3-ASR</a></li>
 <li class="toctree-l1"><a class="reference internal" href="fun_asr.html">Fun-ASR-Nano</a></li>
 <li class="toctree-l1"><a class="reference internal" href="arkasr.html">ARK-ASR-3B</a></li>
@@ -241,6 +248,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/communication.html">Communication</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
 </ul>
 
@@ -515,7 +523,7 @@ endpoint.</p>
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
 <p>Qwen3-TTS Base uses the upstream <code class="docutils literal notranslate"><span class="pre">qwen-tts</span></code> package. Install it without
-dependencies so the SGLang-Omni Transformers 5.6 / SGLang 0.5.12.post1 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains
 in place:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>apt-get<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>sox
 uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>sox<span class="w"> </span>einops<span class="w"> </span>onnxruntime
@@ -601,6 +609,10 @@ mode.</p>
     <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>Non-streaming responses include <code class="docutils literal notranslate"><span class="pre">X-Finish-Reason:</span> <span class="pre">stop</span></code> after codec EOS or
+<code class="docutils literal notranslate"><span class="pre">X-Finish-Reason:</span> <span class="pre">length</span></code> when generation reaches <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>. A <code class="docutils literal notranslate"><span class="pre">length</span></code>
+response still contains decodable audio, but the utterance may be incomplete.
+Batch responses expose the same value as each item’s <code class="docutils literal notranslate"><span class="pre">finish_reason</span></code>.</p>
 </section>
 </section>
 <section id="language-hint">
@@ -647,6 +659,10 @@ chunks in real time:</p>
 <p>Streaming returns <code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code> 16-bit mono PCM bytes with sample-rate metadata in
 the response headers. See the <a class="reference internal" href="higgs_tts.html#streaming"><span class="std std-ref">Higgs TTS cookbook</span></a>
 for a full Python raw PCM consumer.</p>
+<p>Base/reference-cloning checkpoints use true incremental codec and vocoder
+streaming for both this HTTP endpoint and <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech/stream</span></code> WebSocket
+sessions with <code class="docutils literal notranslate"><span class="pre">stream_audio=true</span></code>. CustomVoice and VoiceDesign remain
+non-streaming.</p>
 </section>
 </section>
 <section id="generation-parameters">
@@ -896,7 +912,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Jun 26, 2026.
+  Last updated on Aug 07, 2026.
   <br/>
 </p>
   </div>

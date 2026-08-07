@@ -80,7 +80,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 | `response_format` | string | `wav` | Output audio format |
 | `speed` | float | `1.0` | Playback speed multiplier |
 | `stream` | bool | `false` | Stream raw PCM audio chunks |
-| `references` | list | `null` | Reference clip for voice cloning; each item has `audio_path` and `text` |
+| `references` | list | `null` | Reference clip for voice cloning. Each item has `audio_path` and `text` |
 | `ref_audio` / `ref_text` | string | `null` | Shorthand for `references[0].audio_path` and `references[0].text` |
 | `max_new_tokens` | int | `2048` | Maximum generated semantic tokens |
 | `temperature` | float | `0.8` | Sampling temperature |

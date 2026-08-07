@@ -415,7 +415,13 @@ window.runMermaid = runMermaid;</script>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.0" />
-    <meta name="docbuild:last-update" content="Jun 26, 2026"/>
+    <meta name="docbuild:last-update" content="Aug 07, 2026"/>
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
   </head>
   <body data-default-mode="">
   
@@ -567,6 +573,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/zonos2.html">ZONOS2</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/arkasr.html">ARK-ASR-3B</a></li>
@@ -597,6 +604,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/communication.html">Communication</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
 </ul>
 
@@ -830,9 +838,9 @@ window.runMermaid = runMermaid;</script>
                 <h2> Contents </h2>
             </div>
             <nav aria-label="Page">
-                <ul class="visible nav section-nav flex-column">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#table-of-contents">Table of contents</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#system-overview">System Overview</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#layer-responsibilities">Layer Responsibilities</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#directory-layout">Directory Layout</a></li>
@@ -852,7 +860,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#relay-io-utility-module"><code class="docutils literal notranslate"><span class="pre">relay_io</span></code> Utility Module</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduling-layer">Scheduling Layer</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduling-layer">Scheduling Layer</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#omnischeduler-composition-with-sglang">OmniScheduler — Composition with SGLang</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#composition-boundary-with-sglang">Composition boundary with SGLang</a></li>
 </ul>
@@ -890,7 +898,7 @@ window.runMermaid = runMermaid;</script>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pipelineconfig-reference"><code class="docutils literal notranslate"><span class="pre">PipelineConfig</span></code> reference</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-process-runner">Multi-Process Runner</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-process-runner">Multi-Process Runner</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stagelaunchconfig"><code class="docutils literal notranslate"><span class="pre">StageLaunchConfig</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#parallelism-axes-tp-today-extension-path">Parallelism axes — TP today, extension path</a></li>
 </ul>
@@ -909,7 +917,7 @@ window.runMermaid = runMermaid;</script>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-new-model">Adding a New Model</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#progress-tracking">Progress Tracking</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#design-decision-history">Design Decision History</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#design-decision-history">Design Decision History</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-294-alternative-pipeline-added-rfc">2026-04-15 — PR #294: Alternative pipeline added [RFC]</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-334-v1-pipeline-added-rfc">2026-04-23 — PR #334: V1 pipeline added [RFC]</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-385-openai-realtime-websocket-endpoint-v1-feature">2026-05-04 — PR #385: OpenAI Realtime WebSocket endpoint [V1, Feature]</a></li>
@@ -1273,7 +1281,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <p>All schedulers share the same interface: <code class="docutils literal notranslate"><span class="pre">inbox</span></code>, <code class="docutils literal notranslate"><span class="pre">outbox</span></code>, <code class="docutils literal notranslate"><span class="pre">start()</span></code>, <code class="docutils literal notranslate"><span class="pre">stop()</span></code>, <code class="docutils literal notranslate"><span class="pre">abort()</span></code>.</p>
 <section id="omnischeduler-composition-with-sglang">
 <h3>OmniScheduler — Composition with SGLang<a class="headerlink" href="#omnischeduler-composition-with-sglang" title="Link to this heading">#</a></h3>
-<p>For AR stages. Subset of SGLang Scheduler — reuses <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run()</span></code>, <code class="docutils literal notranslate"><span class="pre">run_batch()</span></code>, <code class="docutils literal notranslate"><span class="pre">process_batch_result()</span></code>, <code class="docutils literal notranslate"><span class="pre">event_loop_normal()</span></code>, overlap scheduling.</p>
+<p>For AR stages. Subset of SGLang Scheduler — reuses <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run()</span></code>, <code class="docutils literal notranslate"><span class="pre">run_batch()</span></code>, <code class="docutils literal notranslate"><span class="pre">process_batch_result()</span></code>, <code class="docutils literal notranslate"><span class="pre">event_loop_normal()</span></code>. (Overlap scheduling ended up unsupported: the <code class="docutils literal notranslate"><span class="pre">Req.inflight_middle_chunks</span></code> decrement lags one iteration on that loop, so <code class="docutils literal notranslate"><span class="pre">_event_loop_overlap</span></code> refuses to run.)</p>
 <ul class="simple">
 <li><p><strong>Reused from SGLang:</strong> <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run()</span></code>, <code class="docutils literal notranslate"><span class="pre">process_batch_result()</span></code>, <code class="docutils literal notranslate"><span class="pre">self_check_during_idle()</span></code> — KV cache management, prefill/decode scheduling, tree cache, dLLM support</p></li>
 <li><p><strong>Overridden:</strong> <code class="docutils literal notranslate"><span class="pre">init</span></code> (skip ZMQ/tokenizer/metrics), <code class="docutils literal notranslate"><span class="pre">recv_requests()</span></code> (drain inbox, route stream chunks to per-request state), <code class="docutils literal notranslate"><span class="pre">process_input_requests()</span></code> (<code class="docutils literal notranslate"><span class="pre">request_builder</span></code> conversion), <code class="docutils literal notranslate"><span class="pre">run_batch()</span></code> (delegate to ModelRunner), <code class="docutils literal notranslate"><span class="pre">send_to_tokenizer()</span></code> (no-op)</p></li>
@@ -2265,9 +2273,9 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
     <i class="fa-solid fa-list"></i> Contents
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
-    <ul class="visible nav section-nav flex-column">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#table-of-contents">Table of contents</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#architecture">Architecture</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#system-overview">System Overview</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#layer-responsibilities">Layer Responsibilities</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#directory-layout">Directory Layout</a></li>
@@ -2287,7 +2295,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#relay-io-utility-module"><code class="docutils literal notranslate"><span class="pre">relay_io</span></code> Utility Module</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduling-layer">Scheduling Layer</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scheduling-layer">Scheduling Layer</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#omnischeduler-composition-with-sglang">OmniScheduler — Composition with SGLang</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#composition-boundary-with-sglang">Composition boundary with SGLang</a></li>
 </ul>
@@ -2325,7 +2333,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pipelineconfig-reference"><code class="docutils literal notranslate"><span class="pre">PipelineConfig</span></code> reference</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-process-runner">Multi-Process Runner</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-process-runner">Multi-Process Runner</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stagelaunchconfig"><code class="docutils literal notranslate"><span class="pre">StageLaunchConfig</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#parallelism-axes-tp-today-extension-path">Parallelism axes — TP today, extension path</a></li>
 </ul>
@@ -2344,7 +2352,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-new-model">Adding a New Model</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#progress-tracking">Progress Tracking</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#design-decision-history">Design Decision History</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#design-decision-history">Design Decision History</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-294-alternative-pipeline-added-rfc">2026-04-15 — PR #294: Alternative pipeline added [RFC]</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-334-v1-pipeline-added-rfc">2026-04-23 — PR #334: V1 pipeline added [RFC]</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pr-385-openai-realtime-websocket-endpoint-v1-feature">2026-05-04 — PR #385: OpenAI Realtime WebSocket endpoint [V1, Feature]</a></li>
@@ -2416,7 +2424,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Jun 26, 2026.
+  Last updated on Aug 07, 2026.
   <br/>
 </p>
   </div>

@@ -104,6 +104,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   -d '{
     "model": "mistralai/Voxtral-4B-TTS-2603",
     "voice": "casual_male",
+    "input": "Get the trust fund to the bank early.",
     "stream": true,
     "response_format": "pcm"
   }' \
