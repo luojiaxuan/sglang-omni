@@ -13,14 +13,24 @@ import numpy as np
 import torch
 
 
-def _load_model(model_path: str, device: str, dtype: str):
+def _load_model(
+    model_path: str,
+    device: str,
+    dtype: str,
+    attn_implementation: str,
+):
+    from sglang_omni.models.qwen3_tts.compat import (
+        apply_qwen_tts_transformers_compatibility_patches,
+    )
+
+    apply_qwen_tts_transformers_compatibility_patches()
     from qwen_tts import Qwen3TTSModel
 
     return Qwen3TTSModel.from_pretrained(
         model_path,
         device_map=device,
         dtype=getattr(torch, dtype),
-        attn_implementation="flash_attention_2",
+        attn_implementation=attn_implementation,
     )
 
 
@@ -110,6 +120,7 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
         config["model_path"],
         config.get("device", "cuda:0"),
         config.get("dtype", "bfloat16"),
+        config.get("attn_implementation", "sdpa"),
     )
     observations: list[dict[str, Any]] = []
     first_frames: dict[tuple[int, ...], torch.Tensor] = {}
