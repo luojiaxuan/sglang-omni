@@ -17,7 +17,10 @@ import numpy as np
 import torch
 
 
-_REFERENCE_TRANSFORMERS_VERSION = "4.57.3"
+_REFERENCE_PACKAGES = (
+    "transformers==4.57.3",
+    "kernels==0.8.2",
+)
 
 
 def _ensure_reference_runtime(venv_path: Path | None) -> None:
@@ -30,8 +33,9 @@ def _ensure_reference_runtime(venv_path: Path | None) -> None:
         [
             str(python),
             "-c",
-            "import transformers; raise SystemExit("
-            f"transformers.__version__ != '{_REFERENCE_TRANSFORMERS_VERSION}')",
+            "from importlib.metadata import version; "
+            "raise SystemExit(any(version(name) != expected for name, expected in "
+            "(('transformers', '4.57.3'), ('kernels', '0.8.2'))))",
         ],
         check=False,
     )
@@ -42,7 +46,7 @@ def _ensure_reference_runtime(venv_path: Path | None) -> None:
                 "-m",
                 "pip",
                 "install",
-                f"transformers=={_REFERENCE_TRANSFORMERS_VERSION}",
+                *_REFERENCE_PACKAGES,
             ],
             check=True,
         )
