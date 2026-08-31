@@ -19,7 +19,7 @@ import torch
 
 _REFERENCE_PACKAGES = (
     "transformers==4.57.3",
-    "kernels==0.8.2",
+    "kernels==0.11.7",
 )
 
 
@@ -35,7 +35,7 @@ def _ensure_reference_runtime(venv_path: Path | None) -> None:
             "-c",
             "from importlib.metadata import version; "
             "raise SystemExit(any(version(name) != expected for name, expected in "
-            "(('transformers', '4.57.3'), ('kernels', '0.8.2'))))",
+            "(('transformers', '4.57.3'), ('kernels', '0.11.7'))))",
         ],
         check=False,
     )
