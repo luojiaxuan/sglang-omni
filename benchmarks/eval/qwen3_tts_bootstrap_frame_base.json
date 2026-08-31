@@ -1,0 +1,80 @@
+{
+  "model_path": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+  "mode": "voice_clone",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "output_path": "outputs/result.json",
+  "seeds": [11, 22, 33],
+  "sampling_configs": {
+    "default": {
+      "max_new_tokens": 3,
+      "do_sample": true,
+      "top_k": 50,
+      "top_p": 1.0,
+      "temperature": 0.9,
+      "repetition_penalty": 1.05,
+      "subtalker_dosample": true,
+      "subtalker_top_k": 50,
+      "subtalker_top_p": 1.0,
+      "subtalker_temperature": 0.9
+    },
+    "greedy": {
+      "max_new_tokens": 3,
+      "do_sample": false,
+      "repetition_penalty": 1.05,
+      "subtalker_dosample": false
+    },
+    "semantic_greedy": {
+      "max_new_tokens": 3,
+      "do_sample": false,
+      "repetition_penalty": 1.05,
+      "subtalker_dosample": true,
+      "subtalker_top_k": 50,
+      "subtalker_top_p": 1.0,
+      "subtalker_temperature": 0.9
+    },
+    "subtalker_greedy": {
+      "max_new_tokens": 3,
+      "do_sample": true,
+      "top_k": 50,
+      "top_p": 1.0,
+      "temperature": 0.9,
+      "repetition_penalty": 1.05,
+      "subtalker_dosample": false
+    }
+  },
+  "cases": [
+    {
+      "name": "en_short_xvector",
+      "text": "Hello, this is a short test.",
+      "language": "English",
+      "ref_audio": "input.wav",
+      "ref_text": "Please describe the car in the image.",
+      "x_vector_only_mode": true
+    },
+    {
+      "name": "en_long_xvector",
+      "text": "The quick brown fox jumps over the lazy dog while the rain falls outside.",
+      "language": "English",
+      "ref_audio": "input.wav",
+      "ref_text": "Please describe the car in the image.",
+      "x_vector_only_mode": true
+    },
+    {
+      "name": "en_short_icl",
+      "text": "Hello, this is a short test.",
+      "language": "English",
+      "ref_audio": "input.wav",
+      "ref_text": "Please describe the car in the image.",
+      "x_vector_only_mode": false
+    },
+    {
+      "name": "zh_short_icl",
+      "text": "你好，这是一个简短的测试。",
+      "language": "Chinese",
+      "ref_audio": "input.wav",
+      "ref_text": "Please describe the car in the image.",
+      "x_vector_only_mode": false
+    }
+  ]
+}
