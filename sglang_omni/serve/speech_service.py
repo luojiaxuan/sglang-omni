@@ -673,7 +673,7 @@ class SpeechRequestValidator:
                     raise bad_request(
                         f"{field_name} must be a number", param=field_name
                     )
-        for field_name in ("stream", "x_vector_only_mode"):
+        for field_name in ("stream", "x_vector_only_mode", "non_streaming_mode"):
             if field_name in payload and payload[field_name] is not None:
                 if not isinstance(payload[field_name], bool):
                     raise bad_request(
@@ -791,6 +791,8 @@ def _build_tts_params(
         tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
             request.initial_codec_chunk_frames
         )
+    if request.non_streaming_mode is not None:
+        tts_params["non_streaming_mode"] = request.non_streaming_mode
     if request.token_count is not None:
         tts_params["token_count"] = request.token_count
     if request.duration_tokens is not None:

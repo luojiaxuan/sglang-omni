@@ -274,7 +274,6 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         if has_param(tts_params, params, "x_vector_only_mode"):
             raise ValueError("Qwen3-TTS CustomVoice does not accept x_vector_only_mode")
         voice = voice or QWEN3_TTS_DEFAULT_CUSTOM_VOICE
-        non_streaming_mode = True
     elif task_type == QWEN3_TTS_TASK_VOICE_DESIGN:
         if has_param(tts_params, params, "ref_audio") or references_contain_audio(
             references
@@ -433,7 +432,7 @@ def resolve_non_streaming_mode(
     for source in (params, tts_params):
         if "non_streaming_mode" in source:
             return bool(source["non_streaming_mode"])
-    return task_type in (QWEN3_TTS_TASK_CUSTOM_VOICE, QWEN3_TTS_TASK_VOICE_DESIGN)
+    return task_type == QWEN3_TTS_TASK_VOICE_DESIGN
 
 
 def normalize_language(language: Any) -> str:

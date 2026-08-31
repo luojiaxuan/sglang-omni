@@ -251,10 +251,11 @@ Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
 the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
 for a full Python raw PCM consumer.
 
-Base/reference-cloning checkpoints use true incremental codec and vocoder
-streaming for both this HTTP endpoint and `/v1/audio/speech/stream` WebSocket
-sessions with `stream_audio=true`. CustomVoice and VoiceDesign remain
-non-streaming.
+Base/reference-cloning and CustomVoice checkpoints use true incremental codec
+and vocoder streaming for both this HTTP endpoint and
+`/v1/audio/speech/stream` WebSocket sessions with `stream_audio=true`.
+VoiceDesign remains non-streaming. Set `non_streaming_mode=true` to retain the
+legacy CustomVoice generation path when compatibility requires it.
 
 When `initial_codec_chunk_frames` is omitted, Qwen3-TTS Base defaults to `8`
 codec frames for the first vocoder chunk so concurrent streams stay continuous.
@@ -280,6 +281,7 @@ first chunk, so their audio arrives complete in a single final flush.
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | `8` (model default when omitted) | First Base streaming vocoder chunk size in codec frames. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
+| `non_streaming_mode` | `false` for Base and CustomVoice | Keep the legacy full-text CustomVoice generation path instead of incremental codec streaming |
 
 ## Model Variants
 

@@ -355,6 +355,7 @@ class CreateSpeechRequest(BaseModel):
     token_count: int | None = None  # MOSS-TTS duration token target
     duration_tokens: int | None = None  # alias for token_count
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
+    non_streaming_mode: bool | None = None
 
     # Generation parameters
     max_new_tokens: int | None = None
@@ -393,6 +394,7 @@ class SpeechBatchItem(BaseModel):
     duration_tokens: Any = None
     max_new_tokens: Any = None
     initial_codec_chunk_frames: Any = None
+    non_streaming_mode: Any = None
     temperature: Any = None
     top_p: Any = None
     top_k: Any = None
@@ -426,6 +428,7 @@ class CreateSpeechBatchRequest(BaseModel):
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
     initial_codec_chunk_frames: int | None = None
+    non_streaming_mode: bool | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -481,6 +484,7 @@ class SpeechStreamSessionConfig(BaseModel):
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
     initial_codec_chunk_frames: int | None = None
+    non_streaming_mode: bool | None = None
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None

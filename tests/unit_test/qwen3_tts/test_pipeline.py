@@ -1150,6 +1150,17 @@ def test_qwen3_tts_text_only_defaults_to_custom_voice() -> None:
     assert state.voice == "Vivian"
     assert state.ref_audio is None
     assert state.ref_text is None
+    assert state.non_streaming_mode is False
+
+
+def test_qwen3_tts_custom_voice_can_use_legacy_non_streaming_mode() -> None:
+    payload = make_payload(
+        inputs="target",
+        tts_params={"task_type": "CustomVoice", "non_streaming_mode": True},
+    )
+
+    state = build_qwen3_tts_state(payload)
+
     assert state.non_streaming_mode is True
 
 
