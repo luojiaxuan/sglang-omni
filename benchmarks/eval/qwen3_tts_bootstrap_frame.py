@@ -6,11 +6,47 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import subprocess
+import sys
+import venv
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+
+
+_REFERENCE_TRANSFORMERS_VERSION = "4.57.3"
+
+
+def _ensure_reference_runtime(venv_path: Path | None) -> None:
+    if venv_path is None or Path(sys.prefix).resolve() == venv_path.resolve():
+        return
+    python = venv_path / "bin" / "python"
+    if not python.exists():
+        venv.EnvBuilder(with_pip=True, system_site_packages=True).create(venv_path)
+    version_check = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import transformers; raise SystemExit("
+            f"transformers.__version__ != '{_REFERENCE_TRANSFORMERS_VERSION}')",
+        ],
+        check=False,
+    )
+    if version_check.returncode != 0:
+        subprocess.run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                f"transformers=={_REFERENCE_TRANSFORMERS_VERSION}",
+            ],
+            check=True,
+        )
+    os.execv(str(python), [str(python), *sys.argv])
 
 
 def _load_model(
@@ -188,7 +224,9 @@ def run(config: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--venv", type=Path)
     args = parser.parse_args()
+    _ensure_reference_runtime(args.venv)
     config = json.loads(args.config.read_text(encoding="utf-8"))
     result = run(config)
     output_path = Path(config["output_path"])
