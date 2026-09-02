@@ -1479,6 +1479,22 @@ def test_qwen3_tts_bootstrap_silence_ignores_max_new_tokens() -> None:
     assert state.suppress_bootstrap_silence is True
 
 
+def test_qwen3_tts_bootstrap_silence_accepts_materialized_sampling_defaults() -> None:
+    state = build_qwen3_tts_state(
+        _bootstrap_eligible_payload(
+            params={
+                "temperature": 0.8,
+                "top_p": 0.8,
+                "top_k": 30,
+                "repetition_penalty": 1.1,
+                "seed": 7,
+            }
+        )
+    )
+
+    assert state.suppress_bootstrap_silence is True
+
+
 def test_qwen3_tts_bootstrap_silence_not_offered_on_base() -> None:
     payload = make_payload(
         inputs={"text": "target", "references": [{"audio_path": "v.wav", "text": "r"}]},

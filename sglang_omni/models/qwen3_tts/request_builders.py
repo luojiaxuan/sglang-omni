@@ -512,6 +512,17 @@ QWEN3_TTS_BOOTSTRAP_SILENCE_LANGUAGES = frozenset({"english"})
 _BOOTSTRAP_SILENCE_SAMPLING_FIELDS = tuple(
     name for name in _GENERATION_FIELDS if name != "max_new_tokens"
 )
+# note (luojiaxuan): the serving layer materializes these exact values on
+# every request (speech_service._build_sampling_params), so key presence
+# alone cannot distinguish an operator override; the silence corpus was
+# measured under precisely these values, so they and only they stay
+# eligible.
+_BOOTSTRAP_SILENCE_SAMPLING_DEFAULTS = {
+    "temperature": 0.8,
+    "top_p": 0.8,
+    "top_k": 30,
+    "repetition_penalty": 1.1,
+}
 
 
 def resolve_bootstrap_silence_suppression(
@@ -539,10 +550,12 @@ def resolve_bootstrap_silence_suppression(
         return False
     if language.lower() not in QWEN3_TTS_BOOTSTRAP_SILENCE_LANGUAGES:
         return False
-    return not any(
-        has_param(tts_params, params, name)
-        for name in _BOOTSTRAP_SILENCE_SAMPLING_FIELDS
-    )
+    for name in _BOOTSTRAP_SILENCE_SAMPLING_FIELDS:
+        expected = _BOOTSTRAP_SILENCE_SAMPLING_DEFAULTS.get(name)
+        for source in (tts_params, params):
+            if name in source and source[name] != expected:
+                return False
+    return True
 
 
 def normalize_language(language: Any) -> str:
