@@ -426,6 +426,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         fused_snake_activation: bool = False,
         enable_stateful_codec_decoder: bool = False,
         suppress_bootstrap_silence: bool = True,
+        suppress_bootstrap_max_streams: int = 24,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -520,6 +521,12 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         self._enable_stateful_codec_decoder = bool(enable_stateful_codec_decoder)
         self._suppress_bootstrap_silence = bool(suppress_bootstrap_silence)
+        # note (luojiaxuan): the compensation below decodes one extra frame
+        # into a suppressed stream's first chunk. Near capacity that extra
+        # per-stream startup work is what the pipeline cannot spare, so the
+        # suppression is skipped once this many streams are already live
+        # (measured: a win to 10 RPS, a regression at 20 RPS).
+        self._suppress_bootstrap_max_streams = int(suppress_bootstrap_max_streams)
         self._incremental_decoder = (
             Qwen3TTSIncrementalDecoder(self._decoder)
             if self._enable_stateful_codec_decoder
@@ -545,11 +552,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             graph_frames = tuple(
                 sorted(
                     set(graph_frames)
-                    | {
-                        int(stream_left_context_frames)
-                        + int(initial_chunk_frames)
-                        + 1
-                    }
+                    | {int(stream_left_context_frames) + int(initial_chunk_frames) + 1}
                 )
             )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
@@ -797,7 +800,10 @@ class Qwen3TTSStreamingVocoderScheduler(
                 default_frames=self._default_initial_chunk_frames,
             )
         if metadata.get("bootstrap_silence_suppression"):
-            state.suppress_bootstrap = self._suppress_bootstrap_silence
+            state.suppress_bootstrap = (
+                self._suppress_bootstrap_silence
+                and len(self._stream_states) <= self._suppress_bootstrap_max_streams
+            )
             if state.suppress_bootstrap and state.initial_chunk_frames > 0:
                 # note (luojiaxuan): the withheld frame is also withheld from
                 # the client's playback buffer, so decode one extra frame into

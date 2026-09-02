@@ -3819,6 +3819,30 @@ def test_qwen3_tts_bootstrap_suppression_first_chunk_clamps_to_stride() -> None:
     assert state.initial_chunk_frames == 16
 
 
+def test_qwen3_tts_bootstrap_suppression_skips_at_high_concurrency() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        suppress_bootstrap_max_streams=2,
+    )
+    metadata = {"num_quantizers": 2, "bootstrap_silence_suppression": True}
+
+    under = scheduler.create_stream_state("a")
+    scheduler._stream_states["a"] = under
+    scheduler.latch_stream_contract("a", under, metadata, origin="metadata")
+    assert under.suppress_bootstrap is True
+
+    # A third live stream puts the vocoder past the gate, so the extra
+    # first-chunk frame is not spent and the silence is left in place.
+    for rid in ("b", "c"):
+        scheduler._stream_states[rid] = scheduler.create_stream_state(rid)
+    over = scheduler.create_stream_state("d")
+    scheduler._stream_states["d"] = over
+    scheduler.latch_stream_contract("d", over, metadata, origin="metadata")
+    assert over.suppress_bootstrap is False
+    assert over.initial_chunk_frames == 8
+
+
 def test_qwen3_tts_bootstrap_suppression_trims_one_silent_frame_once() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
