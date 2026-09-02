@@ -169,6 +169,11 @@ class OmniScheduler:
         are defined directly on this class and take precedence.
     """
 
+    # note (luojiaxuan): class-level default so partially constructed
+    # schedulers (tests build instances without running __init__) still
+    # read as pacing-disabled.
+    _pacer: PlaybackLeadPacer | None = None
+
     def __init__(
         self,
         tp_worker: Any,
