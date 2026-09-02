@@ -1429,6 +1429,67 @@ def test_qwen3_tts_stream_codec_output_factory_default_disables_streaming() -> N
     )
 
 
+def _bootstrap_eligible_payload(**overrides: Any):
+    tts_params = {
+        "task_type": "CustomVoice",
+        "voice": "Ryan",
+        "language": "English",
+    }
+    tts_params.update(overrides.pop("tts_params", {}))
+    return make_payload(
+        inputs="target",
+        params=overrides.pop("params", None),
+        tts_params=tts_params,
+    )
+
+
+def test_qwen3_tts_bootstrap_silence_eligible_on_allowlisted_custom_voice() -> None:
+    state = build_qwen3_tts_state(_bootstrap_eligible_payload())
+
+    assert state.task_type == "CustomVoice"
+    assert state.stream_codec_output is True
+    assert state.suppress_bootstrap_silence is True
+
+
+@pytest.mark.parametrize(
+    "tts_params",
+    [
+        {"voice": "Vivian"},
+        {"language": "Chinese"},
+        {"instructions": "Whisper softly."},
+        {"temperature": 0.9},
+        {"top_p": 0.7},
+        {"stream_codec_output": False},
+        {"suppress_bootstrap_silence": False},
+    ],
+)
+def test_qwen3_tts_bootstrap_silence_ineligible_variants(
+    tts_params: dict[str, Any],
+) -> None:
+    state = build_qwen3_tts_state(_bootstrap_eligible_payload(tts_params=tts_params))
+
+    assert state.suppress_bootstrap_silence is False
+
+
+def test_qwen3_tts_bootstrap_silence_ignores_max_new_tokens() -> None:
+    state = build_qwen3_tts_state(
+        _bootstrap_eligible_payload(tts_params={"max_new_tokens": 512})
+    )
+
+    assert state.suppress_bootstrap_silence is True
+
+
+def test_qwen3_tts_bootstrap_silence_not_offered_on_base() -> None:
+    payload = make_payload(
+        inputs={"text": "target", "references": [{"audio_path": "v.wav", "text": "r"}]},
+    )
+
+    state = build_qwen3_tts_state(payload)
+
+    assert state.task_type == "Base"
+    assert state.suppress_bootstrap_silence is False
+
+
 def test_qwen3_tts_custom_voice_rejects_base_only_fields() -> None:
     payload = make_payload(
         inputs="target",
@@ -3635,6 +3696,128 @@ def test_qwen3_tts_stream_output_prepends_reference_once() -> None:
     second = stream_output_builder(payload.request_id, data, None)
     assert second[0].data.tolist() == [[3, 4]]
     assert "ref_code_len" not in second[0].metadata
+
+
+def test_qwen3_tts_stream_output_marks_bootstrap_silence_suppression() -> None:
+    from sglang_omni.models.qwen3_tts.request_builders import (
+        make_qwen3_tts_scheduler_adapters,
+    )
+
+    payload = make_payload(inputs="target", params={"stream": True})
+    _, _, stream_output_builder = make_qwen3_tts_scheduler_adapters(
+        model=None,
+        wrapper=None,
+    )
+    data = Qwen3TTSSGLangRequestData(
+        latest_stream_code_chunk=torch.tensor([1, 2]),
+        stream_codec_output=True,
+        suppress_bootstrap_silence=True,
+        stage_payload=payload,
+    )
+
+    first = stream_output_builder(payload.request_id, data, None)
+    assert first[0].metadata["bootstrap_silence_suppression"] is True
+
+    data.latest_stream_code_chunk = torch.tensor([3, 4])
+    second = stream_output_builder(payload.request_id, data, None)
+    assert "bootstrap_silence_suppression" not in second[0].metadata
+
+
+def test_qwen3_tts_vocoder_latches_bootstrap_suppression_contract() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    state = scheduler.create_stream_state("request")
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.suppress_bootstrap is True
+
+    disabled = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        suppress_bootstrap_silence=False,
+    )
+    state = disabled.create_stream_state("request")
+    disabled.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.suppress_bootstrap is False
+
+
+def test_qwen3_tts_bootstrap_suppression_trims_one_silent_frame_once() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    state = scheduler.create_stream_state("request")
+    frame = scheduler._samples_per_frame
+    silent_head = torch.zeros(frame)
+    speech = torch.full((2 * frame,), 0.5)
+    delta = torch.cat((silent_head, speech))
+
+    state.suppress_bootstrap = True
+    trimmed = scheduler._apply_bootstrap_suppression(state, delta)
+
+    assert state.suppress_bootstrap is False
+    assert torch.equal(trimmed, delta[frame:])
+
+    untouched = scheduler._apply_bootstrap_suppression(state, delta)
+    assert torch.equal(untouched, delta)
+
+
+def test_qwen3_tts_bootstrap_suppression_fails_closed_on_audible_frame() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    state = scheduler.create_stream_state("request")
+    frame = scheduler._samples_per_frame
+    delta = torch.full((3 * frame,), 0.5)
+
+    state.suppress_bootstrap = True
+    kept = scheduler._apply_bootstrap_suppression(state, delta)
+
+    assert state.suppress_bootstrap is False
+    assert torch.equal(kept, delta)
+
+
+def test_qwen3_tts_bootstrap_suppression_keeps_single_frame_delta() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    state = scheduler.create_stream_state("request")
+    frame = scheduler._samples_per_frame
+    delta = torch.zeros(frame)
+
+    state.suppress_bootstrap = True
+    kept = scheduler._apply_bootstrap_suppression(state, delta)
+
+    assert torch.equal(kept, delta)
+
+
+def test_qwen3_tts_bootstrap_suppression_applies_through_decode_delta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = _stateful_qwen3_tts_scheduler(monkeypatch)
+    state = scheduler.create_stream_state("request")
+    state.suppress_bootstrap = True
+    state.code_chunks.append(torch.tensor([[0, 0], [10, 1], [20, 2]], dtype=torch.long))
+    state.total_frames = 3
+
+    first = scheduler.decode_delta("request", state, is_final=False)
+
+    assert first is not None
+    assert first.tolist() == [10.0] * 4 + [20.0] * 4
+    assert state.suppress_bootstrap is False
 
 
 def test_qwen3_tts_stream_output_skips_when_codec_streaming_is_disabled() -> None:

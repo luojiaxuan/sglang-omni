@@ -41,6 +41,14 @@ DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
+# note (luojiaxuan): fail-closed acoustic guard for bootstrap-frame
+# suppression, in linear amplitude: RMS cap 1e-3 is -60 dBFS, peak cap
+# 3.2e-3 is -50 dBFS. Calibrated against the Ryan/English corpus, whose
+# loudest first frame measured -103.7 dBFS RMS; real speech onsets sit far
+# above -40 dBFS, so these thresholds separate the two by orders of
+# magnitude.
+_BOOTSTRAP_SILENCE_MAX_RMS = 1e-3
+_BOOTSTRAP_SILENCE_MAX_PEAK = 3.2e-3
 
 
 def _decode_graph_frame_counts(
@@ -100,6 +108,7 @@ class _Qwen3TTSStreamState:
     playback_deadline_s: float = 0.0
     incremental_codec_state: Qwen3TTSIncrementalCodecState | None = None
     incremental_codec_fallback: bool = False
+    suppress_bootstrap: bool = False
 
 
 class _Qwen3TTSInvalidCodeRows(ValueError):
@@ -416,6 +425,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_cuda_graph: bool = True,
         fused_snake_activation: bool = False,
         enable_stateful_codec_decoder: bool = False,
+        suppress_bootstrap_silence: bool = True,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -509,6 +519,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             1 if self._deterministic_inference else int(followup_worker_count)
         )
         self._enable_stateful_codec_decoder = bool(enable_stateful_codec_decoder)
+        self._suppress_bootstrap_silence = bool(suppress_bootstrap_silence)
         self._incremental_decoder = (
             Qwen3TTSIncrementalDecoder(self._decoder)
             if self._enable_stateful_codec_decoder
@@ -772,6 +783,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 steady_chunk_frames=self._stream_stride,
                 default_frames=self._default_initial_chunk_frames,
             )
+        if metadata.get("bootstrap_silence_suppression"):
+            state.suppress_bootstrap = self._suppress_bootstrap_silence
 
     def validate_chunk(
         self,
@@ -865,6 +878,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 delta = self._commit_decode_plan(state, plan, delta)
                 state.incremental_codec_state = candidate_state
                 self._prune_incremental_codes(state)
+                if state.decoded_chunks == 1:
+                    delta = self._apply_bootstrap_suppression(state, delta)
                 return delta
 
         plan = self._build_decode_plan(state, is_final=is_final or force_legacy_decode)
@@ -872,7 +887,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             return None
         handle = self._launch_decode_plans([plan], stream=self._decode_stream)
         deltas = handle.resolve()
-        return self._commit_decode_plan(state, plan, deltas[0])
+        delta = self._commit_decode_plan(state, plan, deltas[0])
+        if state.decoded_chunks == 1:
+            delta = self._apply_bootstrap_suppression(state, delta)
+        return delta
 
     def _decode_incremental_eager(
         self,
@@ -1339,6 +1357,29 @@ class Qwen3TTSStreamingVocoderScheduler(
         state.playback_deadline_s = max(state.playback_deadline_s, now) + duration_s
         return delta
 
+    def _apply_bootstrap_suppression(
+        self, state: _Qwen3TTSStreamState, delta: torch.Tensor
+    ) -> torch.Tensor:
+        """Withhold the bootstrap frame's samples from the first emitted chunk.
+
+        The frame stays in decoder history — only its emitted audio is
+        suppressed — so every later sample is identical to the unsuppressed
+        stream. The acoustic guard fails closed: a first frame that is not
+        actually silent is emitted unchanged.
+        """
+        if not state.suppress_bootstrap:
+            return delta
+        state.suppress_bootstrap = False
+        frame_samples = self._samples_per_frame
+        if int(delta.shape[-1]) <= frame_samples:
+            return delta
+        head = delta[..., :frame_samples].float()
+        rms = float(head.pow(2).mean().sqrt())
+        peak = float(head.abs().max())
+        if rms > _BOOTSTRAP_SILENCE_MAX_RMS or peak > _BOOTSTRAP_SILENCE_MAX_PEAK:
+            return delta
+        return delta[..., frame_samples:]
+
     def _next_followup_stride(self, state: _Qwen3TTSStreamState) -> int:
         """Stride of the next decode chunk after a commit.
 
@@ -1567,6 +1608,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 state.initial_pending = False
                 if not self._is_aborted(request_id):
+                    delta = self._apply_bootstrap_suppression(state, delta)
                     self._mark_stream_emitted(request_id)
                     self.outbox.put(self._stream_chunk_message(request_id, delta))
                 has_remainder = (
