@@ -43,6 +43,7 @@ class PacingConfig:
     max_resume_per_step: int = 4
     chunk_frames: tuple[int, ...] = ()
     steady_stride_frames: int = 0
+    startup_reserve_slots: int = 4
 
     def __post_init__(self) -> None:
         if self.lead_s <= 0:
@@ -59,6 +60,8 @@ class PacingConfig:
             raise ValueError(
                 "pacing steady_stride_frames must be > 0 when chunk_frames is set"
             )
+        if self.startup_reserve_slots < 0:
+            raise ValueError("pacing startup_reserve_slots must be >= 0")
 
 
 class PlaybackLeadPacer:
@@ -69,6 +72,7 @@ class PlaybackLeadPacer:
         self._heap: list[tuple[float, int, Any]] = []
         self._held_rids: set[str] = set()
         self._dropped_rids: set[str] = set()
+        self._orphaned_drops: list[Any] = []
         self._tiebreak = count()
         self.paced_total = 0
         self.resumed_total = 0
@@ -153,18 +157,29 @@ class PlaybackLeadPacer:
     def held_rids(self) -> frozenset[str]:
         return frozenset(self._held_rids)
 
-    def pop_resumable(self, now: float | None = None) -> tuple[list[Any], list[Any]]:
+    def pop_resumable(
+        self,
+        now: float | None = None,
+        *,
+        max_resume: int | None = None,
+    ) -> tuple[list[Any], list[Any]]:
         """Pop requests due to wake, capped per step.
 
-        Returns ``(resumable, dropped)``: requests to put back into the decode
+        ``max_resume`` lowers this step's cap below the configured one —
+        the scheduler passes the decode slots it can spare after reserving
+        room for requests still waiting for first audio. Returns
+        ``(resumable, dropped)``: requests to put back into the decode
         batch, and parked requests that were dropped (aborted) while held —
         the caller owns releasing their resources.
         """
         if now is None:
             now = time.perf_counter()
+        cap = self.config.max_resume_per_step
+        if max_resume is not None:
+            cap = min(cap, max(0, max_resume))
         resumable: list[Any] = []
         dropped: list[Any] = []
-        while self._heap and len(resumable) < self.config.max_resume_per_step:
+        while self._heap and len(resumable) < cap:
             wake_at, _, req = self._heap[0]
             rid = req.rid
             if rid in self._dropped_rids:
@@ -180,6 +195,25 @@ class PlaybackLeadPacer:
             resumable.append(req)
         self.resumed_total += len(resumable)
         return resumable, dropped
+
+    def next_wake_at(self) -> float | None:
+        """Earliest pending wake time, skipping dropped entries."""
+        while self._heap:
+            wake_at, _, req = self._heap[0]
+            if req.rid in self._dropped_rids:
+                heapq.heappop(self._heap)
+                self._held_rids.discard(req.rid)
+                self._dropped_rids.discard(req.rid)
+                self._orphaned_drops.append(req)
+                continue
+            return wake_at
+        return None
+
+    def take_orphaned_drops(self) -> list[Any]:
+        """Dropped entries surfaced by ``next_wake_at`` peeks."""
+        drops = self._orphaned_drops
+        self._orphaned_drops = []
+        return drops
 
     def drain(self) -> list[Any]:
         """Remove and return every parked request, dropped ones included."""

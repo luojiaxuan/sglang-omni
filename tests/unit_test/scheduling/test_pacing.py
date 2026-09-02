@@ -135,6 +135,35 @@ def test_double_hold_is_idempotent() -> None:
     assert len(woken) == 1
 
 
+def test_pop_resumable_honors_step_budget() -> None:
+    pacer = _pacer(max_resume_per_step=4)
+    now = 100.0
+    for i in range(3):
+        pacer.hold(_Req(rid=f"r{i}"), lead=1.1, now=now)
+
+    none_allowed, _ = pacer.pop_resumable(now=now + 5.0, max_resume=0)
+    assert none_allowed == []
+
+    one, _ = pacer.pop_resumable(now=now + 5.0, max_resume=1)
+    assert len(one) == 1
+    assert len(pacer) == 2
+
+
+def test_next_wake_at_skips_dropped_and_surfaces_them() -> None:
+    pacer = _pacer()
+    now = 100.0
+    gone = _Req(rid="gone")
+    keep = _Req(rid="keep")
+    pacer.hold(gone, lead=1.1, now=now)
+    pacer.hold(keep, lead=1.5, now=now)
+    pacer.drop("gone")
+
+    wake_at = pacer.next_wake_at()
+    assert wake_at == pytest.approx(now + 1.1)
+    assert [r.rid for r in pacer.take_orphaned_drops()] == ["gone"]
+    assert len(pacer) == 1
+
+
 def test_drain_returns_everything() -> None:
     pacer = _pacer()
     reqs = [_Req(rid=f"r{i}") for i in range(3)]

@@ -1392,7 +1392,23 @@ class OmniScheduler:
             self._pacer.hold(req, lead, now)
 
     def _resume_paced_requests(self, now: float) -> None:
-        resumable, dropped = self._pacer.pop_resumable(now)
+        budget: int | None = None
+        reserve = self._pacer.config.startup_reserve_slots
+        if reserve and self.waiting_queue:
+            running_len = (
+                0 if self.running_batch is None else len(self.running_batch.reqs)
+            )
+            budget = self.max_running_requests - reserve - running_len
+            if budget < 1:
+                # note (luojiaxuan): starving parked streams indefinitely
+                # trades queue wait for underruns; once the most pressing
+                # parked stream is overdue past its grace, it outranks
+                # startup work.
+                overdue_at = self._pacer.next_wake_at()
+                if overdue_at is not None and now - overdue_at > 0.2:
+                    budget = 1
+        resumable, dropped = self._pacer.pop_resumable(now, max_resume=budget)
+        dropped.extend(self._pacer.take_orphaned_drops())
         for req in dropped:
             # A parked request has no batch row, so the abort path could not
             # release its KV; a request that finished normally had its KV
