@@ -3377,6 +3377,7 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_covers_graph_shapes() -> None:
     )
     left = scheduler._stream_left_context_frames
     # Startup prefix sums {2, 6, 14} plus the steady jitter band left+1..left+8.
+    # Suppression's extra frame lands on left+3, already inside that band.
     expected = tuple(sorted({2, 6, 14} | {left + f for f in range(1, 9)}))
     assert scheduler._initial_decode_graphs._input_frames == expected
     assert scheduler._followup_decode_graphs._input_frames == expected
