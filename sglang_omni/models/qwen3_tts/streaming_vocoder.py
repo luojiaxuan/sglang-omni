@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
 DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE = 8
-DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
+DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 1
+# note (luojiaxuan): the first chunks ramp 1 -> 2 -> 4 before the steady
+# stride. A one-frame first chunk emits audio after a single AR step instead
+# of eight, and the ramp restores a full playback cushion within four chunks.
+DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 
@@ -453,6 +457,13 @@ class Qwen3TTSStreamingVocoderScheduler(
                 raise ValueError("stream_chunk_ramp[0] must be <= stream_stride")
             initial_chunk_frames = chunk_ramp[0]
             followup_stride_ramp = chunk_ramp[1:]
+        elif initial_chunk_frames is None and stream_initial_followup_stride is None:
+            # Neither knob was set, so run the shipped ramp.
+            initial_chunk_frames = DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[0]
+            followup_stride_ramp = tuple(
+                min(stride, stream_followup_stride)
+                for stride in DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[1:]
+            )
         else:
             if initial_chunk_frames is None:
                 initial_chunk_frames = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES

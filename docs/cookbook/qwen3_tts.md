@@ -342,10 +342,11 @@ true incremental codec and vocoder streaming, for both this HTTP endpoint and
 `--preprocessing.factory.stream_codec_output false`, to restore whole-utterance
 decoding.
 
-When `initial_codec_chunk_frames` is omitted, Qwen3-TTS defaults to `8`
-codec frames for the first vocoder chunk so concurrent streams stay continuous.
-Pass a smaller value only when trading continuity for lower time-to-first-audio.
-Utterances that finish in fewer than `8` generated codec frames never reach the
+When `initial_codec_chunk_frames` is omitted, Qwen3-TTS ramps its first chunks
+`1 -> 2 -> 4` codec frames before the steady stride, so first audio leaves after a
+single AR step while the playback cushion is rebuilt within four chunks. Pass an
+explicit value to trade continuity against time-to-first-audio.
+Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
 #### First-audio chunk ramp

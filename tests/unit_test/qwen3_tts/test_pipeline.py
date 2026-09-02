@@ -1606,10 +1606,10 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         max_batch_wait_ms=3,
     )
     assert warmed_schedulers == [scheduler]
-    assert scheduler.create_stream_state("request").initial_chunk_frames == 8
+    assert scheduler.create_stream_state("request").initial_chunk_frames == 1
     assert scheduler._stream_left_context_frames == 16
     assert scheduler._stream_followup_stride == 8
-    assert scheduler._followup_stride_ramp == (8,)
+    assert scheduler._followup_stride_ramp == (2, 4)
     assert scheduler._initial_max_batch_size == 32
     assert scheduler._initial_batch_wait_s == pytest.approx(0.002)
     assert scheduler._followup_max_batch_size == 8
@@ -2212,16 +2212,37 @@ def test_qwen3_tts_vocoder_serializes_followup_batch_collection() -> None:
     assert not first.is_alive()
 
 
-def test_qwen3_tts_streaming_vocoder_default_initial_chunk_is_continuity_safe() -> None:
+def test_qwen3_tts_streaming_vocoder_default_chunk_ramp() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+    )
+    left = scheduler._stream_left_context_frames
+
+    # Shipped ramp is 1 -> 2 -> 4 before the steady stride, so first audio
+    # leaves after a single AR step.
+    assert scheduler.create_stream_state("request").initial_chunk_frames == 1
+    assert scheduler._followup_stride_ramp == (2, 4)
+    assert scheduler._initial_decode_graphs._input_frames == (left + 1,)
+    assert scheduler._followup_decode_graphs._input_frames == (
+        left + 2,
+        left + 4,
+        left + 8,
+    )
+
+
+def test_qwen3_tts_explicit_initial_chunk_frames_keeps_legacy_ramp() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        initial_chunk_frames=8,
     )
 
     left = scheduler._stream_left_context_frames
     # Startup prefix sums plus the steady jitter band left+1..left+stride.
     expected = tuple(sorted({8} | {left + f for f in range(0, 9)}))
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
+    assert scheduler._followup_stride_ramp == (8,)
     assert scheduler._initial_decode_graphs._input_frames == expected
     assert scheduler._followup_decode_graphs._input_frames == expected
 
