@@ -41,7 +41,6 @@ from sglang.srt.runtime_context import get_model, get_serving
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.scheduling.pacing import PacingConfig, PlaybackLeadPacer
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -62,6 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.pacing import PacingConfig, PlaybackLeadPacer
 from sglang_omni.scheduling.types import DeferredAdmission
 
 logger = logging.getLogger(__name__)
