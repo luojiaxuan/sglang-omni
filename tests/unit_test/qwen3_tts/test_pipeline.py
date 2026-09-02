@@ -1993,13 +1993,12 @@ def test_qwen3_tts_streaming_vocoder_default_initial_chunk_is_continuity_safe() 
         device="cpu",
     )
 
+    left = scheduler._stream_left_context_frames
+    # Startup prefix sums plus the steady jitter band left+1..left+stride.
+    expected = tuple(sorted({8} | {left + f for f in range(0, 9)}))
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
-    assert scheduler._initial_decode_graphs._input_frames == (
-        scheduler._stream_left_context_frames + 8,
-    )
-    assert scheduler._followup_decode_graphs._input_frames == (
-        scheduler._stream_left_context_frames + 8,
-    )
+    assert scheduler._initial_decode_graphs._input_frames == expected
+    assert scheduler._followup_decode_graphs._input_frames == expected
 
 
 def _qwen3_tts_stream_item(
