@@ -150,6 +150,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
                 pacing_resume_lead_s=float(self.pacing_resume_lead_s),
                 pacing_frame_duration_s=self.pacing_frame_duration_s,
                 pacing_max_resume_per_step=int(self.pacing_max_resume_per_step),
+                # note (luojiaxuan): mirrors the latency-serving vocoder chunk
+                # plan (stream_chunk_ramp [2, 4, 8], steady follow-up stride
+                # 8); operators changing the vocoder ramp must keep these in
+                # sync until serving profiles unify the two.
+                pacing_chunk_frames=(2, 4, 8),
+                pacing_steady_stride_frames=8,
             )
         return kwargs
 

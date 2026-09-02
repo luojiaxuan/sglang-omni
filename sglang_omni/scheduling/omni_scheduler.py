@@ -205,6 +205,8 @@ class OmniScheduler:
         pacing_resume_lead_s: float = 0.4,
         pacing_frame_duration_s: float | None = None,
         pacing_max_resume_per_step: int = 4,
+        pacing_chunk_frames: tuple[int, ...] | list[int] = (),
+        pacing_steady_stride_frames: int = 0,
         shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -332,6 +334,8 @@ class OmniScheduler:
                     resume_lead_s=float(pacing_resume_lead_s),
                     frame_duration_s=float(pacing_frame_duration_s),
                     max_resume_per_step=int(pacing_max_resume_per_step),
+                    chunk_frames=tuple(int(f) for f in (pacing_chunk_frames or ())),
+                    steady_stride_frames=int(pacing_steady_stride_frames),
                 )
             )
 

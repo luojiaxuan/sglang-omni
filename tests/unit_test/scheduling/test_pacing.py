@@ -149,6 +149,36 @@ def test_drain_returns_everything() -> None:
     assert pacer.pop_resumable(now=999.0) == ([], [])
 
 
+def test_routed_audio_frames_follow_chunk_boundaries() -> None:
+    pacer = _pacer(chunk_frames=(2, 4, 8), steady_stride_frames=8)
+
+    expect = {1: 0, 2: 2, 5: 2, 6: 6, 13: 6, 14: 14, 21: 14, 22: 22, 30: 30}
+    for generated, routed in expect.items():
+        assert (
+            pacer._routed_audio_frames(generated, suppressed=False) == routed
+        ), generated
+
+    suppressed_expect = {2: 0, 3: 2, 6: 2, 7: 6, 14: 6, 15: 14}
+    for generated, routed in suppressed_expect.items():
+        assert (
+            pacer._routed_audio_frames(generated, suppressed=True) == routed
+        ), generated
+
+
+def test_lead_uses_routed_frames_not_generated() -> None:
+    pacer = _pacer(chunk_frames=(2, 4, 8), steady_stride_frames=8)
+    now = 100.0
+
+    # 13 generated frames, but only 6 released to the client: the five
+    # frames parked inside the vocoder's next chunk are no cushion.
+    data = _Data(generation_steps=13, first_emit_s=99.9)
+    assert pacer.lead_s(data, now) == pytest.approx(6 * 0.08 - 0.1)
+
+    # Below the first chunk boundary nothing has been released.
+    early = _Data(generation_steps=1, first_emit_s=99.9)
+    assert pacer.lead_s(early, now) is None
+
+
 def test_qwen3_tts_builder_keeps_pacing_opt_in() -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -160,3 +190,5 @@ def test_qwen3_tts_builder_keeps_pacing_opt_in() -> None:
     assert enabled["pacing_resume_lead_s"] == 0.4
     assert enabled["pacing_frame_duration_s"] == 0.08
     assert enabled["pacing_max_resume_per_step"] == 4
+    assert enabled["pacing_chunk_frames"] == (2, 4, 8)
+    assert enabled["pacing_steady_stride_frames"] == 8

@@ -28,12 +28,21 @@ class PacingConfig:
     eligible to decode again. Parked requests wake by ascending deadline, at
     most ``max_resume_per_step`` per scheduling step, so a burst that parked
     together does not rejoin as one oversized batch.
+
+    ``chunk_frames`` and ``steady_stride_frames`` describe the vocoder's
+    emission plan (first chunk, ramp entries, then the steady stride). The
+    client only holds audio up to the last completed chunk boundary, so the
+    lead is computed from *routed* frames, not generated frames — generated
+    frames still parked inside the vocoder's next chunk are no cushion at
+    all. Keep these in sync with the vocoder factory's chunk configuration.
     """
 
     lead_s: float
     resume_lead_s: float
     frame_duration_s: float
     max_resume_per_step: int = 4
+    chunk_frames: tuple[int, ...] = ()
+    steady_stride_frames: int = 0
 
     def __post_init__(self) -> None:
         if self.lead_s <= 0:
@@ -44,6 +53,12 @@ class PacingConfig:
             raise ValueError("pacing frame_duration_s must be > 0")
         if self.max_resume_per_step <= 0:
             raise ValueError("pacing max_resume_per_step must be > 0")
+        if any(f <= 0 for f in self.chunk_frames):
+            raise ValueError("pacing chunk_frames entries must be > 0")
+        if self.chunk_frames and self.steady_stride_frames <= 0:
+            raise ValueError(
+                "pacing steady_stride_frames must be > 0 when chunk_frames is set"
+            )
 
 
 class PlaybackLeadPacer:
@@ -78,8 +93,38 @@ class PlaybackLeadPacer:
             return None
         if now is None:
             now = time.perf_counter()
-        generated_s = data.generation_steps * self.config.frame_duration_s
-        return generated_s - (now - data.first_emit_s)
+        routed = self._routed_audio_frames(
+            data.generation_steps,
+            suppressed=bool(getattr(data, "suppress_bootstrap_silence", False)),
+        )
+        if routed <= 0:
+            return None
+        routed_s = routed * self.config.frame_duration_s
+        return routed_s - (now - data.first_emit_s)
+
+    def _routed_audio_frames(self, generated: int, *, suppressed: bool) -> int:
+        """Audio frames the vocoder has released for ``generated`` frames.
+
+        Chunks flush at cumulative boundaries; a suppressed stream decodes
+        one extra frame into its first chunk and withholds one frame of
+        audio from it.
+        """
+        chunk_frames = self.config.chunk_frames
+        if not chunk_frames:
+            return generated
+        bump = 1 if suppressed else 0
+        boundary = chunk_frames[0] + bump
+        if generated < boundary:
+            return 0
+        routed = boundary - bump
+        for stride in chunk_frames[1:]:
+            if generated < boundary + stride:
+                return routed
+            boundary += stride
+            routed += stride
+        stride = self.config.steady_stride_frames
+        routed += ((generated - boundary) // stride) * stride
+        return routed
 
     def should_pace(self, data: Any, now: float | None = None) -> float | None:
         """Return the lead when the request should be parked, else None."""
