@@ -2407,8 +2407,9 @@ def test_qwen3_tts_explicit_initial_chunk_frames_keeps_legacy_ramp() -> None:
     )
 
     left = scheduler._stream_left_context_frames
-    # Startup prefix sums plus the steady jitter band left+1..left+stride.
-    expected = tuple(sorted({8} | {left + f for f in range(0, 9)}))
+    # Startup prefix sums, the steady jitter band left+1..left+stride, and
+    # left+9 for the extra frame a bootstrap-suppressed first chunk decodes.
+    expected = tuple(sorted({8} | {left + f for f in range(0, 10)}))
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
     assert scheduler._followup_stride_ramp == (8,)
     assert scheduler._initial_decode_graphs._input_frames == expected
