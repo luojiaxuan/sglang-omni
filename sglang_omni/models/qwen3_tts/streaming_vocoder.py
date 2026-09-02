@@ -458,7 +458,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             initial_chunk_frames = chunk_ramp[0]
             followup_stride_ramp = chunk_ramp[1:]
         elif initial_chunk_frames is None and stream_initial_followup_stride is None:
-            # Neither knob was set, so run the shipped ramp.
             initial_chunk_frames = DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[0]
             followup_stride_ramp = tuple(
                 min(stride, stream_followup_stride)
