@@ -1426,18 +1426,14 @@ class OmniScheduler:
         batch.forward_mode = ForwardMode.DECODE
         device = batch.device
         pool_indices = [req.req_pool_idx for req in reqs]
-        seq_lens = [
-            len(req.origin_input_ids) + len(req.output_ids) for req in reqs
-        ]
+        seq_lens = [len(req.origin_input_ids) + len(req.output_ids) for req in reqs]
         batch.req_pool_indices = torch.tensor(
             pool_indices, dtype=torch.int64, device=device
         )
         batch.req_pool_indices_cpu = torch.tensor(pool_indices, dtype=torch.int64)
         batch.seq_lens = torch.tensor(seq_lens, dtype=torch.int64, device=device)
         batch.seq_lens_cpu = torch.tensor(seq_lens, dtype=torch.int64)
-        batch.orig_seq_lens = torch.tensor(
-            seq_lens, dtype=torch.int32, device=device
-        )
+        batch.orig_seq_lens = torch.tensor(seq_lens, dtype=torch.int32, device=device)
         batch.seq_lens_sum = sum(seq_lens)
         batch.input_ids = None
         batch.multimodal_inputs = [req.multimodal_inputs for req in reqs]
@@ -2303,9 +2299,7 @@ class OmniScheduler:
         batch = self.running_batch
         parked_reqs: list[Any] = []
         if self._pacer is not None:
-            parked_reqs = [
-                req for req in self._pacer.drain() if not req.finished()
-            ]
+            parked_reqs = [req for req in self._pacer.drain() if not req.finished()]
         if batch is None or batch.is_empty():
             if not parked_reqs:
                 return 0
