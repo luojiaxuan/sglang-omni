@@ -29,8 +29,22 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
 
-    def __init__(self, *, attn_implementation: str | None = None) -> None:
+    # note (luojiaxuan): one 12.5 Hz codec frame is 80 ms of audio; the
+    # scheduler needs this to turn generation steps into playback lead.
+    pacing_frame_duration_s = 0.08
+
+    def __init__(
+        self,
+        *,
+        attn_implementation: str | None = None,
+        pacing_lead_s: float = 1.0,
+        pacing_resume_lead_s: float = 0.4,
+        pacing_max_resume_per_step: int = 4,
+    ) -> None:
         self.attn_implementation = attn_implementation
+        self.pacing_lead_s = pacing_lead_s
+        self.pacing_resume_lead_s = pacing_resume_lead_s
+        self.pacing_max_resume_per_step = pacing_max_resume_per_step
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
 
@@ -125,11 +139,19 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         return request_builder, result_adapter
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        return {
+        kwargs: dict[str, Any] = {
             "stream_output_builder": self._stream_output_builder,
             "request_build_max_workers": 4,
             "request_build_max_pending": 16,
         }
+        if self.pacing_lead_s and self.pacing_lead_s > 0:
+            kwargs.update(
+                pacing_lead_s=float(self.pacing_lead_s),
+                pacing_resume_lead_s=float(self.pacing_resume_lead_s),
+                pacing_frame_duration_s=self.pacing_frame_duration_s,
+                pacing_max_resume_per_step=int(self.pacing_max_resume_per_step),
+            )
+        return kwargs
 
     def make_abort_callback(self) -> Any | None:
         return request_builders.cleanup_prepared_qwen3_tts_request

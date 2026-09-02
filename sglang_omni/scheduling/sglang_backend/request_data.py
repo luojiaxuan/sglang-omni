@@ -17,6 +17,7 @@ class SGLangARRequestData(ARRequestData):
     req: Any = None
     synced: bool = False
     generation_steps: int = 0
+    first_emit_s: float = 0.0
     suppress_tokens: list[int] | None = None
     top_p: float = 1.0
     top_k: int = -1

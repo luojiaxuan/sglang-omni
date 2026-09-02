@@ -41,6 +41,7 @@ from sglang.srt.runtime_context import get_model, get_serving
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.scheduling.pacing import PacingConfig, PlaybackLeadPacer
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -195,6 +196,10 @@ class OmniScheduler:
         prefill_coalesce_after_builds_during_decode: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        pacing_lead_s: float | None = None,
+        pacing_resume_lead_s: float = 0.4,
+        pacing_frame_duration_s: float | None = None,
+        pacing_max_resume_per_step: int = 4,
         shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -308,6 +313,22 @@ class OmniScheduler:
         self.prefill_coalesce_after_builds_during_decode = bool(
             prefill_coalesce_after_builds_during_decode
         )
+
+        self._pacer: PlaybackLeadPacer | None = None
+        if pacing_lead_s is not None:
+            if pacing_frame_duration_s is None:
+                raise ValueError(
+                    "pacing_lead_s requires pacing_frame_duration_s so leads "
+                    "can be computed from generation steps"
+                )
+            self._pacer = PlaybackLeadPacer(
+                PacingConfig(
+                    lead_s=float(pacing_lead_s),
+                    resume_lead_s=float(pacing_resume_lead_s),
+                    frame_duration_s=float(pacing_frame_duration_s),
+                    max_resume_per_step=int(pacing_max_resume_per_step),
+                )
+            )
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -1322,11 +1343,108 @@ class OmniScheduler:
         own that state, so feed it in and write the (possibly rebuilt) running
         batch back before handing the runnable batch to the caller.
         """
+        if self._pacer is not None:
+            self._apply_playback_pacing()
         plan = _Upstream.get_next_batch_to_run(
             self, self.running_batch, self.last_batch
         )
         self.running_batch = plan.running_batch
         return plan.batch_to_run
+
+    def _apply_playback_pacing(self) -> None:
+        """Park comfortable streams and wake pressing ones between steps.
+
+        Runs before the upstream batch plan, on the same between-step boundary
+        upstream retraction uses: the in-flight async batch snapshots its
+        request list, so resizing ``running_batch`` here never desyncs a
+        launched step.
+        """
+        now = time.perf_counter()
+        self._resume_paced_requests(now)
+        batch = self.running_batch
+        if batch is None or batch.is_empty():
+            return
+        keep_indices: list[int] = []
+        parked: list[tuple[Any, float]] = []
+        for i, req in enumerate(batch.reqs):
+            lead = None
+            if not req.finished() and req.rid not in self._aborted_request_ids:
+                lead = self._pacer.should_pace(req._omni_data, now)
+            if lead is None:
+                keep_indices.append(i)
+            else:
+                parked.append((req, lead))
+        if not parked:
+            return
+        batch.filter_batch(keep_indices=keep_indices)
+        if not batch.reqs:
+            batch.batch_is_full = False
+        for req, lead in parked:
+            self._pacer.hold(req, lead, now)
+
+    def _resume_paced_requests(self, now: float) -> None:
+        resumable, dropped = self._pacer.pop_resumable(now)
+        for req in dropped:
+            # A parked request has no batch row, so the abort path could not
+            # release its KV; a request that finished normally had its KV
+            # released by process_batch_result already.
+            if not req.finished():
+                self._release_request_kv_cache(req)
+            _detach_request_data(req)
+        alive: list[Any] = []
+        for req in resumable:
+            if req.finished():
+                continue
+            if req.rid in self._aborted_request_ids:
+                self._release_request_kv_cache(req)
+                _detach_request_data(req)
+                continue
+            alive.append(req)
+        if not alive:
+            return
+        mini = self._build_resident_decode_batch(alive)
+        if self.running_batch is None or self.running_batch.is_empty():
+            self.running_batch = mini
+        else:
+            self.running_batch.merge_batch(mini)
+
+    def _build_resident_decode_batch(self, reqs: list[Any]) -> Any:
+        """Rebuild a decode-mode ScheduleBatch for requests whose KV stayed
+        resident while they were parked."""
+        from sglang.srt.model_executor.forward_batch_info import ForwardMode
+        from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+
+        batch = ScheduleBatch.init_new(
+            reqs,
+            self.req_to_token_pool,
+            self.token_to_kv_pool_allocator,
+            self.tree_cache,
+            self.model_config,
+            self.enable_overlap,
+            self.spec_algorithm,
+        )
+        batch.forward_mode = ForwardMode.DECODE
+        device = batch.device
+        pool_indices = [req.req_pool_idx for req in reqs]
+        seq_lens = [
+            len(req.origin_input_ids) + len(req.output_ids) for req in reqs
+        ]
+        batch.req_pool_indices = torch.tensor(
+            pool_indices, dtype=torch.int64, device=device
+        )
+        batch.req_pool_indices_cpu = torch.tensor(pool_indices, dtype=torch.int64)
+        batch.seq_lens = torch.tensor(seq_lens, dtype=torch.int64, device=device)
+        batch.seq_lens_cpu = torch.tensor(seq_lens, dtype=torch.int64)
+        batch.orig_seq_lens = torch.tensor(
+            seq_lens, dtype=torch.int32, device=device
+        )
+        batch.seq_lens_sum = sum(seq_lens)
+        batch.input_ids = None
+        batch.multimodal_inputs = [req.multimodal_inputs for req in reqs]
+        batch.sampling_info = SamplingBatchInfo.from_schedule_batch(
+            batch, self.model_config.vocab_size
+        )
+        return batch
 
     def get_new_batch_prefill(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
@@ -1429,10 +1547,10 @@ class OmniScheduler:
             if rid in skip_rids or rid in self._aborted_request_ids:
                 continue
             req_output = mr_output.outputs[rid]
-            self._put_stream_messages(
-                rid,
-                self._stream_output_builder(rid, sched_req.data, req_output),
-            )
+            messages = self._stream_output_builder(rid, sched_req.data, req_output)
+            if messages and not sched_req.data.first_emit_s:
+                sched_req.data.first_emit_s = time.perf_counter()
+            self._put_stream_messages(rid, messages)
 
     def _put_stream_messages(self, request_id: str, messages: Any) -> None:
         emitted_any = False
@@ -1809,6 +1927,8 @@ class OmniScheduler:
         self._deferred_request_payloads.pop(request_id, None)
         self._dirty_deferred_request_ids.discard(request_id)
         self._first_emit_done.discard(request_id)
+        if self._pacer is not None:
+            self._pacer.drop(request_id)
         # Note: (Jiaxin Deng) emit before discarding, and discard whether or
         # not the request is still in a running batch. A running abort that
         # never reaches stream_output used to leave its rid here forever,
@@ -2181,16 +2301,33 @@ class OmniScheduler:
 
     def _retract_running_requests(self) -> int:
         batch = self.running_batch
+        parked_reqs: list[Any] = []
+        if self._pacer is not None:
+            parked_reqs = [
+                req for req in self._pacer.drain() if not req.finished()
+            ]
         if batch is None or batch.is_empty():
-            return 0
+            if not parked_reqs:
+                return 0
+            retract_all(
+                reqs=parked_reqs,
+                server_args=self.server_args,
+                req_to_token_pool=self.req_to_token_pool,
+                token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+                tree_cache=self.tree_cache,
+                hisparse_coordinator=self.hisparse_coordinator,
+            )
+            for req in parked_reqs:
+                self._add_request_to_queue(req)
+            return len(parked_reqs)
         batch.filter_batch()
-        if len(batch.reqs) == 0:
+        if len(batch.reqs) == 0 and not parked_reqs:
             return 0
         # ScheduleBatch has no retract_all; the module-level function leaves
         # batch.reqs in place, so snapshot the requests and clear the batch here.
-        retracted_reqs = list(batch.reqs)
+        retracted_reqs = list(batch.reqs) + parked_reqs
         retract_all(
-            reqs=batch.reqs,
+            reqs=retracted_reqs,
             server_args=self.server_args,
             req_to_token_pool=batch.req_to_token_pool,
             token_to_kv_pool_allocator=batch.token_to_kv_pool_allocator,
