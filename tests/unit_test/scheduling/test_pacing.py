@@ -149,14 +149,14 @@ def test_drain_returns_everything() -> None:
     assert pacer.pop_resumable(now=999.0) == ([], [])
 
 
-def test_qwen3_tts_builder_enables_pacing_by_default() -> None:
+def test_qwen3_tts_builder_keeps_pacing_opt_in() -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
-    kwargs = Qwen3TtsEngineBuilder().extra_scheduler_kwargs()
-    assert kwargs["pacing_lead_s"] == 1.0
-    assert kwargs["pacing_resume_lead_s"] == 0.4
-    assert kwargs["pacing_frame_duration_s"] == 0.08
-    assert kwargs["pacing_max_resume_per_step"] == 4
+    default = Qwen3TtsEngineBuilder().extra_scheduler_kwargs()
+    assert "pacing_lead_s" not in default
 
-    disabled = Qwen3TtsEngineBuilder(pacing_lead_s=0.0).extra_scheduler_kwargs()
-    assert "pacing_lead_s" not in disabled
+    enabled = Qwen3TtsEngineBuilder(pacing_lead_s=1.0).extra_scheduler_kwargs()
+    assert enabled["pacing_lead_s"] == 1.0
+    assert enabled["pacing_resume_lead_s"] == 0.4
+    assert enabled["pacing_frame_duration_s"] == 0.08
+    assert enabled["pacing_max_resume_per_step"] == 4

@@ -127,7 +127,7 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
-    pacing_lead_s: float = 1.0,
+    pacing_lead_s: float = 0.0,
     pacing_resume_lead_s: float = 0.4,
     pacing_max_resume_per_step: int = 4,
 ) -> Any:

@@ -37,7 +37,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self,
         *,
         attn_implementation: str | None = None,
-        pacing_lead_s: float = 1.0,
+        pacing_lead_s: float = 0.0,
         pacing_resume_lead_s: float = 0.4,
         pacing_max_resume_per_step: int = 4,
     ) -> None:
