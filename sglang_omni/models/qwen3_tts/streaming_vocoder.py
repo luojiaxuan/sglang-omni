@@ -539,6 +539,19 @@ class Qwen3TTSStreamingVocoderScheduler(
             followup_stride_ramp=followup_stride_ramp,
             steady_stride=int(stream_followup_stride),
         )
+        if self._suppress_bootstrap_silence and initial_chunk_frames < stream_stride:
+            # note (luojiaxuan): suppressed streams decode one extra bootstrap
+            # frame into their first chunk, so capture that shape too.
+            graph_frames = tuple(
+                sorted(
+                    set(graph_frames)
+                    | {
+                        int(stream_left_context_frames)
+                        + int(initial_chunk_frames)
+                        + 1
+                    }
+                )
+            )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
@@ -785,6 +798,13 @@ class Qwen3TTSStreamingVocoderScheduler(
             )
         if metadata.get("bootstrap_silence_suppression"):
             state.suppress_bootstrap = self._suppress_bootstrap_silence
+            if state.suppress_bootstrap and state.initial_chunk_frames > 0:
+                # note (luojiaxuan): the withheld frame is also withheld from
+                # the client's playback buffer, so decode one extra frame into
+                # the first chunk to keep the audible lead unchanged.
+                state.initial_chunk_frames = min(
+                    state.initial_chunk_frames + 1, self._stream_stride
+                )
 
     def validate_chunk(
         self,

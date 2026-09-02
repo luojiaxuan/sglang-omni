@@ -3768,6 +3768,55 @@ def test_qwen3_tts_vocoder_latches_bootstrap_suppression_contract() -> None:
     assert state.suppress_bootstrap is False
 
 
+def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    assert scheduler._initial_decode_graphs._input_frames == (24, 25)
+    state = scheduler.create_stream_state("request")
+    assert state.initial_chunk_frames == 8
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.initial_chunk_frames == 9
+
+    disabled = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        suppress_bootstrap_silence=False,
+    )
+    assert disabled._initial_decode_graphs._input_frames == (24,)
+    state = disabled.create_stream_state("request")
+    disabled.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.initial_chunk_frames == 8
+
+
+def test_qwen3_tts_bootstrap_suppression_first_chunk_clamps_to_stride() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=[16, 8],
+    )
+    state = scheduler.create_stream_state("request")
+    assert state.initial_chunk_frames == 16
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.initial_chunk_frames == 16
+
+
 def test_qwen3_tts_bootstrap_suppression_trims_one_silent_frame_once() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
