@@ -3089,6 +3089,9 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+        # note (luojiaxuan): a single-entry ramp leaves no ramp strides, so
+        # follow-ups go straight to the steady stride this test is about.
+        stream_chunk_ramp=(8,),
     )
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
@@ -3465,6 +3468,10 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+        # note (luojiaxuan): the utterance has to sit below the first chunk to
+        # reach the final-flush path, which needs a first chunk wider than one
+        # frame to be expressible.
+        stream_chunk_ramp=(8,),
     )
     generated_frames = scheduler._default_initial_chunk_frames - 1
     assert generated_frames > 0
