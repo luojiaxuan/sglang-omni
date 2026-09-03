@@ -2161,6 +2161,57 @@ def test_qwen3_tts_deterministic_vocoder_decodes_each_payload_at_b1() -> None:
     ]
 
 
+def test_qwen3_tts_vocoder_deterministic_mode_keeps_one_followup_worker() -> None:
+    """Deterministic byte identity is qualified against serialized decoding."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        followup_worker_count=4,
+        enable_deterministic_inference=True,
+    )
+
+    assert scheduler._followup_worker_count == 1
+    assert len(scheduler._followup_graph_holders) == 1
+
+    parallel = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        followup_worker_count=4,
+    )
+    assert parallel._followup_worker_count == 4
+
+
+def test_qwen3_tts_vocoder_serializes_followup_batch_collection() -> None:
+    """One collector at a time, so workers do not split a batch in half."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        followup_worker_count=2,
+    )
+
+    held = threading.Event()
+    released = threading.Event()
+
+    def _blocking_collect():
+        held.set()
+        released.wait(5)
+        return None
+
+    scheduler._collect_followup_batch = _blocking_collect
+    first = threading.Thread(target=scheduler._run_followup_worker, args=(0,))
+    first.start()
+    assert held.wait(5)
+
+    # The second worker must not enter collection while the first holds it.
+    assert scheduler._followup_collect_lock.locked()
+    second_entered = scheduler._followup_collect_lock.acquire(timeout=0.2)
+    assert not second_entered
+
+    released.set()
+    first.join(5)
+    assert not first.is_alive()
+
+
 def test_qwen3_tts_streaming_vocoder_default_initial_chunk_is_continuity_safe() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),

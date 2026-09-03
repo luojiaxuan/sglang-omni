@@ -490,6 +490,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         decoder_config = getattr(tokenizer_config, "decoder_config", tokenizer_config)
         num_quantizers = int(getattr(decoder_config, "num_quantizers", 0) or 0)
         self._deterministic_inference = bool(enable_deterministic_inference)
+        # note (luojiaxuan): deterministic inference qualifies byte identity
+        # against serialized decoding, so it keeps a single follow-up worker.
+        worker_count = (
+            1 if self._deterministic_inference else int(followup_worker_count)
+        )
         self._enable_stateful_codec_decoder = bool(enable_stateful_codec_decoder)
         self._incremental_decoder = (
             Qwen3TTSIncrementalDecoder(self._decoder)
@@ -535,7 +540,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     and not self._enable_stateful_codec_decoder
                 ),
             )
-            for _ in range(int(followup_worker_count))
+            for _ in range(worker_count)
         )
         self._followup_decode_graphs = self._followup_graph_holders[0]
         self._samples_per_frame = int(self._decoder.total_upsample)
@@ -578,7 +583,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                         device=self._device,
                         priority=followup_priority,
                     )
-                    for _ in range(int(followup_worker_count))
+                    for _ in range(worker_count)
                 )
                 if self._async_decode
                 else ()
@@ -603,7 +608,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._initial_worker: threading.Thread | None = None
         self._followup_worker: threading.Thread | None = None
         self._followup_workers: list[threading.Thread] = []
-        self._followup_worker_count = int(followup_worker_count)
+        self._followup_worker_count = worker_count
+        # note (luojiaxuan): batch collection is serialized so a second worker
+        # waits for the collector instead of racing it for arrivals; two
+        # workers draining the queue in parallel split one batch into two
+        # single-request decodes. Only collection is serialized, so decodes
+        # still overlap.
+        self._followup_collect_lock = threading.Lock()
         # note (luojiaxuan): each follow-up worker owns its decode graphs
         # and stream. The graph holders keep static input/output buffers
         # per captured shape, so two threads replaying one holder would
@@ -1565,7 +1576,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             else self._followup_decode_stream
         )
         while True:
-            batch = self._collect_followup_batch()
+            with self._followup_collect_lock:
+                batch = self._collect_followup_batch()
             if batch is None:
                 return
             self._run_followup_batch(batch)
