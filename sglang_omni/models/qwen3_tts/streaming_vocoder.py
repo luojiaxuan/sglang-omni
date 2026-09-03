@@ -48,13 +48,18 @@ def _decode_graph_frame_counts(
 ) -> tuple[int, ...]:
     """Decode-window frame counts a streaming request can produce.
 
-    Two families reach the vocoder decode:
+    A decode spans window_start to window_end, so a chunk of s fresh frames
+    reaching the decoder with e frames already emitted and r reference frames
+    spans r + e + s, minus max(0, r + e - left_context). That collapses to two
+    families:
 
-    * startup, before the left-context buffer fills: the running sums of the
-      chunk schedule (initial chunk, then each ramp stride), capped where the
-      buffer saturates;
-    * steady: ``left_context`` plus any fresh-frame count from 1 up to a full
-      ``steady_stride``, since arrival timing makes the realized stride jitter.
+    * saturated, once r + e has reached left_context: exactly left_context + s,
+      for every stride s the chunk schedule can ask for. The steady stride also
+      jitters with arrival timing, so every fresh-frame count from 1 up to a
+      full steady stride is reachable.
+    * filling, while r + e is still below left_context: r + e + s. With no
+      reference frames that is the running sum of the chunk schedule, and it
+      only ever falls short of the saturated count for the same stride.
 
     Capturing this whole span keeps the common decodes on the CUDA-graph path
     instead of the eager fallback.
@@ -64,10 +69,10 @@ def _decode_graph_frame_counts(
     for stride in (initial_chunk_frames, *followup_stride_ramp, steady_stride):
         if stride <= 0:
             continue
+        saturated = left_context + stride
+        counts.add(saturated)
         cumulative += stride
-        window = min(cumulative, left_context + steady_stride)
-        if window > 0:
-            counts.add(window)
+        counts.add(min(cumulative, saturated))
     for fresh in range(1, steady_stride + 1):
         counts.add(left_context + fresh)
     return tuple(sorted(counts))

@@ -2932,6 +2932,20 @@ def test_decode_graph_frame_counts_cover_startup_and_steady() -> None:
         followup_stride_ramp=(),
         steady_stride=8,
     ) == (8, 16, 17, 18, 19, 20, 21, 22, 23, 24)
+    # A stride wider than the steady stride still saturates at left_context +
+    # that stride, so its full-context window has to stay captured.
+    assert 32 in _decode_graph_frame_counts(
+        left_context=16,
+        initial_chunk_frames=16,
+        followup_stride_ramp=(),
+        steady_stride=8,
+    )
+    assert 32 in _decode_graph_frame_counts(
+        left_context=16,
+        initial_chunk_frames=8,
+        followup_stride_ramp=(16,),
+        steady_stride=8,
+    )
 
 
 def test_qwen3_tts_streaming_vocoder_chunk_ramp_covers_graph_shapes() -> None:
