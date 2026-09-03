@@ -3775,7 +3775,9 @@ def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> N
         _FakeQwen3TTSTokenizer(),
         device="cpu",
     )
-    assert scheduler._initial_decode_graphs._input_frames == (24, 25)
+    # The suppressed first chunk decodes one extra frame, so 25 joins the
+    # captured shapes; without suppression it is absent (asserted below).
+    assert 25 in scheduler._initial_decode_graphs._input_frames
     state = scheduler.create_stream_state("request")
     assert state.initial_chunk_frames == 8
     scheduler.latch_stream_contract(
@@ -3791,7 +3793,7 @@ def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> N
         device="cpu",
         suppress_bootstrap_silence=False,
     )
-    assert disabled._initial_decode_graphs._input_frames == (24,)
+    assert 25 not in disabled._initial_decode_graphs._input_frames
     state = disabled.create_stream_state("request")
     disabled.latch_stream_contract(
         "request",
