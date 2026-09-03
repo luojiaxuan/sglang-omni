@@ -2548,6 +2548,9 @@ def test_qwen3_tts_short_request_final_flush_decodes_synchronously() -> None:
         _FakeQwen3TTSTokenizer(),
         device="cpu",
         async_decode=True,
+        # note (luojiaxuan): the threshold is pinned so the two frames below
+        # stay short of it whatever the shipped first-chunk size is.
+        initial_chunk_frames=8,
     )
     payload = make_payload(inputs="short", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
