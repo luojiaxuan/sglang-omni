@@ -2223,12 +2223,11 @@ def test_qwen3_tts_streaming_vocoder_default_chunk_ramp() -> None:
     # leaves after a single AR step.
     assert scheduler.create_stream_state("request").initial_chunk_frames == 1
     assert scheduler._followup_stride_ramp == (2, 4)
-    assert scheduler._initial_decode_graphs._input_frames == (left + 1,)
-    assert scheduler._followup_decode_graphs._input_frames == (
-        left + 2,
-        left + 4,
-        left + 8,
-    )
+    # Startup prefix sums 1, 1+2, 3+4, 7+8 plus the steady jitter band
+    # left+1..left+8; every ramp stride saturates inside that band.
+    expected = tuple(sorted({1, 3, 7, 15} | {left + f for f in range(1, 9)}))
+    assert scheduler._initial_decode_graphs._input_frames == expected
+    assert scheduler._followup_decode_graphs._input_frames == expected
 
 
 def test_qwen3_tts_explicit_initial_chunk_frames_keeps_legacy_ramp() -> None:
