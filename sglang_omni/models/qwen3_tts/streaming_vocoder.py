@@ -547,12 +547,22 @@ class Qwen3TTSStreamingVocoderScheduler(
             steady_stride=int(stream_followup_stride),
         )
         if self._suppress_bootstrap_silence and initial_chunk_frames < stream_stride:
-            # note (luojiaxuan): suppressed streams decode one extra bootstrap
-            # frame into their first chunk, so capture that shape too.
+            # note (luojiaxuan): a suppressed stream decodes one extra bootstrap
+            # frame into its first chunk, which shifts every startup window, not
+            # just the first. CustomVoice carries no reference codes, so those
+            # windows are the running sums of the bumped schedule rather than
+            # left_context + stride. Capture the whole bumped schedule.
             graph_frames = tuple(
                 sorted(
                     set(graph_frames)
-                    | {int(stream_left_context_frames) + int(initial_chunk_frames) + 1}
+                    | set(
+                        _decode_graph_frame_counts(
+                            left_context=int(stream_left_context_frames),
+                            initial_chunk_frames=int(initial_chunk_frames) + 1,
+                            followup_stride_ramp=followup_stride_ramp,
+                            steady_stride=int(stream_followup_stride),
+                        )
+                    )
                 )
             )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
@@ -804,13 +814,21 @@ class Qwen3TTSStreamingVocoderScheduler(
                 self._suppress_bootstrap_silence
                 and len(self._stream_states) <= self._suppress_bootstrap_max_streams
             )
-            if state.suppress_bootstrap and state.initial_chunk_frames > 0:
+            if state.suppress_bootstrap:
                 # note (luojiaxuan): the withheld frame is also withheld from
                 # the client's playback buffer, so decode one extra frame into
-                # the first chunk to keep the audible lead unchanged.
-                state.initial_chunk_frames = min(
-                    state.initial_chunk_frames + 1, self._stream_stride
-                )
+                # the first chunk to keep the audible lead unchanged. Without
+                # that compensation the stream would emit a shorter lead than
+                # an unsuppressed one, so suppression only stays on when the
+                # bump actually applies.
+                bumped = min(state.initial_chunk_frames + 1, self._stream_stride)
+                if (
+                    state.initial_chunk_frames > 0
+                    and bumped > state.initial_chunk_frames
+                ):
+                    state.initial_chunk_frames = bumped
+                else:
+                    state.suppress_bootstrap = False
 
     def validate_chunk(
         self,
@@ -904,8 +922,6 @@ class Qwen3TTSStreamingVocoderScheduler(
                 delta = self._commit_decode_plan(state, plan, delta)
                 state.incremental_codec_state = candidate_state
                 self._prune_incremental_codes(state)
-                if state.decoded_chunks == 1:
-                    delta = self._apply_bootstrap_suppression(state, delta)
                 return delta
 
         plan = self._build_decode_plan(state, is_final=is_final or force_legacy_decode)
@@ -913,10 +929,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             return None
         handle = self._launch_decode_plans([plan], stream=self._decode_stream)
         deltas = handle.resolve()
-        delta = self._commit_decode_plan(state, plan, deltas[0])
-        if state.decoded_chunks == 1:
-            delta = self._apply_bootstrap_suppression(state, delta)
-        return delta
+        return self._commit_decode_plan(state, plan, deltas[0])
 
     def _decode_incremental_eager(
         self,
@@ -1373,6 +1386,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         if delta.numel() == 0:
             raise RuntimeError("Qwen3-TTS streaming decoder returned an empty delta")
 
+        # note (luojiaxuan): trim before the deadline is credited, otherwise the
+        # stream is charged for the withheld frame it never emits and sorts late
+        # in the follow-up queue. The call is one-shot and self-gating.
+        delta = self._apply_bootstrap_suppression(state, delta)
+
         state.emitted_generated_frames = plan.generated_frames
         state.decoded_chunks += 1
         state.next_decode_generated_frames = (
@@ -1634,7 +1652,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 state.initial_pending = False
                 if not self._is_aborted(request_id):
-                    delta = self._apply_bootstrap_suppression(state, delta)
                     self._mark_stream_emitted(request_id)
                     self.outbox.put(self._stream_chunk_message(request_id, delta))
                 has_remainder = (

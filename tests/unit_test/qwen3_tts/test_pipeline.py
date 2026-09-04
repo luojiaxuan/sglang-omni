@@ -3775,9 +3775,28 @@ def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> N
         _FakeQwen3TTSTokenizer(),
         device="cpu",
     )
-    # The suppressed first chunk decodes one extra frame, so 25 joins the
-    # captured shapes; without suppression it is absent (asserted below).
-    assert 25 in scheduler._initial_decode_graphs._input_frames
+    # CustomVoice carries no reference codes, so the suppressed first window is
+    # the bumped chunk itself, not left_context + chunk. Replay the real window
+    # arithmetic from _build_decode_plan rather than re-deriving it.
+    left = scheduler._stream_left_context_frames
+    captured = set(scheduler._initial_decode_graphs._input_frames)
+
+    def _windows(ref_frames: int, first_chunk: int) -> list[int]:
+        emitted, out = 0, []
+        for index in range(6):
+            stride = first_chunk if index == 0 else 8
+            generated = emitted + stride
+            out.append((ref_frames + generated) - max(0, ref_frames + emitted - left))
+            emitted = generated
+        return out
+
+    for ref_frames, first_chunk in ((0, 9), (0, 8), (120, 9), (120, 8)):
+        produced = _windows(ref_frames, first_chunk)
+        assert not set(produced) - captured, (
+            f"uncaptured decode windows for ref={ref_frames} "
+            f"first_chunk={first_chunk}: {sorted(set(produced) - captured)}"
+        )
+    assert 9 in captured
     state = scheduler.create_stream_state("request")
     assert state.initial_chunk_frames == 8
     scheduler.latch_stream_contract(
@@ -3793,7 +3812,7 @@ def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> N
         device="cpu",
         suppress_bootstrap_silence=False,
     )
-    assert 25 not in disabled._initial_decode_graphs._input_frames
+    assert 9 not in disabled._initial_decode_graphs._input_frames
     state = disabled.create_stream_state("request")
     disabled.latch_stream_contract(
         "request",
@@ -3819,6 +3838,58 @@ def test_qwen3_tts_bootstrap_suppression_first_chunk_clamps_to_stride() -> None:
         origin="metadata",
     )
     assert state.initial_chunk_frames == 16
+    # The lead compensation could not apply, so nothing may be stripped either.
+    assert state.suppress_bootstrap is False
+
+
+def test_qwen3_tts_bootstrap_suppression_off_when_first_chunk_is_zero() -> None:
+    """A stream that cannot take the compensating frame keeps its full lead."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        initial_chunk_frames=0,
+    )
+    state = scheduler.create_stream_state("request")
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.suppress_bootstrap is False
+
+
+def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio() -> None:
+    """The withheld frame must not be charged to the playback deadline."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    state = scheduler.create_stream_state("request")
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.suppress_bootstrap is True
+
+    frame = scheduler._samples_per_frame
+    plan = _Qwen3TTSDecodePlan(
+        decoder_input=torch.zeros(1, 2, state.initial_chunk_frames),
+        absolute_emitted_frames=0,
+        generated_frames=state.initial_chunk_frames,
+        window_start=0,
+        emitted_generated_frames=0,
+    )
+    delta = torch.zeros(1, frame * state.initial_chunk_frames)
+    emitted = scheduler._commit_decode_plan(state, plan, delta)
+
+    assert int(emitted.shape[-1]) == frame * (state.initial_chunk_frames - 1)
+    credited = state.playback_deadline_s - time.monotonic()
+    assert credited == pytest.approx(
+        float(emitted.numel()) / scheduler._sample_rate, abs=0.05
+    )
 
 
 def test_qwen3_tts_bootstrap_suppression_skips_at_high_concurrency() -> None:
