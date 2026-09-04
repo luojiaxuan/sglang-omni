@@ -10,9 +10,7 @@ from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.config import is_qwen3_tts_base_model
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-from sglang_omni.scheduling.generation_batch_policy import (
-    CudaGraphBackend,
-)
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
 
 def _is_truthy(value: Any) -> bool:
