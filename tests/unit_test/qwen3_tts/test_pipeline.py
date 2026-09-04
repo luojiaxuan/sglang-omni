@@ -2428,13 +2428,33 @@ def test_qwen3_tts_explicit_initial_chunk_frames_keeps_legacy_ramp() -> None:
     )
 
     left = scheduler._stream_left_context_frames
-    # Startup prefix sums, the steady jitter band left+1..left+stride, and
-    # left+9 for the extra frame a bootstrap-suppressed first chunk decodes.
-    expected = tuple(sorted({8} | {left + f for f in range(0, 10)}))
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
     assert scheduler._followup_stride_ramp == (8,)
-    assert scheduler._initial_decode_graphs._input_frames == expected
-    assert scheduler._followup_decode_graphs._input_frames == expected
+
+    # Replay the real window arithmetic rather than restating the formula. A
+    # suppressed stream runs a 9-frame first chunk, and CustomVoice carries no
+    # reference codes, so its first window is 9 rather than left + 9.
+    captured = set(scheduler._initial_decode_graphs._input_frames)
+
+    def _windows(ref_frames: int, first_chunk: int) -> list[int]:
+        emitted, out = 0, []
+        for index in range(6):
+            stride = first_chunk if index == 0 else 8
+            generated = emitted + stride
+            out.append((ref_frames + generated) - max(0, ref_frames + emitted - left))
+            emitted = generated
+        return out
+
+    for ref_frames, first_chunk in ((0, 8), (0, 9), (120, 8), (120, 9)):
+        produced = _windows(ref_frames, first_chunk)
+        assert not set(produced) - captured, (
+            f"uncaptured windows for ref={ref_frames} first={first_chunk}: "
+            f"{sorted(set(produced) - captured)}"
+        )
+    assert 9 in captured
+    assert scheduler._followup_decode_graphs._input_frames == (
+        scheduler._initial_decode_graphs._input_frames
+    )
 
 
 def _qwen3_tts_stream_item(
