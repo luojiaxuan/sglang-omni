@@ -2223,11 +2223,49 @@ def test_qwen3_tts_streaming_vocoder_default_chunk_ramp() -> None:
     # leaves after a single AR step.
     assert scheduler.create_stream_state("request").initial_chunk_frames == 1
     assert scheduler._followup_stride_ramp == (2, 4)
-    # Startup prefix sums 1, 1+2, 3+4, 7+8 plus the steady jitter band
-    # left+1..left+8; every ramp stride saturates inside that band.
-    expected = tuple(sorted({1, 3, 7, 15} | {left + f for f in range(1, 9)}))
-    assert scheduler._initial_decode_graphs._input_frames == expected
-    assert scheduler._followup_decode_graphs._input_frames == expected
+    # Drive the real stride selection instead of re-deriving it: the shipped
+    # ramp has to be cursored like a configured one, otherwise the legacy
+    # branch runs 1, 2, 8 and the third window is never captured.
+    state = scheduler.create_stream_state("request")
+    strides, emitted = [], 0
+    for index in range(6):
+        stride = (
+            state.initial_chunk_frames
+            if index == 0
+            else scheduler._next_followup_stride(state)
+        )
+        strides.append(stride)
+        emitted += stride
+        state.emitted_generated_frames = emitted
+        state.decoded_chunks = index + 1
+    assert strides == [1, 2, 4, 8, 8, 8]
+
+    captured = set(scheduler._initial_decode_graphs._input_frames)
+    windows, emitted = [], 0
+    for stride in strides:
+        generated = emitted + stride
+        windows.append(generated - max(0, emitted - left))
+        emitted = generated
+    assert not set(windows) - captured, (
+        f"uncaptured decode windows {sorted(set(windows) - captured)} "
+        f"for schedule {strides}"
+    )
+    assert scheduler._followup_decode_graphs._input_frames == (
+        scheduler._initial_decode_graphs._input_frames
+    )
+
+
+def test_qwen3_tts_stream_initial_followup_stride_keeps_legacy_first_chunk() -> None:
+    """Setting only the follow-up stride must not inherit the ramp's first chunk."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_initial_followup_stride=4,
+    )
+
+    assert scheduler.create_stream_state("request").initial_chunk_frames == 8
+    assert scheduler._followup_stride_ramp == (4,)
+    assert scheduler._chunk_ramp_configured is False
 
 
 def test_qwen3_tts_explicit_initial_chunk_frames_keeps_legacy_ramp() -> None:
