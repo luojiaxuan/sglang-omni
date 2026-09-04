@@ -1457,8 +1457,8 @@ def test_qwen3_tts_bootstrap_silence_eligible_on_allowlisted_custom_voice() -> N
         {"voice": "Vivian"},
         {"language": "Chinese"},
         {"instructions": "Whisper softly."},
-        {"temperature": 0.9},
-        {"top_p": 0.7},
+        {"temperature": 0.9, "explicit_generation_params": ["temperature"]},
+        {"top_p": 0.7, "explicit_generation_params": ["top_p"]},
         {"stream_codec_output": False},
         {"suppress_bootstrap_silence": False},
     ],
@@ -1469,6 +1469,27 @@ def test_qwen3_tts_bootstrap_silence_ineligible_variants(
     state = build_qwen3_tts_state(_bootstrap_eligible_payload(tts_params=tts_params))
 
     assert state.suppress_bootstrap_silence is False
+
+
+@pytest.mark.parametrize(
+    "tts_params",
+    [
+        {"temperature": 0.9},
+        {"top_p": 0.7},
+        {"top_k": 50, "repetition_penalty": 1.05},
+    ],
+)
+def test_qwen3_tts_bootstrap_silence_ignores_materialized_sampling(
+    tts_params: dict[str, Any],
+) -> None:
+    """The serving layer materializes a sampling value on every request.
+
+    Only explicit_generation_params distinguishes a caller override, so a
+    materialized value must not disqualify the stream on its own.
+    """
+    state = build_qwen3_tts_state(_bootstrap_eligible_payload(tts_params=tts_params))
+
+    assert state.suppress_bootstrap_silence is True
 
 
 def test_qwen3_tts_bootstrap_silence_ignores_max_new_tokens() -> None:
