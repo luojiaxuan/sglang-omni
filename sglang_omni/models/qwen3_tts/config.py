@@ -103,13 +103,13 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return kwargs
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
-        return _is_qwen3_tts_base_model(self.model_path)
+        return is_qwen3_tts_base_model(self.model_path)
 
     def supports_uploaded_voice_references(self) -> bool:
-        return _is_qwen3_tts_base_model(self.model_path)
+        return is_qwen3_tts_base_model(self.model_path)
 
 
-def _is_qwen3_tts_base_model(model_path: str) -> bool:
+def is_qwen3_tts_base_model(model_path: str) -> bool:
     qwen3_tts_parts = [
         part.replace("-", "_").casefold()
         for part in re.split(r"[/\\]+", model_path.strip())

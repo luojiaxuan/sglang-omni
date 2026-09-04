@@ -691,3 +691,33 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )
+
+
+def test_raised_operator_cap_regrows_a_stage_supplied_ladder() -> None:
+    """A builder default must not silently bound a raised operator cap."""
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        cuda_graph_backend_prefill="breakable",
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(512),
+        server_args_overrides={"cuda_graph_max_bs_prefill": 1024},
+    )
+
+    assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    assert overrides["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        1024
+    )
+
+
+def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone() -> None:
+    """When the operator declares both, they own the pair."""
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_max_bs_prefill": 1024,
+        },
+    )
+
+    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_max_bs_prefill"] == 1024

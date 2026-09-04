@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.config import is_qwen3_tts_base_model
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -45,6 +46,10 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
+        # note (luojiaxuan): the factory assigns this before generation_defaults
+        # runs, but Qwen3TTSPipelineConfig.generation_admission_defaults builds a
+        # bare builder just to read the admission keys, so it needs a value.
+        self.checkpoint_dir: str = ""
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
@@ -64,7 +69,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
-        return {
+        defaults: dict[str, Any] = {
             "max_running_requests": 16,
             "max_queued_requests": 16,
             "cuda_graph_max_bs": 32,
@@ -72,17 +77,21 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            # note (luojiaxuan): under load, prefills coalesce several requests
-            # into one extend batch, so the ladder must reach well past a single
-            # prompt's token count for graph replays to keep covering them.
-            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
-            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(512),
             "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
         }
+        if self.checkpoint_dir and not is_qwen3_tts_base_model(self.checkpoint_dir):
+            # note (luojiaxuan): the ladder is sized from the text-only prompt
+            # length distribution, and under load prefills coalesce into one
+            # extend batch, so it must reach well past a single prompt. Base
+            # prefills also carry reference audio, giving them a different shape
+            # distribution, so they keep the eager path until measured.
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+            defaults["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(512)
+        return defaults
 
     def setup_model(
         self,

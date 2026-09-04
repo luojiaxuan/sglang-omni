@@ -308,6 +308,7 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     )
 
     builder = Qwen3TtsEngineBuilder()
+    builder.checkpoint_dir = "/models/Qwen3-TTS-12Hz-1.7B-CustomVoice"
     defaults = builder.generation_defaults(dtype="bfloat16")
 
     assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
@@ -318,6 +319,26 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
     assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
     assert defaults["disable_cuda_graph"] is False
+
+
+def test_qwen3_tts_breakable_prefill_is_scoped_to_measured_checkpoints() -> None:
+    """Base prefills carry reference audio, so they keep the eager path."""
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    base = Qwen3TtsEngineBuilder()
+    base.checkpoint_dir = "/models/Qwen3-TTS-12Hz-1.7B-Base"
+    base_defaults = base.generation_defaults(dtype="bfloat16")
+    assert "cuda_graph_backend_prefill" not in base_defaults
+    assert "cuda_graph_bs_prefill" not in base_defaults
+
+    # The admission-defaults path builds a bare builder with no checkpoint.
+    bare = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
+    assert "cuda_graph_backend_prefill" not in bare
+    assert bare["max_running_requests"] == 16
+
+    design = Qwen3TtsEngineBuilder()
+    design.checkpoint_dir = "/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    assert "cuda_graph_backend_prefill" in design.generation_defaults(dtype="bfloat16")
 
 
 def test_qwen3_tts_breakable_prefill_breaks_around_qk_norm_rope(

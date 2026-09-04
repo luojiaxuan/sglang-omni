@@ -196,6 +196,18 @@ def build_generation_batch_overrides(
         if not trimmed or trimmed[-1] != cap:
             trimmed.append(cap)
         overrides["cuda_graph_bs_prefill"] = trimmed
+    elif (
+        prefill_bs
+        and int(prefill_max_bs) > max(int(b) for b in prefill_bs)
+        and "cuda_graph_bs_prefill" not in incoming
+    ):
+        # note (luojiaxuan): a stage-supplied ladder has to grow with a raised
+        # operator cap, otherwise the builder default silently bounds the cap
+        # to its own top and the request is lost. A ladder the operator
+        # declared themselves is left alone, since they own both values.
+        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(
+            int(prefill_max_bs)
+        )
 
     return overrides
 
