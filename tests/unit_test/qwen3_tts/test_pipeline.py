@@ -301,11 +301,11 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
 
 def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     from sglang_omni.models.qwen3_tts import CAPABILITIES
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
-    from sglang_omni.scheduling.generation_batch_policy import (
-        CudaGraphBackend,
-        build_default_prefill_cuda_graph_bs,
+    from sglang_omni.models.qwen3_tts.engine_builder import (
+        QWEN3_TTS_PREFILL_CUDA_GRAPH_BS,
+        Qwen3TtsEngineBuilder,
     )
+    from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
     builder = Qwen3TtsEngineBuilder()
     builder.checkpoint_dir = "/models/Qwen3-TTS-12Hz-1.7B-CustomVoice"
@@ -317,7 +317,10 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
         is CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
     assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
-    assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
+    assert defaults["cuda_graph_bs_prefill"] == list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
+    # Every 1-3 token prefill must have an exact bucket: the generic ladder
+    # starts at 4 and sends them over the padding factor back to eager.
+    assert defaults["cuda_graph_bs_prefill"][:4] == [1, 2, 3, 4]
     assert defaults["disable_cuda_graph"] is False
 
 

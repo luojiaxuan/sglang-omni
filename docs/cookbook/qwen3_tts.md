@@ -117,14 +117,19 @@ prefill CUDA-graph backend with a token ladder up to 512:
 | Knob | Meaning | Default |
 |---|---|---|
 | `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `eager`) | `breakable` on non-Base, unset on Base |
-| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | ladder through `512` |
+| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | 19-bucket Qwen3-TTS ladder through `512` |
 | `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
 
-The ladder is sized from the text-only prompt length distribution, and
-under load prefills coalesce into a single extend batch, so it reaches
-well past one prompt's token count. Base checkpoints keep the eager path:
-their prefills also carry reference audio, so the shape distribution
-differs and has not been measured.
+The ladder is measured rather than generic. Across 1548 prefills at 10
+and 20 RPS, real extend token counts are p50 8, p90 19, p99 38, max 252,
+and requests coalesce up to 9-deep without pushing the shape past 256, so
+the buckets are dense where the mass is and keep 384/512 as headroom. A
+replay falls back to eager when its padded bucket exceeds twice the real
+token count, so the dense bottom matters: the generic ladder starts at 4
+and steps by 4, which sends every 1-3 token prefill back to eager.
+
+Base checkpoints keep the eager path: their prefills also carry reference
+audio, so the shape distribution differs and has not been measured.
 
 Opt out with `--tts_engine.engine.cuda_graph_backend_prefill eager`. The
 default costs extra graph capture during startup. Raising

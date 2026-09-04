@@ -12,7 +12,6 @@ from sglang_omni.models.qwen3_tts.config import is_qwen3_tts_base_model
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
-    build_default_prefill_cuda_graph_bs,
 )
 
 
@@ -24,6 +23,35 @@ def _is_truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return False
+
+
+# note (luojiaxuan): measured from 1548 prefills at 10 and 20 RPS on H100
+# CustomVoice. Real extend token counts are p50=8, p90=19, p99=38, max=252,
+# and requests coalesce up to 9-deep without pushing the shape past 256, so the
+# buckets are dense where the mass is and keep 384/512 only as headroom. The
+# generic ladder starts at 4 and steps by 4, which sends every 1-3 token prefill
+# over the padding factor and back to eager: 39.9% of prefills, against 0% here.
+QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (
+    1,
+    2,
+    3,
+    4,
+    6,
+    8,
+    12,
+    16,
+    20,
+    24,
+    32,
+    48,
+    64,
+    96,
+    128,
+    192,
+    256,
+    384,
+    512,
+)
 
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
@@ -90,7 +118,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             # prefills also carry reference audio, giving them a different shape
             # distribution, so they keep the eager path until measured.
             defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
-            defaults["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(512)
+            defaults["cuda_graph_bs_prefill"] = list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
         return defaults
 
     def setup_model(
