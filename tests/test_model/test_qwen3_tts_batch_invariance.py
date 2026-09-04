@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 import aiohttp
 import pytest
+import requests
 import torch
 import yaml
 
@@ -124,6 +125,21 @@ def _payload(sample, *, subtalker_dosample: bool | None = None) -> dict:
         "max_new_tokens": 2048,
         "stage_params": {"tts_engine": {"subtalker_dosample": subtalker_dosample}},
     }
+
+
+def _tts_engine_prefill_graph_info(base_url: str) -> dict:
+    """Read the resolved prefill-graph state from the running engine stage."""
+    response = requests.post(
+        f"{base_url}/model_info",
+        json={"stages": ["tts_engine"], "timeout_s": 30},
+        timeout=60,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items = [item for item in payload["stages"] if item.get("stage") == "tts_engine"]
+    assert len(items) == 1, payload
+    assert items[0]["success"], items[0]
+    return items[0]["data"]["prefill_cuda_graph"]
 
 
 def _custom_voice_payload(text: str, *, subtalker_dosample: bool | None = None) -> dict:
@@ -284,6 +300,12 @@ def test_qwen3_tts_custom_voice_deterministic_batch_invariance(
     ) as server:
         b1 = asyncio.run(_generate_serial(server.base_url, payloads))
         repeated_b1 = asyncio.run(_generate_serial(server.base_url, [payload] * 2))
+        # PCM equality alone stays green when the feature is absent: a stage
+        # default that fails eligibility degrades to eager with a warning. Pin
+        # that the graphs actually captured and replayed.
+        info = _tts_engine_prefill_graph_info(server.base_url)
+        assert info["backend"] == "breakable", info
+        assert info["replay_count"] > 0, info
 
     with _qwen3_tts_server(
         tmp_path_factory, "cv-b8", model_path=CUSTOM_VOICE_MODEL_PATH

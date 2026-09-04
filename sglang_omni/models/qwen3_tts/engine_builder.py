@@ -8,9 +8,12 @@ from typing import Any
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
-from sglang_omni.models.qwen3_tts.config import is_qwen3_tts_base_model
+from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 
 
 def _is_truthy(value: Any) -> bool:
@@ -23,33 +26,14 @@ def _is_truthy(value: Any) -> bool:
     return False
 
 
-# note (luojiaxuan): measured from 1548 prefills at 10 and 20 RPS on H100
-# CustomVoice. Real extend token counts are p50=8, p90=19, p99=38, max=252,
-# and requests coalesce up to 9-deep without pushing the shape past 256, so the
-# buckets are dense where the mass is and keep 384/512 only as headroom. The
-# generic ladder starts at 4 and steps by 4, which sends every 1-3 token prefill
-# over the padding factor and back to eager: 39.9% of prefills, against 0% here.
-QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (
-    1,
-    2,
-    3,
-    4,
-    6,
-    8,
-    12,
-    16,
-    20,
-    24,
-    32,
-    48,
-    64,
-    96,
-    128,
-    192,
-    256,
-    384,
-    512,
-)
+# note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
+# eager when its bucket exceeds twice the real token count, so a 1-token prefill
+# lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
+# H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
+# only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
+# single 1 bucket takes the fallback rate to zero, so the default is the shared
+# ladder plus that bucket rather than a hand-picked list.
+QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
 
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
@@ -109,7 +93,10 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
         }
-        if self.checkpoint_dir and not is_qwen3_tts_base_model(self.checkpoint_dir):
+        if (
+            self.checkpoint_dir
+            and qwen3_tts_checkpoint_model_type(self.checkpoint_dir) == "custom_voice"
+        ):
             # note (luojiaxuan): the ladder is sized from the text-only prompt
             # length distribution, and under load prefills coalesce into one
             # extend batch, so it must reach well past a single prompt. Base

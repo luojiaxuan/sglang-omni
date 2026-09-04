@@ -202,12 +202,17 @@ def build_generation_batch_overrides(
         and "cuda_graph_bs_prefill" not in incoming
     ):
         # note (luojiaxuan): a stage-supplied ladder has to grow with a raised
-        # operator cap, otherwise the builder default silently bounds the cap
-        # to its own top and the request is lost. A ladder the operator
-        # declared themselves is left alone, since they own both values.
-        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(
-            int(prefill_max_bs)
-        )
+        # operator cap, otherwise the builder default silently bounds the cap to
+        # its own top and the request is lost. Append above the current top
+        # rather than rebuilding: a stage ladder carries buckets the shared one
+        # does not, such as the Qwen3-TTS 1-token bucket and MOSS-TD's small
+        # ones, and rebuilding would drop them. A ladder the operator declared
+        # themselves is left alone, since they own both values.
+        cap = int(prefill_max_bs)
+        current_top = max(int(b) for b in prefill_bs)
+        overrides["cuda_graph_bs_prefill"] = [int(b) for b in prefill_bs] + [
+            b for b in build_default_prefill_cuda_graph_bs(cap) if b > current_top
+        ]
 
     return overrides
 

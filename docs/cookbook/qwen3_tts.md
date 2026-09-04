@@ -116,22 +116,24 @@ prefill CUDA-graph backend with a token ladder up to 512:
 
 | Knob | Meaning | Default |
 |---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `eager`) | `breakable` on non-Base, unset on Base |
-| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | 19-bucket Qwen3-TTS ladder through `512` |
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
+| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
 | `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
 
-The ladder is measured rather than generic. Across 1548 prefills at 10
-and 20 RPS, real extend token counts are p50 8, p90 19, p99 38, max 252,
-and requests coalesce up to 9-deep without pushing the shape past 256, so
-the buckets are dense where the mass is and keep 384/512 as headroom. A
-replay falls back to eager when its padded bucket exceeds twice the real
-token count, so the dense bottom matters: the generic ladder starts at 4
-and steps by 4, which sends every 1-3 token prefill back to eager.
+The default is the shared ladder with one bucket added. A replay falls
+back to eager when its bucket exceeds twice the real token count, and the
+shared ladder starts at 4, so a 1-token prefill lands in bucket 4 and
+misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
+are exactly one token, and they are the only shapes that fall back: 2 and
+3 already replay inside bucket 4. Adding the single `1` bucket takes the
+fallback rate to zero.
 
-Base checkpoints keep the eager path: their prefills also carry reference
-audio, so the shape distribution differs and has not been measured.
+Only CustomVoice takes this default, selected by the checkpoint's
+`tts_model_type`. Base prefills also carry reference audio, so their shape
+distribution differs, and VoiceDesign has not been measured; both keep the
+eager path.
 
-Opt out with `--tts_engine.engine.cuda_graph_backend_prefill eager`. The
+Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
 default costs extra graph capture during startup. Raising
 `cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
 new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
