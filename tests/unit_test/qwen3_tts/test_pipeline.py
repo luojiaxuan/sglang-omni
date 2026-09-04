@@ -378,12 +378,44 @@ def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:
         positions=torch.arange(7, dtype=torch.int64),
         mrope_positions=None,
     )
-    _ensure_mrope_positions(batch)
+    _ensure_mrope_positions(batch, prefill_graph_runner=object())
 
     assert batch.mrope_positions.shape == (3, 7)
     assert torch.equal(batch.mrope_positions[0], batch.positions)
     assert torch.equal(batch.mrope_positions[1], batch.positions)
     assert torch.equal(batch.mrope_positions[2], batch.positions)
+
+
+def test_qwen3_tts_mrope_mirror_is_scoped_to_the_graphed_path() -> None:
+    """A 2-D positions tensor picks a different CUDA kernel.
+
+    ``MRotaryEmbedding.forward_cuda`` dispatches 1-D positions to
+    ``forward_native`` and 2-D positions to the fused ``forward_triton``, so
+    mirroring an eager prefill would move it to another kernel for no reason.
+    """
+    from sglang_omni.models.qwen3_tts.model_runner import _ensure_mrope_positions
+
+    batch = SimpleNamespace(
+        positions=torch.arange(7, dtype=torch.int64),
+        mrope_positions=None,
+    )
+    _ensure_mrope_positions(batch, prefill_graph_runner=None)
+
+    assert batch.mrope_positions is None
+
+
+def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
+    """A batch that already carries mrope positions owns them."""
+    from sglang_omni.models.qwen3_tts.model_runner import _ensure_mrope_positions
+
+    supplied = torch.arange(21, dtype=torch.int64).reshape(3, 7)
+    batch = SimpleNamespace(
+        positions=torch.zeros(7, dtype=torch.int64),
+        mrope_positions=supplied,
+    )
+    _ensure_mrope_positions(batch, prefill_graph_runner=object())
+
+    assert batch.mrope_positions is supplied
 
     existing = torch.zeros((3, 7), dtype=torch.int64)
     batch = SimpleNamespace(
