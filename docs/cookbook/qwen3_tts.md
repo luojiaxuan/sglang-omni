@@ -371,9 +371,10 @@ python -m sglang_omni.cli serve --config qwen3_tts_ramp.yaml
 ```
 
 Smaller early chunks lower time-to-first-audio but start playback with less
-buffered audio, so the continuity cost grows with concurrency: keep
-`[2, 4, 8]` to low concurrency, prefer `[4, 8]` up to moderate concurrency,
-and keep the default schedule for saturated serving. The ramp is mutually
+buffered audio, so the continuity cost grows with concurrency. The default
+`[1, 2, 4]` is the most aggressive schedule and suits low concurrency; prefer
+`[2, 4, 8]` at moderate concurrency and `[4, 8]` for saturated serving, where
+the wider first chunk buys back the playback cushion. The ramp is mutually
 exclusive with the legacy `initial_chunk_frames` /
 `stream_initial_followup_stride` options, its first entry must not exceed the
 steady stride, and a per-request `initial_codec_chunk_frames` still overrides
@@ -396,7 +397,7 @@ only the first chunk.
 | `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
-| `initial_codec_chunk_frames` | `8` (model default when omitted) | First streaming vocoder chunk size in codec frames. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
+| `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
 | `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
 
 ## Model Variants
