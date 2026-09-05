@@ -3417,11 +3417,28 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_covers_graph_shapes() -> None:
         stream_chunk_ramp=(2, 4, 8),
     )
     left = scheduler._stream_left_context_frames
-    # Startup prefix sums {2, 6, 14} plus the steady jitter band left+1..left+8.
-    # Suppression's extra frame lands on left+3, already inside that band.
-    expected = tuple(sorted({2, 6, 14} | {left + f for f in range(1, 9)}))
-    assert scheduler._initial_decode_graphs._input_frames == expected
-    assert scheduler._followup_decode_graphs._input_frames == expected
+    # A suppressed stream runs the bumped ramp 3 -> 4 -> 8, and CustomVoice has
+    # no reference codes, so its startup windows are that schedule's running
+    # sums. Replay the real arithmetic instead of restating the formula.
+    captured = set(scheduler._initial_decode_graphs._input_frames)
+
+    def _windows(ref_frames: int, first_chunk: int) -> list[int]:
+        emitted, out = 0, []
+        for index, stride in enumerate((first_chunk, 4, 8, 8, 8, 8)):
+            generated = emitted + stride
+            out.append((ref_frames + generated) - max(0, ref_frames + emitted - left))
+            emitted = generated
+        return out
+
+    for ref_frames, first_chunk in ((0, 2), (0, 3), (120, 2), (120, 3)):
+        produced = _windows(ref_frames, first_chunk)
+        assert not set(produced) - captured, (
+            f"uncaptured windows for ref={ref_frames} first={first_chunk}: "
+            f"{sorted(set(produced) - captured)}"
+        )
+    assert scheduler._followup_decode_graphs._input_frames == (
+        scheduler._initial_decode_graphs._input_frames
+    )
 
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
