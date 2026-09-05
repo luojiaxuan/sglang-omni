@@ -4743,6 +4743,10 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     runner.model = SimpleNamespace(
         prepare_decode_buffers=lambda requests: calls.append("prepare")
     )
+    # A prefill graph runner is present, so the MRoPE mirror applies here.
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(prefill_cuda_graph_runner=object())
+    )
     runner._build_prefill_input_embeds = (
         lambda forward_batch, requests: calls.append("embeds") or input_embeds
     )
