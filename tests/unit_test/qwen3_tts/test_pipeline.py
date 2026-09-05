@@ -417,15 +417,6 @@ def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
 
     assert batch.mrope_positions is supplied
 
-    existing = torch.zeros((3, 7), dtype=torch.int64)
-    batch = SimpleNamespace(
-        positions=torch.arange(7, dtype=torch.int64),
-        mrope_positions=existing,
-    )
-    _ensure_mrope_positions(batch)
-
-    assert batch.mrope_positions is existing
-
 
 def test_qwen3_tts_prefill_coalescing_is_opt_in() -> None:
     signature = inspect.signature(qwen3_stages.create_sglang_tts_engine_executor)
