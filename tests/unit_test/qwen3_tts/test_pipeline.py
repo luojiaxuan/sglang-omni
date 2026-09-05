@@ -3839,38 +3839,49 @@ def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> N
     left = scheduler._stream_left_context_frames
     captured = set(scheduler._initial_decode_graphs._input_frames)
 
+    # Derived from the scheduler, not hardcoded: the shipped first chunk moves
+    # with the chunk-ramp default, and only the bump of one frame is fixed.
+    plain = scheduler.create_stream_state("request").initial_chunk_frames
+    bumped = plain + 1
+    ramp = (*scheduler._followup_stride_ramp, scheduler._stream_followup_stride)
+
     def _windows(ref_frames: int, first_chunk: int) -> list[int]:
         emitted, out = 0, []
         for index in range(6):
-            stride = first_chunk if index == 0 else 8
+            stride = first_chunk if index == 0 else ramp[min(index - 1, len(ramp) - 1)]
             generated = emitted + stride
             out.append((ref_frames + generated) - max(0, ref_frames + emitted - left))
             emitted = generated
         return out
 
-    for ref_frames, first_chunk in ((0, 9), (0, 8), (120, 9), (120, 8)):
+    for ref_frames, first_chunk in (
+        (0, bumped),
+        (0, plain),
+        (120, bumped),
+        (120, plain),
+    ):
         produced = _windows(ref_frames, first_chunk)
         assert not set(produced) - captured, (
             f"uncaptured decode windows for ref={ref_frames} "
             f"first_chunk={first_chunk}: {sorted(set(produced) - captured)}"
         )
-    assert 9 in captured
+    assert bumped in captured
+
     state = scheduler.create_stream_state("request")
-    assert state.initial_chunk_frames == 8
     scheduler.latch_stream_contract(
         "request",
         state,
         {"num_quantizers": 2, "bootstrap_silence_suppression": True},
         origin="metadata",
     )
-    assert state.initial_chunk_frames == 9
+    assert state.initial_chunk_frames == bumped
 
     disabled = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
         suppress_bootstrap_silence=False,
     )
-    assert 9 not in disabled._initial_decode_graphs._input_frames
+    assert bumped not in disabled._initial_decode_graphs._input_frames
     state = disabled.create_stream_state("request")
     disabled.latch_stream_contract(
         "request",
@@ -3878,7 +3889,7 @@ def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> N
         {"num_quantizers": 2, "bootstrap_silence_suppression": True},
         origin="metadata",
     )
-    assert state.initial_chunk_frames == 8
+    assert state.initial_chunk_frames == plain
 
 
 def test_qwen3_tts_bootstrap_suppression_first_chunk_clamps_to_stride() -> None:
@@ -3971,7 +3982,10 @@ def test_qwen3_tts_bootstrap_suppression_skips_at_high_concurrency() -> None:
     scheduler._stream_states["d"] = over
     scheduler.latch_stream_contract("d", over, metadata, origin="metadata")
     assert over.suppress_bootstrap is False
-    assert over.initial_chunk_frames == 8
+    assert (
+        over.initial_chunk_frames
+        == scheduler.create_stream_state("probe").initial_chunk_frames
+    )
 
 
 def test_qwen3_tts_bootstrap_suppression_trims_one_silent_frame_once() -> None:
