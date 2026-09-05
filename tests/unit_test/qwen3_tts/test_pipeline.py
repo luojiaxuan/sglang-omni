@@ -4813,7 +4813,8 @@ def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
         return SimpleNamespace(logits_output=logits_output, next_token_ids=None)
 
     runner.tp_worker = SimpleNamespace(
-        forward_batch_generation=forward_batch_generation
+        forward_batch_generation=forward_batch_generation,
+        model_runner=SimpleNamespace(prefill_cuda_graph_runner=None),
     )
     requests = [SimpleNamespace(request_id="request-a")]
     forward_batch = SimpleNamespace(
