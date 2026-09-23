@@ -1147,11 +1147,15 @@ def test_streaming_first_audio_latency(
     checks = MetricCheckCollector("TTS streaming first-audio latency")
     for point in latency.points:
         label = f"TTS latency stream {point.request_rate:g} rps"
-        _print_stage("TTS latency", "streaming", client_cap, f"{point.request_rate:g} rps")
+        _print_stage(
+            "TTS latency", "streaming", client_cap, f"{point.request_rate:g} rps"
+        )
         output_dir = _resolve_stage_output_dir(
             tmp_path, f"vc_latency_r{point.request_rate:g}"
         )
-        before_workers = router_get_json(single_worker_router_server.port, "/diagnostics")
+        before_workers = router_get_json(
+            single_worker_router_server.port, "/diagnostics"
+        )
         try:
             results = _run_benchmark(
                 single_worker_router_server.port,
