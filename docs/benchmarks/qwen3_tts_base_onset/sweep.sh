@@ -41,7 +41,7 @@ worker() {
   for ((job = slot; job < ${#JOBS[@]}; job += ${#GPU_UUIDS[@]})); do
     local model frames
     read -r model frames <<< "${JOBS[$job]}"
-    local tag="${model##*/}-N$frames" out="$RUN_DIR/out/${model##*/}-N$frames"
+    local tag="${model##*/}-N$frames${VARIANT:-}" out="$RUN_DIR/out/${model##*/}-N$frames${VARIANT:-}"
     if [ -f "$out/DONE" ]; then continue; fi
     mkdir -p "$out"
     local config="examples/configs/qwen3_tts_1_7b.yaml"

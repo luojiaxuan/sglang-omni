@@ -46,19 +46,46 @@ def is_truthy(value: Any) -> bool:
 # ladder plus that bucket rather than a hand-picked list.
 QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
 
-# note (luojiaxuan): -60 dBFS is the level measured on the leading silence of
-# x-vector-only clones (the reference recordings' noise floor).
-SILENCE_PROBE_RMS_DBFS = (float("-inf"), -80.0, -60.0)
-SILENCE_PROBE_SECONDS = 1.0
+# note (luojiaxuan): on 1.7B and 0.6B Base the share of generated leading silence these probes cover
+# saturates at a -50 dBFS ceiling, and no speech frame falls in the set up to -40 dBFS.
+SILENCE_PROBE_FLOOR_DBFS = -90
+SILENCE_PROBE_CEILING_DBFS = -50
+SILENCE_PROBE_STEP_DB = 5
+SILENCE_PROBE_SECONDS = 8.0
+# note (luojiaxuan): white, pink and brown noise; recorded room tone is not white.
+SILENCE_PROBE_SPECTRAL_EXPONENTS = (0.0, 0.5, 1.0)
+
+
+def colored_noise(
+    spectral_exponent: float, num_samples: int, generator: np.random.Generator
+) -> np.ndarray:
+    """Unit-RMS noise whose amplitude spectrum falls as frequency ** -spectral_exponent."""
+    spectrum = np.fft.rfft(generator.standard_normal(num_samples))
+    frequencies = np.fft.rfftfreq(num_samples)
+    frequencies[0] = frequencies[1]
+    noise = np.fft.irfft(spectrum / frequencies**spectral_exponent, n=num_samples)
+    return (noise / np.sqrt(np.mean(noise**2))).astype(np.float32)
 
 
 def derive_silence_codec_ids(speech_tokenizer: Any, device: str) -> torch.Tensor:
-    """Codebook-0 ids the checkpoint's own codec assigns to inaudible input."""
+    """Codebook-0 ids the checkpoint's own codec assigns to stationary noise up to the ceiling."""
     sample_rate = speech_tokenizer.get_input_sample_rate()
-    noise = np.random.default_rng(0).standard_normal(
-        int(SILENCE_PROBE_SECONDS * sample_rate), dtype=np.float32
+    generator = np.random.default_rng(0)
+    shapes = [
+        colored_noise(exponent, int(SILENCE_PROBE_SECONDS * sample_rate), generator)
+        for exponent in SILENCE_PROBE_SPECTRAL_EXPONENTS
+    ]
+    levels_dbfs = (
+        float("-inf"),
+        *range(
+            SILENCE_PROBE_FLOOR_DBFS,
+            SILENCE_PROBE_CEILING_DBFS + 1,
+            SILENCE_PROBE_STEP_DB,
+        ),
     )
-    waveforms = [np.float32(10 ** (level / 20)) * noise for level in SILENCE_PROBE_RMS_DBFS]
+    waveforms = [
+        np.float32(10 ** (level / 20)) * shape for level in levels_dbfs for shape in shapes
+    ]
     codes = speech_tokenizer.encode(waveforms, sr=sample_rate).audio_codes
     return torch.unique(torch.cat([code[:, 0] for code in codes])).to(device)
 
