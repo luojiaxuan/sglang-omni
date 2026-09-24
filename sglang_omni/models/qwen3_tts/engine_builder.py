@@ -192,7 +192,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             attn_implementation=self.attn_implementation,
         )
         model.load_speech_tokenizer(speech_tokenizer)
-        if self.leading_silence_mask_frames > 0:
+        # note (luojiaxuan): only Base checkpoints serve x-vector clones, so the
+        # other variants skip the probe and the per-step mask.
+        if self.leading_silence_mask_frames > 0 and model.tts_model_type == "base":
             self.silence_codec_ids = derive_silence_codec_ids(speech_tokenizer, device)
             logger.info(
                 f"Qwen3-TTS masks {self.silence_codec_ids.numel()} silence codec ids "
@@ -200,6 +202,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
                 f"x-vector-only clones: {self.silence_codec_ids.tolist()}"
             )
         else:
+            self.leading_silence_mask_frames = 0
             self.silence_codec_ids = torch.empty(0, dtype=torch.long, device=device)
         processor = AutoProcessor.from_pretrained(
             checkpoint_dir,

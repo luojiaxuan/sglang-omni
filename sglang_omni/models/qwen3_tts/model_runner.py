@@ -183,22 +183,18 @@ class Qwen3TTSModelRunner(ModelRunner):
         # note (luojiaxuan): a cold-start clone that samples a silence id first
         # tends to stay silent for several frames, so silence ids are excluded
         # from its opening frames.
-        masked_rows = (
-            [
-                row_index
-                for row_index, scheduled_request in enumerate(requests)
-                if scheduled_request.data.mask_leading_silence
-                and len(scheduled_request.data.output_codes)
-                < self.leading_silence_mask_frames
-            ]
-            if self.leading_silence_mask_frames > 0
-            else []
-        )
-        if masked_rows:
-            row_indices = torch.tensor(masked_rows, device=active_logits.device)
-            active_logits[row_indices.unsqueeze(1), self.silence_codec_ids] = float(
-                "-inf"
-            )
+        if self.leading_silence_mask_frames > 0:
+            for row_index, scheduled_request in enumerate(requests):
+                if (
+                    scheduled_request.data.mask_leading_silence
+                    and len(scheduled_request.data.output_codes)
+                    < self.leading_silence_mask_frames
+                ):
+                    active_logits[row_index].index_fill_(
+                        0, self.silence_codec_ids, float("-inf")
+                    )
+                else:
+                    pass
         else:
             pass
 
