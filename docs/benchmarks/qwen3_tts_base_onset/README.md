@@ -213,6 +213,10 @@ C 的质量代价需要主观听感和首音素错误率再判断。外审主张
 7. **租约续 1 小时**(19:17 PT,扣 4 积分)用于 token 探针与 1221 实验;19:50 PT 前释放。
 8. **侦察用的补丁只在节点副本里**(数据推导 S、token 日志、1221),不进提交的代码。
 9. **默认值暂留 0**。有分歧(见"待定"),等 luojiaxuan 决定;改默认只需改 factory 参数。
+10. **结论(2026-09-24 PT)**:luojiaxuan 选方案 B,默认开启 N=2(v2 S),N=0 为关闭方式。上游 PR
+    [sgl-project/sglang-omni#2357](https://github.com/sgl-project/sglang-omni/pull/2357) 从最新 main
+    另开干净分支 `qwen3-tts-leading-silence-mask`,只含代码、单测、cookbook 与英文 benchmark 页;
+    本目录的侦察脚本、进程标题 shim 与中文运行记录只留在本实验分支。
 
 ## 外审处理(GPT-6 Pro,2026-09-23 18:28–18:41 PT)
 
