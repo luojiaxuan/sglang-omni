@@ -54,6 +54,11 @@ def main() -> None:
         cell_means = np.array([np.mean(v) for v in by_cell.values()])
         print(f"variance split: across seeds (within ref x prompt) {within_seed_var:.0f} ms^2, "
               f"across ref x prompt cell means {np.var(cell_means):.0f} ms^2")
+        by_ref = defaultdict(list)
+        for row in group:
+            by_ref[row["ref"]].append(row[args.metric])
+        for ref, ref_values in sorted(by_ref.items()):
+            print(f"ref {ref}: {describe(np.array(ref_values))}")
         print("| prompt | median | min | max | >80ms |")
         print("|---|---|---|---|---|")
         for prompt_id in sorted(by_prompt):
