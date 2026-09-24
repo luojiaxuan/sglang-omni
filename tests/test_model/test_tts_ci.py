@@ -1076,7 +1076,8 @@ def _worker_admission_cap() -> int:
     from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 
     match = re.search(
-        r"--tts_engine\.engine\.max_running_requests (\d+)", _PRESET.worker_extra_args
+        r"--tts_engine\.engine\.max_running_requests (\d+)",
+        f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}",
     )
     if match is not None:
         return int(match.group(1))
@@ -1183,13 +1184,21 @@ def test_streaming_first_audio_latency(
             collector=checks,
             expected_workers=1,
         )
-        if latency.calibrated and point.ttfp_median_max_s is not None:
-            median = results["summary"].get("audio_ttfp_median_s")
+        if latency.calibrated:
+            summary = results["summary"]
+            median = summary["audio_ttfp_median_s"]
             checks.check(
-                median is not None and median <= point.ttfp_median_max_s,
+                median <= point.ttfp_median_max_s,
                 f"{label}: first playable median {median} s exceeds "
                 f"{point.ttfp_median_max_s} s",
             )
+            if point.ttfp_p95_max_s is not None:
+                p95 = summary["audio_ttfp_p95_s"]
+                checks.check(
+                    p95 <= point.ttfp_p95_max_s,
+                    f"{label}: first playable p95 {p95} s exceeds "
+                    f"{point.ttfp_p95_max_s} s",
+                )
     checks.assert_all()
 
 

@@ -73,16 +73,26 @@ def test_the_latency_stage_covers_exactly_the_qwen3_tts_arms(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))
-def test_an_uncalibrated_latency_preset_judges_nothing(name: str) -> None:
-    """Until the points are calibrated on the CI host, no point carries a
-    threshold, so the stage can only print."""
+def test_a_latency_preset_gates_every_point_or_none(name: str) -> None:
+    """A calibrated preset carries a median threshold at every point, so no
+    point is silently left ungated; an uncalibrated one carries none, so the
+    stage can only print."""
     latency = TTS_CI_PRESETS[name].latency
     if latency is None:
         return
     assert latency.points
     assert all(point.samples > 0 and point.request_rate > 0 for point in latency.points)
-    if not latency.calibrated:
-        assert all(point.ttfp_median_max_s is None for point in latency.points)
+    thresholds = [
+        value
+        for point in latency.points
+        for value in (point.ttfp_median_max_s, point.ttfp_p95_max_s)
+        if value is not None
+    ]
+    if latency.calibrated:
+        assert all(point.ttfp_median_max_s is not None for point in latency.points)
+        assert all(value > 0 for value in thresholds)
+    else:
+        assert not thresholds
 
 
 @pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))

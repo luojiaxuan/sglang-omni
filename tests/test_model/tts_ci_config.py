@@ -47,9 +47,10 @@ class TtsCiLatencyPoint:
 
     request_rate: float
     samples: int
-    # note (luojiaxuan): None until the point is calibrated on the CI host, so
-    # the stage prints the median without judging it.
+    # note (luojiaxuan): None until the point is calibrated, so the stage
+    # prints the value without judging it.
     ttfp_median_max_s: float | None = None
+    ttfp_p95_max_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -257,22 +258,52 @@ COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # note (luojiaxuan): 1 rps is the idle first-chunk path, 20 rps the loaded one;
-# the loaded point is the full EN corpus so its p95 has support. Each arm has
-# its own references because a cloned voice encodes the reference audio before
-# the first chunk and a named voice does not.
-QWEN3_TTS_VC_LATENCY = TtsCiLatencyPreset(
-    points=(
-        TtsCiLatencyPoint(request_rate=1.0, samples=60),
-        TtsCiLatencyPoint(request_rate=20.0, samples=1088),
-    ),
-    calibrated=False,
-)
-QWEN3_TTS_CUSTOM_VOICE_LATENCY = TtsCiLatencyPreset(
-    points=(
-        TtsCiLatencyPoint(request_rate=1.0, samples=60),
-        TtsCiLatencyPoint(request_rate=20.0, samples=1088),
-    ),
-    calibrated=False,
+# the loaded point is the full EN corpus so its p95 has support, and only there
+# is the p95 gated. Each arm has its own references because a cloned voice
+# encodes the reference audio before the first chunk and a named voice does not.
+#
+# The references are the worst of five clean runs per arm on an H100 80GB HBM3
+# other than the CI host, with the CI image by digest and the CI dependency
+# hash, each run a fresh single worker pinned to a CI lane cpuset, alternating
+# 2-15,66-79 and 16-31,80-95; every run is listed in #2293. The CI host
+# measured the CustomVoice arm faster (20.2 ms and 34.8 ms medians against
+# 24.4 ms and 37.4 ms here), so on it these gates catch only large regressions.
+_TTS_LATENCY_SAMPLES = {1.0: 60, 20.0: 1088}
+_QWEN3_TTS_VC_LATENCY_REFERENCE = {
+    1.0: {"ttfp_median_s": 0.0600},
+    20.0: {"ttfp_median_s": 0.1114, "ttfp_p95_s": 0.1894},
+}
+_QWEN3_TTS_CUSTOM_VOICE_LATENCY_REFERENCE = {
+    1.0: {"ttfp_median_s": 0.0252},
+    20.0: {"ttfp_median_s": 0.0378, "ttfp_p95_s": 0.0541},
+}
+
+
+def _calibrated_latency(
+    reference: dict[float, dict[str, float]],
+) -> TtsCiLatencyPreset:
+    def gate(point: dict[str, float], key: str) -> float | None:
+        if key not in point:
+            return None
+        return round(point[key] * THRESHOLD_SLACK_LOWER, 4)
+
+    return TtsCiLatencyPreset(
+        points=tuple(
+            TtsCiLatencyPoint(
+                request_rate=rate,
+                samples=_TTS_LATENCY_SAMPLES[rate],
+                ttfp_median_max_s=gate(point, "ttfp_median_s"),
+                ttfp_p95_max_s=gate(point, "ttfp_p95_s"),
+            )
+            for rate, point in reference.items()
+        ),
+        calibrated=True,
+    )
+
+
+QWEN3_TTS_VC_LATENCY = _calibrated_latency(_QWEN3_TTS_VC_LATENCY_REFERENCE)
+QWEN3_TTS_CUSTOM_VOICE_LATENCY = _calibrated_latency(
+    _QWEN3_TTS_CUSTOM_VOICE_LATENCY_REFERENCE
 )
 
 
