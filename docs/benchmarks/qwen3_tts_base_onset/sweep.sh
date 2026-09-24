@@ -47,7 +47,7 @@ worker() {
     local config="examples/configs/qwen3_tts_1_7b.yaml"
     case "$model" in *0.6B*) config="examples/configs/qwen3_tts_0_6b.yaml" ;; esac
     python -m sglang_omni.cli serve --model-path "$model" --config "$config" \
-      --host 127.0.0.1 --port "$port" --allowed-local-media-path "$RUN_DIR/refs" \
+      --host 127.0.0.1 --port "$port" --allowed-local-media-path /data \
       --tts_engine.factory.leading_silence_mask_frames "$frames" \
       > "$RUN_DIR/logs/server-$tag.log" 2>&1 &
     local server=$!
