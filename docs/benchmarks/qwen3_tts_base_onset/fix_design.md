@@ -7,18 +7,21 @@
 x-vector-only 请求只有说话人向量,没有参考 codec 前缀,talker 冷启动。复现数据显示起声时间是
 双峰分布:要么第 0 帧开口,要么进入 4–7 帧的开场静音,1–3 帧很少。静音段电平约 -60 dB。
 由此推断:第 0 帧的 codebook-0 采样落到"静音区"token 时,模型会把静音延续数帧;落到语音
-token 时就直接说下去。波动来自 seed(采样),与参考音频基本无关。
+token 时就直接说下去。1.7B 的波动多半来自 seed,但参考与句子也有影响(见 README.md)。
 
 ## 修法
 
 对 Base x-vector-only 请求,在前 N 个 codec 帧的 codebook-0 采样中,把静音 token 集合 S 的
-logit 置为 -inf。等价于在前 N 帧从 p(c0 | c0 ∉ S) 采样,即"以语音开头"为条件的采样;第 N 帧
-之后分布不变。
+logit 置为 -inf。每一帧上这是离原分布最近(KL 意义)且排除 S 的分布;它排除的是一组 id,不等于
+"保证以语音开头"。N>1 时逐帧重归一化不等于整段序列的条件分布,第 N 帧之后的分布也会因为
+历史不同而改变。屏蔽发生在温度与 top-k/top-p 之前,top-k 在屏蔽后的分布上重新截断。
 
-- **S 的定义**:这个 checkpoint 自己的 codec encoder 对听不见的输入给出的 codebook-0 id。引擎
-  启动时用 encoder 编码数字静音和 -80、-60 dBFS RMS 的白噪声各 1 秒,收集 codebook-0 id 的并集。
-  -60 dBFS 取自复现数据里静音段的实测电平(即 Common Voice 录音底噪)。S 随 checkpoint 推导,
-  不写死。
+- **S 的定义(v2,已按实测修订)**:这个 checkpoint 自己的 codec encoder 对平稳噪声给出的
+  codebook-0 id。引擎启动时编码白、粉、棕三种噪声,电平从数字静音到 -50 dBFS、每 5 dB 一档,
+  各 8 秒,取并集(1.7B 为 24 个)。-50 dBFS 是覆盖率-电平前沿的拐点。最初的 v1(数字静音与
+  -80/-60 dBFS 白噪声)只覆盖 45% 的开场静音帧。token 探针显示决定性的只有第 0 帧:静音开头
+  全部采到 1995(在 S 内),屏蔽后退到 1221(轻起音 token,不在任何噪声推导的 S 内)。
+  结果与取舍见 README.md。
 - **帧计数**:用请求已生成的 codec 帧数(output_codes 长度),第 0 帧就是 prefill 那一步采样。
   retraction 重新 prefill 时 output_codes 保留,不会重复屏蔽。
 - **作用范围**:只对 x-vector-only 请求。ICL 的起声跟随参考音频末尾停顿(1.7B:参考末尾

@@ -175,8 +175,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         if self.leading_silence_mask_frames == 0:
             return
         # note (luojiaxuan): a cold-start clone that samples a silence id first
-        # tends to stay silent for several frames, so the opening frames are
-        # sampled conditioned on speech.
+        # tends to stay silent for several frames, so silence ids are excluded
+        # from its opening frames.
         masked_rows = [
             row_index
             for row_index, scheduled_request in enumerate(requests)

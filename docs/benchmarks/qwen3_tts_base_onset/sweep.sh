@@ -17,7 +17,8 @@ if [ ! -f "$RUN_DIR/venv/.ready" ]; then
   touch "$RUN_DIR/venv/.ready"
 fi
 source "$RUN_DIR/venv/bin/activate"
-export PYTHONPATH="$RUN_DIR/pyshim:$RUN_DIR/code"
+CODE_DIR="${CODE_DIR:-$RUN_DIR/code}"
+export PYTHONPATH="$RUN_DIR/pyshim:$CODE_DIR"
 export SEEDTTS_SIM_CACHE_DIR=/data/cache/seedtts-sim
 # note (luojiaxuan): one OpenMP pool per core per process oversubscribes the CPUs once several servers share the node.
 export OMP_NUM_THREADS=32
@@ -25,7 +26,7 @@ read -ra MASK_FRAMES <<< "${MASK_FRAMES_LIST:-0 1 2 3 4 6}"
 read -ra MODELS <<< "${MODELS:-Qwen/Qwen3-TTS-12Hz-1.7B-Base Qwen/Qwen3-TTS-12Hz-0.6B-Base}"
 IFS=',' read -ra GPU_UUIDS <<< "$CUDA_VISIBLE_DEVICES"
 mkdir -p "$RUN_DIR/logs" "$RUN_DIR/out"
-cd "$RUN_DIR/code"
+cd "$CODE_DIR"
 
 python -m benchmarks.metrics.speaker_similarity_assets --warm-cache > "$RUN_DIR/logs/assets.log" 2>&1
 
@@ -33,6 +34,18 @@ JOBS=()
 for model in "${MODELS[@]}"; do
   for frames in "${MASK_FRAMES[@]}"; do JOBS+=("$model $frames"); done
 done
+
+wait_gpu_free() {
+  local uuid="$1"
+  for _ in $(seq 1 120); do
+    local used
+    used="$(nvidia-smi --id="$uuid" --query-gpu=memory.used --format=csv,noheader,nounits)"
+    if [ "$used" -lt 2048 ]; then return 0; fi
+    sleep 2
+  done
+  echo "GPU $uuid still holds ${used} MiB" >&2
+  return 1
+}
 
 worker() {
   local slot="$1"
@@ -66,10 +79,12 @@ worker() {
       > "$RUN_DIR/logs/seedtts-generate-$tag.log" 2>&1
     kill "$server"
     wait "$server" || true
+    wait_gpu_free "$CUDA_VISIBLE_DEVICES"
     python -m benchmarks.eval.benchmark_tts_seedtts --model "$model" --port "$port" \
       --transcribe-only --no-ref-text --ref-format references --skip-gpu-cleanup \
       --output-dir "$out/seedtts" > "$RUN_DIR/logs/seedtts-wer-$tag.log" 2>&1
-    python -m benchmarks.eval.benchmark_tts_seedtts --model "$model" \
+    wait_gpu_free "$CUDA_VISIBLE_DEVICES"
+    python "$RUN_DIR/similarity_one_by_one.py" --model "$model" \
       --similarity-only --no-ref-text --ref-format references \
       --output-dir "$out/seedtts" > "$RUN_DIR/logs/seedtts-sim-$tag.log" 2>&1
     python "$RUN_DIR/seedtts_onset.py" "$out/seedtts" > "$out/seedtts_onset.jsonl"
