@@ -258,24 +258,23 @@ COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # note (luojiaxuan): 1 rps is the idle first-chunk path, 20 rps the loaded one;
-# the loaded point is the full EN corpus so its p95 has support, and only there
-# is the p95 gated. Each arm has its own references because a cloned voice
-# encodes the reference audio before the first chunk and a named voice does not.
+# the loaded point is the full EN corpus so its p95 has support. Each arm has
+# its own references because a cloned voice encodes the reference audio before
+# the first chunk and a named voice does not.
 #
-# The references are the worst of five clean runs per arm on an H100 80GB HBM3
-# other than the CI host, with the CI image by digest and the CI dependency
-# hash, each run a fresh single worker pinned to a CI lane cpuset, alternating
-# 2-15,66-79 and 16-31,80-95; every run is listed in #2293. The CI host
-# measured the CustomVoice arm faster (20.2 ms and 34.8 ms medians against
-# 24.4 ms and 37.4 ms here), so on it these gates catch only large regressions.
+# The references are the worst of five runs of this stage per arm on the CI
+# H100 runners (the job re-run as is, other lanes busy as usual); every run is
+# listed in #2293. The Base arm's 20 rps p95 is printed but not gated: on the
+# runners it is bimodal, two of five runs landing 40% to 70% above the other
+# three, while its median moved 17%.
 _TTS_LATENCY_SAMPLES = {1.0: 60, 20.0: 1088}
 _QWEN3_TTS_VC_LATENCY_REFERENCE = {
-    1.0: {"ttfp_median_s": 0.0600},
-    20.0: {"ttfp_median_s": 0.1114, "ttfp_p95_s": 0.1894},
+    1.0: {"ttfp_median_s": 0.0596},
+    20.0: {"ttfp_median_s": 0.1221},
 }
 _QWEN3_TTS_CUSTOM_VOICE_LATENCY_REFERENCE = {
-    1.0: {"ttfp_median_s": 0.0252},
-    20.0: {"ttfp_median_s": 0.0378, "ttfp_p95_s": 0.0541},
+    1.0: {"ttfp_median_s": 0.0223},
+    20.0: {"ttfp_median_s": 0.0353, "ttfp_p95_s": 0.0590},
 }
 
 
