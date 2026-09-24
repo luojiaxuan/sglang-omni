@@ -250,6 +250,7 @@ def create_sglang_tts_engine_executor(
     reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),
+    leading_silence_mask_frames: int = 0,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -260,6 +261,7 @@ def create_sglang_tts_engine_executor(
         reference_encoder_cuda_graph_bucket_frames=(
             reference_encoder_cuda_graph_bucket_frames
         ),
+        leading_silence_mask_frames=leading_silence_mask_frames,
     ).build(
         model_path,
         device=device,

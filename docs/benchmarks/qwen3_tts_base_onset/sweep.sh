@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# note (luojiaxuan): container entry for the mask-length sweep. One worker per granted GPU; worker i
+# serves N=${MASK_FRAMES[i]} for each Base checkpoint in turn, then scores it off the TTS server.
+set -euo pipefail
+RUN_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$VENV_DIR/bin/activate"
+export PYTHONPATH="$RUN_DIR/pyshim:$RUN_DIR/code"
+export SEEDTTS_SIM_CACHE_DIR=/data/cache/seedtts-sim
+read -ra MASK_FRAMES <<< "${MASK_FRAMES_LIST:-0 1 2 3 4 6}"
+read -ra MODELS <<< "${MODELS:-Qwen/Qwen3-TTS-12Hz-1.7B-Base Qwen/Qwen3-TTS-12Hz-0.6B-Base}"
+IFS=',' read -ra GPU_UUIDS <<< "$CUDA_VISIBLE_DEVICES"
+mkdir -p "$RUN_DIR/logs" "$RUN_DIR/out"
+cd "$RUN_DIR/code"
+
+python -m benchmarks.metrics.speaker_similarity_assets --warm-cache > "$RUN_DIR/logs/assets.log" 2>&1
+
+worker() {
+  local slot="$1" frames="$2"
+  local port=$((18800 + 10 * slot))
+  export CUDA_VISIBLE_DEVICES="${GPU_UUIDS[$slot]}"
+  for model in "${MODELS[@]}"; do
+    local tag="${model##*/}-N$frames" out="$RUN_DIR/out/${model##*/}-N$frames"
+    if [ -f "$out/DONE" ]; then continue; fi
+    mkdir -p "$out"
+    local config="examples/configs/qwen3_tts_1_7b.yaml"
+    case "$model" in *0.6B*) config="examples/configs/qwen3_tts_0_6b.yaml" ;; esac
+    python -m sglang_omni.cli serve --model-path "$model" --config "$config" \
+      --host 127.0.0.1 --port "$port" --allowed-local-media-path "$RUN_DIR/refs" \
+      --tts_engine.factory.leading_silence_mask_frames "$frames" \
+      > "$RUN_DIR/logs/server-$tag.log" 2>&1 &
+    local server=$!
+    for _ in $(seq 1 360); do
+      if curl -sf "http://127.0.0.1:$port/health" > /dev/null; then break; fi
+      if ! kill -0 "$server" 2> /dev/null; then echo "server exited: $tag" >&2; return 1; fi
+      sleep 5
+    done
+    curl -sf "http://127.0.0.1:$port/health" > /dev/null
+    python "$RUN_DIR/onset_client.py" --model "$model" --refs "$RUN_DIR/refs/meta.lst" \
+      --out "$out/grid" --base-url "http://127.0.0.1:$port" --modes xvec \
+      > "$RUN_DIR/logs/grid-$tag.log" 2>&1
+    python -m benchmarks.eval.benchmark_tts_seedtts --model "$model" --port "$port" \
+      --use-existing-server --generate-only --no-ref-text --ref-format references \
+      --seed 0 --concurrency 16 --skip-gpu-cleanup --output-dir "$out/seedtts" \
+      > "$RUN_DIR/logs/seedtts-generate-$tag.log" 2>&1
+    kill "$server"
+    wait "$server" || true
+    python -m benchmarks.eval.benchmark_tts_seedtts --model "$model" --port "$port" \
+      --transcribe-only --no-ref-text --ref-format references --skip-gpu-cleanup \
+      --output-dir "$out/seedtts" > "$RUN_DIR/logs/seedtts-wer-$tag.log" 2>&1
+    python -m benchmarks.eval.benchmark_tts_seedtts --model "$model" \
+      --similarity-only --no-ref-text --ref-format references \
+      --output-dir "$out/seedtts" > "$RUN_DIR/logs/seedtts-sim-$tag.log" 2>&1
+    python "$RUN_DIR/seedtts_onset.py" "$out/seedtts" > "$out/seedtts_onset.jsonl"
+    touch "$out/DONE"
+  done
+}
+
+pids=()
+for slot in "${!MASK_FRAMES[@]}"; do
+  worker "$slot" "${MASK_FRAMES[$slot]}" > "$RUN_DIR/logs/worker-$slot.log" 2>&1 &
+  pids+=($!)
+done
+status=0
+for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+if [ "$status" = 0 ]; then touch "$RUN_DIR/out/ALL_DONE"; fi
+exit "$status"
