@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# note (luojiaxuan): container entry for the mask-length sweep. One worker per granted GPU; worker i
-# serves N=${MASK_FRAMES[i]} for each Base checkpoint in turn, then scores it off the TTS server.
+# note (luojiaxuan): container entry for the mask-length sweep. Jobs are (checkpoint, N) pairs dealt
+# round-robin to one worker per granted GPU; each job serves, measures, then scores off the TTS server.
 set -euo pipefail
 RUN_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$VENV_DIR/bin/activate"
@@ -14,11 +14,18 @@ cd "$RUN_DIR/code"
 
 python -m benchmarks.metrics.speaker_similarity_assets --warm-cache > "$RUN_DIR/logs/assets.log" 2>&1
 
+JOBS=()
+for model in "${MODELS[@]}"; do
+  for frames in "${MASK_FRAMES[@]}"; do JOBS+=("$model $frames"); done
+done
+
 worker() {
-  local slot="$1" frames="$2"
+  local slot="$1"
   local port=$((18800 + 10 * slot))
   export CUDA_VISIBLE_DEVICES="${GPU_UUIDS[$slot]}"
-  for model in "${MODELS[@]}"; do
+  for ((job = slot; job < ${#JOBS[@]}; job += ${#GPU_UUIDS[@]})); do
+    local model frames
+    read -r model frames <<< "${JOBS[$job]}"
     local tag="${model##*/}-N$frames" out="$RUN_DIR/out/${model##*/}-N$frames"
     if [ -f "$out/DONE" ]; then continue; fi
     mkdir -p "$out"
@@ -56,8 +63,8 @@ worker() {
 }
 
 pids=()
-for slot in "${!MASK_FRAMES[@]}"; do
-  worker "$slot" "${MASK_FRAMES[$slot]}" > "$RUN_DIR/logs/worker-$slot.log" 2>&1 &
+for slot in "${!GPU_UUIDS[@]}"; do
+  worker "$slot" > "$RUN_DIR/logs/worker-$slot.log" 2>&1 &
   pids+=($!)
 done
 status=0
