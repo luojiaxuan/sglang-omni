@@ -3,7 +3,20 @@
 # round-robin to one worker per granted GPU; each job serves, measures, then scores off the TTS server.
 set -euo pipefail
 RUN_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$VENV_DIR/bin/activate"
+if [ ! -f "$RUN_DIR/venv/.ready" ]; then
+  rm -rf "$RUN_DIR/venv"
+  uv venv --system-site-packages "$RUN_DIR/venv" -p /usr/bin/python3.12
+  echo 'import site; site.addsitedir("/opt/sglang/lib/python3.12/site-packages")' \
+    > "$RUN_DIR/venv/lib/python3.12/site-packages/sglang-image.pth"
+  source "$RUN_DIR/venv/bin/activate"
+  deps="$RUN_DIR/code/.github/scripts/omni_missing_dependencies.py"
+  mapfile -t missing < <(python "$deps" "$RUN_DIR/code/pyproject.toml" | sed "/^$/d")
+  for requirement in "${missing[@]}"; do python -m pip install "$requirement"; done
+  mapfile -t overrides < <(python "$deps" --overrides "$RUN_DIR/code/pyproject.toml" | sed "/^$/d")
+  if [ "${#overrides[@]}" -gt 0 ]; then python -m pip install --no-deps "${overrides[@]}"; fi
+  touch "$RUN_DIR/venv/.ready"
+fi
+source "$RUN_DIR/venv/bin/activate"
 export PYTHONPATH="$RUN_DIR/pyshim:$RUN_DIR/code"
 export SEEDTTS_SIM_CACHE_DIR=/data/cache/seedtts-sim
 read -ra MASK_FRAMES <<< "${MASK_FRAMES_LIST:-0 1 2 3 4 6}"
