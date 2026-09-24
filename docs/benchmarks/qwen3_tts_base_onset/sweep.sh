@@ -19,6 +19,8 @@ fi
 source "$RUN_DIR/venv/bin/activate"
 export PYTHONPATH="$RUN_DIR/pyshim:$RUN_DIR/code"
 export SEEDTTS_SIM_CACHE_DIR=/data/cache/seedtts-sim
+# note (luojiaxuan): one OpenMP pool per core per process oversubscribes the CPUs once several servers share the node.
+export OMP_NUM_THREADS=32
 read -ra MASK_FRAMES <<< "${MASK_FRAMES_LIST:-0 1 2 3 4 6}"
 read -ra MODELS <<< "${MODELS:-Qwen/Qwen3-TTS-12Hz-1.7B-Base Qwen/Qwen3-TTS-12Hz-0.6B-Base}"
 IFS=',' read -ra GPU_UUIDS <<< "$CUDA_VISIBLE_DEVICES"
