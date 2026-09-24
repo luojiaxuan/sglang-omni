@@ -197,7 +197,7 @@ jobs:
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_tts_ci.py -v -s -x --tts-stage tts-stage-latency
+            pytest tests/test_model/test_tts_latency_ci.py -v -s -x
         env:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
