@@ -1073,14 +1073,16 @@ def test_voice_cloning_streaming_wer(
 
 def _worker_admission_cap() -> int:
     """The worker's ``max_running_requests``, which bounds the client's slot cap."""
+    from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+
     match = re.search(
         r"--tts_engine\.engine\.max_running_requests (\d+)", _PRESET.worker_extra_args
     )
-    assert match is not None, (
-        "the latency stage needs the preset to pin "
-        "--tts_engine.engine.max_running_requests"
-    )
-    return int(match.group(1))
+    if match is not None:
+        return int(match.group(1))
+    return Qwen3TTSPipelineConfig.generation_admission_defaults()[
+        "max_running_requests"
+    ]
 
 
 def _assert_open_loop_latency_results(

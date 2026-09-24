@@ -256,9 +256,18 @@ COSYVOICE3_VC_STREAM_THRESHOLDS = apply_slack(
 )
 
 
-QWEN3_TTS_LATENCY = TtsCiLatencyPreset(
-    # note (luojiaxuan): 1 rps is the idle first-chunk path, 20 rps the loaded
-    # one; the loaded point is the full EN corpus so its p95 has support.
+# note (luojiaxuan): 1 rps is the idle first-chunk path, 20 rps the loaded one;
+# the loaded point is the full EN corpus so its p95 has support. Each arm has
+# its own references because a cloned voice encodes the reference audio before
+# the first chunk and a named voice does not.
+QWEN3_TTS_VC_LATENCY = TtsCiLatencyPreset(
+    points=(
+        TtsCiLatencyPoint(request_rate=1.0, samples=60),
+        TtsCiLatencyPoint(request_rate=20.0, samples=1088),
+    ),
+    calibrated=False,
+)
+QWEN3_TTS_CUSTOM_VOICE_LATENCY = TtsCiLatencyPreset(
     points=(
         TtsCiLatencyPoint(request_rate=1.0, samples=60),
         TtsCiLatencyPoint(request_rate=20.0, samples=1088),
@@ -310,7 +319,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
         ),
-        latency=QWEN3_TTS_LATENCY,
+        latency=QWEN3_TTS_VC_LATENCY,
     ),
     "qwen3-tts-custom-voice": TtsCiPreset(
         model=TtsCiModelPreset(
@@ -345,7 +354,7 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             utmos_mean_min=QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN,
             calibrated=False,
         ),
-        latency=QWEN3_TTS_LATENCY,
+        latency=QWEN3_TTS_CUSTOM_VOICE_LATENCY,
     ),
     "moss": TtsCiPreset(
         model=TtsCiModelPreset(
