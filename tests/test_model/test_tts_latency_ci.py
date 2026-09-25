@@ -40,6 +40,10 @@ from tests.test_model.test_tts_ci import (
 )
 from tests.utils import MetricCheckCollector
 
+# note (luojiaxuan): every run offers the same Poisson arrival sequence, so run
+# to run spread comes from the server and not from a different offered load.
+_ARRIVAL_SEED = 0
+
 
 @pytest.fixture(scope="module")
 def dataset_repo() -> str:
@@ -115,9 +119,14 @@ def _assert_open_loop_latency_results(
 
 def _print_latency_point(summary: dict, *, label: str) -> None:
     keys = (
+        "audio_ttfp_from_arrival_median_s",
+        "audio_ttfp_from_arrival_p95_s",
+        "audio_ttfp_from_arrival_p99_s",
         "audio_ttfp_median_s",
         "audio_ttfp_p95_s",
-        "audio_ttfp_p99_s",
+        "dispatch_lateness_p50_s",
+        "dispatch_lateness_p99_s",
+        "dispatch_lateness_max_s",
         "first_audio_payload_bytes_mean",
         "audio_chunks_mean",
         "max_playback_underrun_p95_s",
@@ -164,6 +173,7 @@ def test_streaming_first_audio_latency(
                 max_samples=point.samples,
                 stream=True,
                 request_rate=point.request_rate,
+                arrival_seed=_ARRIVAL_SEED,
             )
         except Exception:
             print_router_diagnostics(single_worker_router_server)
@@ -182,18 +192,25 @@ def test_streaming_first_audio_latency(
         )
         if latency.calibrated:
             summary = results["summary"]
-            median = summary["audio_ttfp_median_s"]
+            median = summary["audio_ttfp_from_arrival_median_s"]
             checks.check(
                 median <= point.ttfp_median_max_s,
-                f"{label}: first playable median {median} s exceeds "
+                f"{label}: first playable median from arrival {median} s exceeds "
                 f"{point.ttfp_median_max_s} s",
             )
             if point.ttfp_p95_max_s is not None:
-                p95 = summary["audio_ttfp_p95_s"]
+                p95 = summary["audio_ttfp_from_arrival_p95_s"]
                 checks.check(
                     p95 <= point.ttfp_p95_max_s,
-                    f"{label}: first playable p95 {p95} s exceeds "
+                    f"{label}: first playable p95 from arrival {p95} s exceeds "
                     f"{point.ttfp_p95_max_s} s",
+                )
+            if point.c50_min_pct is not None:
+                c50 = summary["c50"]
+                checks.check(
+                    c50 >= point.c50_min_pct,
+                    f"{label}: {c50}% of streams stayed within a 50 ms underrun, "
+                    f"below {point.c50_min_pct}%",
                 )
     checks.assert_all()
 

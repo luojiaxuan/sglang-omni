@@ -159,6 +159,7 @@ def _run_benchmark(
     warmup: int = 1,
     stream: bool = False,
     request_rate: float = float("inf"),
+    arrival_seed: int | None = None,
 ) -> dict:
     benchmark_config = TtsSeedttsBenchmarkConfig(
         model=TTS_MODEL_PATH,
@@ -170,6 +171,7 @@ def _run_benchmark(
         warmup=warmup,
         stream=stream,
         request_rate=request_rate,
+        arrival_seed=arrival_seed,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
         voice=_PRESET.voice,
