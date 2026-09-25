@@ -10,7 +10,7 @@ import torch
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
 
-def _runner(
+def make_runner(
     *,
     vocab_size: int,
     codec_eos_token_id: int,
@@ -29,7 +29,7 @@ def _runner(
     return runner
 
 
-def _scheduled_request(
+def make_scheduled_request(
     *, mask_leading_silence: bool, generated_frames: int
 ) -> types.SimpleNamespace:
     return types.SimpleNamespace(
@@ -44,7 +44,7 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
     configured_vocab = 3072
     codec_eos = 2150
     materialized_vocab = 6144
-    runner = _runner(
+    runner = make_runner(
         vocab_size=configured_vocab,
         codec_eos_token_id=codec_eos,
     )
@@ -64,7 +64,7 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
 
 
 def test_qwen3_tts_suppression_skips_empty_request_batch() -> None:
-    runner = _runner(vocab_size=3072, codec_eos_token_id=2150)
+    runner = make_runner(vocab_size=3072, codec_eos_token_id=2150)
     logits = torch.randn(1, 6144)
     original = logits.clone()
 
@@ -80,17 +80,17 @@ def test_qwen3_tts_masks_silence_ids_only_in_opening_frames_of_flagged_requests(
 ):
     configured_vocab = 3072
     silence_ids = (5, 7, 11)
-    runner = _runner(
+    runner = make_runner(
         vocab_size=configured_vocab,
         codec_eos_token_id=2150,
         leading_silence_mask_frames=2,
         silence_codec_ids=silence_ids,
     )
     requests = [
-        _scheduled_request(mask_leading_silence=True, generated_frames=0),
-        _scheduled_request(mask_leading_silence=True, generated_frames=1),
-        _scheduled_request(mask_leading_silence=True, generated_frames=2),
-        _scheduled_request(mask_leading_silence=False, generated_frames=0),
+        make_scheduled_request(mask_leading_silence=True, generated_frames=0),
+        make_scheduled_request(mask_leading_silence=True, generated_frames=1),
+        make_scheduled_request(mask_leading_silence=True, generated_frames=2),
+        make_scheduled_request(mask_leading_silence=False, generated_frames=0),
     ]
     logits = torch.randn(len(requests), 6144)
     original = logits.clone()
