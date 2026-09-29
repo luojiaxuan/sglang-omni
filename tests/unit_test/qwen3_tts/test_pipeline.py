@@ -2346,11 +2346,15 @@ class FakeQwen3TTSSpeechTokenizer:
 
 
 class FakeIncrementalQwen3TTSDecoder:
+    CONV_LOOKBACK_FRAMES = 8
+
     def __init__(self, decoder, *, fail_on_call: int | None = None) -> None:
         self.decoder = decoder
         self.fail_on_call = fail_on_call
         self.decode_inputs: list[torch.Tensor] = []
         self.decode_positions: list[list[int]] = []
+        self.context_inputs: list[torch.Tensor] = []
+        self.context_positions: list[list[int]] = []
 
     def state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
         return Qwen3TTSIncrementalCodecStateSpec(
@@ -2360,6 +2364,7 @@ class FakeIncrementalQwen3TTSDecoder:
             num_key_value_heads=1,
             head_dim=1,
             retained_context=2,
+            conv_lookback_frames=self.CONV_LOOKBACK_FRAMES,
         )
 
     def init_state(
@@ -2378,6 +2383,15 @@ class FakeIncrementalQwen3TTSDecoder:
         state.transformer_keys[0] = torch.zeros(shape, device=device, dtype=dtype)
         state.transformer_values[0] = torch.zeros(shape, device=device, dtype=dtype)
         return state
+
+    def advance_context(
+        self,
+        codes: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+    ) -> None:
+        self.context_inputs.append(codes.detach().clone())
+        self.context_positions.append(state.frame_positions.tolist())
+        state.advance(int(codes.shape[-1]))
 
     def decode(
         self,
@@ -2675,6 +2689,39 @@ def test_qwen3_tts_reference_bootstraps_replay_windows_across_requests(
     assert long.emitted_generated_frames == 1
     assert short.emitted_generated_frames == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 0
+
+
+def test_qwen3_tts_reference_head_only_advances_the_codec_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental, runner = windowed_scheduler(monkeypatch, widths=(1, 8))
+    lookback = FakeIncrementalQwen3TTSDecoder.CONV_LOOKBACK_FRAMES
+    ref_frames = lookback + 3
+    codes = torch.stack(
+        (
+            torch.arange(1, ref_frames + 2) * 10,
+            torch.arange(1, ref_frames + 2),
+        ),
+        dim=1,
+    )
+    state = admit_reference_stream(scheduler, "request", codes, ref_code_len=ref_frames)
+
+    scheduler.run_initial_batch([("request", state)])
+
+    assert [item[0, 0].tolist() for item in incremental.context_inputs] == [
+        [10, 20, 30]
+    ]
+    assert incremental.context_positions == [[0]]
+    assert runner.calls == [
+        ((1, 2, 8), [state.codec_slot]),
+        ((1, 2, 1), [state.codec_slot]),
+    ]
+    assert incremental.decode_positions == [[3], [11]]
+    assert incremental.decode_inputs[0][0, 0].tolist() == list(range(40, 120, 10))
+    assert chunk_samples(scheduler.outbox.get_nowait()) == [120.0] * 4
+    assert state.codec_frame_position == ref_frames + 1
+    positions = scheduler.codec_arena.storage.frame_positions
+    assert int(positions[state.codec_slot]) == ref_frames + 1
 
 
 def test_qwen3_tts_window_remainder_carries_the_emitted_frame(

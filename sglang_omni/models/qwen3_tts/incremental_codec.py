@@ -18,6 +18,10 @@ class Qwen3TTSIncrementalCodecStateSpec:
     length)`` triples in the order ``Qwen3TTSIncrementalDecoder.decode``
     visits them. Zero-length entries are kept so every consumer sees the same
     key set regardless of kernel size.
+
+    ``conv_lookback_frames`` is how far back, in codec frames, the conv stack
+    after the transformer reads: every output sample and every buffer it
+    leaves behind depends on at most this many earlier frames of its input.
     """
 
     conv_histories: tuple[tuple[str, int, int], ...]
@@ -26,6 +30,7 @@ class Qwen3TTSIncrementalCodecStateSpec:
     num_key_value_heads: int
     head_dim: int
     retained_context: int
+    conv_lookback_frames: int
 
     def bytes_per_stream(self, dtype: torch.dtype) -> int:
         itemsize = torch.empty((), dtype=dtype).element_size()
@@ -529,14 +534,32 @@ class Qwen3TTSIncrementalDecoder:
         decoder = self.decoder
         conv: list[tuple[str, int, int]] = []
         transconv: list[tuple[str, int, int]] = []
+        # note (luojiaxuan): the conv stack's lookback, summed layer by layer in
+        # output samples so the sum is exact: a layer reading `n` of its input
+        # samples back at `rate` samples per frame reads n * total_upsample /
+        # rate output samples back. The pre_conv runs before the transformer
+        # and is not part of the stack.
+        lookback_samples = 0
+        rate = 1
 
         def add_conv(module: Any, key: str) -> None:
+            nonlocal lookback_samples
             conv.append((key, int(module.conv.in_channels), int(module.padding)))
+            if key != "pre_conv":
+                lookback_samples += int(module.padding) * self.total_upsample // rate
+            else:
+                pass
 
         def add_transconv(module: Any, key: str) -> None:
+            nonlocal lookback_samples, rate
+            stride = int(module.conv.stride[0])
             transconv.append(
                 (key, int(module.conv.out_channels), int(module.right_pad))
             )
+            lookback_samples += (
+                -(-int(module.right_pad) // stride) * self.total_upsample // rate
+            )
+            rate *= stride
 
         add_conv(decoder.pre_conv, "pre_conv")
         for stage_index, blocks in enumerate(decoder.upsample):
@@ -550,6 +573,13 @@ class Qwen3TTSIncrementalDecoder:
                 add_conv(residual.conv1, f"{key}.conv1")
                 add_conv(residual.conv2, f"{key}.conv2")
         add_conv(decoder.decoder[-1], "decoder.final")
+        if rate != self.total_upsample:
+            raise TypeError(
+                "unsupported Qwen3-TTS decoder layout; the conv stack upsamples "
+                f"by {rate}, not total_upsample {self.total_upsample}"
+            )
+        else:
+            pass
 
         transformer = decoder.pre_transformer
         attention = transformer.layers[0].self_attn
@@ -569,6 +599,7 @@ class Qwen3TTSIncrementalDecoder:
             num_key_value_heads=key_features // head_dim,
             head_dim=head_dim,
             retained_context=max(0, int(transformer.window_size) - 1),
+            conv_lookback_frames=-(-lookback_samples // self.total_upsample),
         )
 
     def init_state(
@@ -666,6 +697,37 @@ class Qwen3TTSIncrementalDecoder:
         )
         state.advance(fresh_frames)
         return waveform
+
+    def advance_context(
+        self,
+        codes: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+    ) -> None:
+        """Advance pre_conv and the transformer over codes without synthesizing them.
+
+        The conv stack is left untouched. On a zeroed state, advancing over the
+        head of a prefix and then ``decode``-ing its last
+        ``state_spec().conv_lookback_frames`` frames leaves the same state, and
+        the same audio from there on, as decoding the whole prefix: the conv
+        stack cannot see further back than that, while the transformer, which
+        can, has seen every frame. Only the audio of those last frames differs,
+        so a caller that discards the prefix audio skips the conv stack over
+        the rest of it.
+        """
+        hidden_states = self.decoder.quantizer.decode(codes)
+        hidden_states = incremental_causal_conv1d(
+            self.decoder.pre_conv,
+            hidden_states,
+            state,
+            "pre_conv",
+        ).transpose(1, 2)
+        incremental_transformer(self.decoder.pre_transformer, hidden_states, state)
+        fresh_frames = int(codes.shape[-1])
+        state.transformer_context_length = min(
+            self.state_spec().retained_context,
+            state.transformer_context_length + fresh_frames,
+        )
+        state.advance(fresh_frames)
 
     def decode_tensors(
         self,

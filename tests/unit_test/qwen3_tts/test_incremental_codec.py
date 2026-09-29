@@ -415,6 +415,62 @@ def test_incremental_decoder_reference_prefix_matches_generated_waveform() -> No
     assert actual.shape[-1] == (9 - reference_frames) * decoder.total_upsample
 
 
+def test_incremental_decoder_conv_lookback_covers_the_conv_stack() -> None:
+    incremental = Qwen3TTSIncrementalDecoder(Decoder())
+
+    # note (luojiaxuan): output samples each layer reads back, at 4 per frame:
+    # ConvNeXt dwconv 6 at 2 per frame, decoder.0 6 at 2 per frame, the block's
+    # transconv one input sample at 2 per frame, the residual units 6 + 18 + 54
+    # and the final conv 6 at 4 per frame. 110 samples round up to 28 frames.
+    assert incremental.state_spec().conv_lookback_frames == 28
+
+
+def decode_after_context(
+    incremental: Qwen3TTSIncrementalDecoder,
+    codes: torch.Tensor,
+    reference_frames: int,
+    tail: int,
+) -> tuple[torch.Tensor, Qwen3TTSIncrementalCodecState]:
+    """Advance over all but `tail` reference frames, then decode the rest."""
+    state = Qwen3TTSIncrementalCodecState()
+    head = reference_frames - tail
+    incremental.advance_context(codes[..., :head], state)
+    first = incremental.decode(codes[..., head : reference_frames + 1], state)
+    rest = incremental.decode(codes[..., reference_frames + 1 :], state)
+    total_upsample = incremental.total_upsample
+    return torch.cat((first[..., tail * total_upsample :], rest), dim=-1), state
+
+
+def test_incremental_decoder_context_head_matches_the_whole_reference() -> None:
+    torch.manual_seed(6)
+    decoder = Decoder()
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    lookback = incremental.state_spec().conv_lookback_frames
+    reference_frames = lookback + 12
+    codes = torch.randint(0, 16, (1, 2, reference_frames + 7))
+    expected = decoder(codes)[..., reference_frames * decoder.total_upsample :]
+    whole_state = Qwen3TTSIncrementalCodecState()
+    incremental.decode(codes, whole_state)
+
+    actual, state = decode_after_context(incremental, codes, reference_frames, lookback)
+
+    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+    assert state.frame_position == whole_state.frame_position
+    for name in (
+        "conv_histories",
+        "transconv_overlaps",
+        "transformer_keys",
+        "transformer_values",
+    ):
+        for key, value in getattr(whole_state, name).items():
+            torch.testing.assert_close(
+                getattr(state, name)[key], value, rtol=2e-5, atol=2e-6
+            )
+
+    short, _ = decode_after_context(incremental, codes, reference_frames, lookback // 2)
+    assert not torch.allclose(short, expected, rtol=2e-5, atol=2e-6)
+
+
 def test_incremental_decoder_rejects_malformed_codes() -> None:
     decoder = Decoder()
     incremental = Qwen3TTSIncrementalDecoder(decoder)

@@ -140,6 +140,10 @@ class IncrementalDecodePlan:
     ``generated_frames`` and ``emitted_generated_frames`` keep the meaning they
     have on ``_Qwen3TTSDecodePlan``, so the shared commit path reads them the
     same way for both plan kinds.
+
+    ``context_codes`` is the head of a starting stream's reference that the
+    slot advances over through ``advance_context`` before ``decoder_input``
+    is decoded; its audio would only have been trimmed.
     """
 
     decoder_input: torch.Tensor
@@ -149,6 +153,11 @@ class IncrementalDecodePlan:
     generated_frames: int
     emitted_generated_frames: int
     chunks: tuple[torch.Tensor, ...] = ()
+    context_codes: torch.Tensor | None = None
+
+    @property
+    def context_frames(self) -> int:
+        return 0 if self.context_codes is None else int(self.context_codes.shape[-1])
 
 
 @dataclass(eq=False)
@@ -1387,21 +1396,27 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
         self.wait_codes_ready(state)
         codes = torch.cat(state.code_chunks, dim=0)
-        decoder_input = (
-            codes[
-                consumed_frames - state.pruned_frames : end_frame - state.pruned_frames
-            ]
-            .transpose(0, 1)
-            .unsqueeze(0)
-        )
-        bad_rows = self.screen_out_of_range_codes(decoder_input)
-        raise_for_bad_rows(bad_rows, 1)
         incremental_decoder = self.incremental_decoder
         if incremental_decoder is None:
             raise RuntimeError("Qwen3-TTS incremental codec decoder is unavailable")
         else:
             pass
+        start_frame = self.incremental_start_frame(state, consumed_frames)
+        decoder_input = (
+            codes[start_frame - state.pruned_frames : end_frame - state.pruned_frames]
+            .transpose(0, 1)
+            .unsqueeze(0)
+        )
+        bad_rows = self.screen_out_of_range_codes(decoder_input)
+        raise_for_bad_rows(bad_rows, 1)
         with torch.inference_mode():
+            if start_frame > consumed_frames:
+                incremental_decoder.advance_context(
+                    codes[:start_frame].transpose(0, 1).unsqueeze(0).to(self.device),
+                    candidate_state,
+                )
+            else:
+                pass
             waveform = incremental_decoder.decode(
                 decoder_input.to(self.device), candidate_state
             )
@@ -1412,7 +1427,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         waveform = self.split_batch_waveform(waveform, 1)[0]
-        reference_frames = max(0, state.ref_frames - consumed_frames)
+        reference_frames = max(0, state.ref_frames - start_frame)
         trim_samples = reference_frames * self.samples_per_frame
         emit_frames = available_generated_frames - state.emitted_generated_frames
         emit_samples = emit_frames * self.samples_per_frame
@@ -1432,7 +1447,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             decoder_input=decoder_input,
             absolute_emitted_frames=expected_consumed_frames,
             generated_frames=available_generated_frames,
-            window_start=consumed_frames,
+            window_start=start_frame,
             emitted_generated_frames=state.emitted_generated_frames,
         )
         return (plan, candidate_state, delta)
@@ -1513,14 +1528,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         end_frame = state.ref_frames + generated_frames
         self.wait_codes_ready(state)
         codes = torch.cat(state.code_chunks, dim=0)
+        start_frame = self.incremental_start_frame(state, consumed_frames)
         decoder_input = (
-            codes[
-                consumed_frames - state.pruned_frames : end_frame - state.pruned_frames
-            ]
+            codes[start_frame - state.pruned_frames : end_frame - state.pruned_frames]
             .transpose(0, 1)
             .unsqueeze(0)
         )
-        fresh_frames = end_frame - consumed_frames
+        fresh_frames = end_frame - start_frame
         if fresh_frames <= 0 or int(decoder_input.shape[-1]) != fresh_frames:
             raise RuntimeError(
                 f"Qwen3-TTS incremental codec planned {fresh_frames} fresh frames but sliced {int(decoder_input.shape[-1])}"
@@ -1532,11 +1546,35 @@ class Qwen3TTSStreamingVocoderScheduler(
             decoder_input=decoder_input,
             slot=state.codec_slot,
             fresh_frames=fresh_frames,
-            reference_trim_frames=max(0, state.ref_frames - consumed_frames),
+            reference_trim_frames=max(0, state.ref_frames - start_frame),
             generated_frames=generated_frames,
             emitted_generated_frames=state.emitted_generated_frames,
             chunks=tuple(state.code_chunks),
+            context_codes=(
+                codes[:start_frame].transpose(0, 1).unsqueeze(0)
+                if start_frame > consumed_frames
+                else None
+            ),
         )
+
+    def incremental_start_frame(
+        self, state: Qwen3TTSStreamState, consumed_frames: int
+    ) -> int:
+        """Frame the next full decode starts from; earlier frames are context only.
+
+        A starting stream's reference audio is trimmed, and the conv stack
+        after the codec transformer cannot see further back than
+        ``conv_lookback_frames``. So all but that many reference frames only
+        advance the transformer, which leaves the slot and every generated
+        sample as decoding the whole reference would.
+        """
+        if consumed_frames:
+            return consumed_frames
+        else:
+            pass
+        decoder = self.incremental_decoder
+        assert decoder is not None
+        return max(0, state.ref_frames - decoder.state_spec().conv_lookback_frames)
 
     def extract_incremental_delta(
         self, plan: IncrementalDecodePlan, waveform: torch.Tensor
@@ -1767,6 +1805,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         Returns each row's new samples and the waveform they view, which the
         caller keeps alive until they are copied out.
         """
+        self.advance_incremental_context(plans, incremental)
         width = plans[0].fresh_frames
         runner = self.runner_for_stream(
             stream, self.initial_incremental_decode_graphs, "incremental_graphs"
@@ -1804,6 +1843,29 @@ class Qwen3TTSStreamingVocoderScheduler(
             ],
             waveform,
         )
+
+    def advance_incremental_context(
+        self, plans: list[IncrementalDecodePlan], incremental: IncrementalDecodeBatch
+    ) -> None:
+        """Advance each starting stream's slot over its context codes.
+
+        Runs on the cohort's stream ahead of the decode that reads the slots.
+        The slot index is filled on the device rather than staged through the
+        arena's pinned ring, which one cohort could otherwise wrap.
+        """
+        for plan in plans:
+            if plan.context_codes is None:
+                continue
+            else:
+                pass
+            index = torch.full(
+                (1,), plan.slot, dtype=torch.long, device=incremental.arena.device
+            )
+            state = incremental.arena.gather_by_index(index)
+            incremental.decoder.advance_context(
+                plan.context_codes.to(device=incremental.arena.device), state
+            )
+            incremental.arena.scatter_by_index(index, state)
 
     def decode_incremental_windows(
         self,
@@ -2136,7 +2198,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
             else:
                 pass
-            state.codec_frame_position += plan.fresh_frames
+            state.codec_frame_position += plan.context_frames + plan.fresh_frames
             self.prune_codes_before(state, state.codec_frame_position)
         else:
             pass
