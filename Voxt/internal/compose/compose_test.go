@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -94,10 +95,31 @@ func TestGoldenTranscribe(t *testing.T) {
 	}
 }
 
-func TestCleanupDoesNotChangeSystem(t *testing.T) {
+// note (luojiaxuan): Transcribe sends the clean-up rules as a layer before
+// Form or Structure; Translate and Rewrite keep Cleanup in the example turn.
+func TestCleanupLayer(t *testing.T) {
+	for _, set := range []string{English, Chinese} {
+		for _, structure := range []bool{false, true} {
+			off, err := Build(Input{Task: Transcribe, Structure: structure, MainLanguage: set, Text: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			on, err := Build(Input{Task: Transcribe, Cleanup: true, Structure: structure, MainLanguage: set, Text: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rules := strings.TrimSpace(Render(template(set, "cleanup"), Variables(Input{MainLanguage: set}, set), map[string]string{"FOR_TRANSCRIBE": "1"}))
+			form := off.Layers[2]
+			if form != "form" && form != "structure" || strings.Contains(off.System, rules) {
+				t.Fatalf("%s structure=%v: cleanup off has layers %v", set, structure, off.Layers)
+			}
+			want := slices.Insert(slices.Clone(off.Layers), 2, "cleanup")
+			if !slices.Equal(on.Layers, want) || strings.Replace(on.System, rules+"\n\n", "", 1) != off.System {
+				t.Errorf("%s structure=%v: cleanup on has layers %v and system\n%s", set, structure, on.Layers, on.System)
+			}
+		}
+	}
 	cases := []Input{
-		{Task: Transcribe, Cleanup: false, MainLanguage: "en", Text: "x"},
-		{Task: Transcribe, Cleanup: true, MainLanguage: "en", Text: "x"},
 		{Task: Translate, Cleanup: false, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Translate, Cleanup: true, MainLanguage: "en", TargetLanguage: "zh-Hans", Text: "x"},
 		{Task: Rewrite, Cleanup: false, MainLanguage: "en", Instruction: "shorter", Text: "hi"},
@@ -141,10 +163,10 @@ func TestLayersAndProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
 		t.Errorf("layers %q", got)
 	}
-	if out.Profile() != "transcribe:structure" {
+	if out.Profile() != "transcribe:cleanup+structure" {
 		t.Errorf("profile %q", out.Profile())
 	}
 	out, _ = Build(Input{Task: Transcribe, MainLanguage: "en", Text: "x"})

@@ -286,6 +286,12 @@ func Build(in Input) (Output, error) {
 	switch in.Task {
 	case Transcribe:
 		add("input", render("input-speech", nil))
+		// note (luojiaxuan): the example turn alone leaves fillers and
+		// self-corrections to small models; with the rules in the system
+		// prompt they score 8 to 11 points higher (docs/eval.md, AASR-Bench).
+		if in.Cleanup {
+			add("cleanup", render("cleanup", nil))
+		}
 		if in.Structure {
 			add("structure", render("structure", nil))
 		} else {
