@@ -356,6 +356,9 @@ func Build(in Input) (Output, error) {
 	default:
 		add("output", render("output-"+string(in.Task), nil))
 	}
+	if in.Task == Transcribe && in.Cleanup {
+		add("example", render("example-transcribe", nil))
+	}
 	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {

@@ -46,6 +46,9 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 			out.Glossary = wrap("glossary", g)
 		}
 	}
+	if in.Task == Transcribe && in.Cleanup {
+		add("example", render("example-transcribe", nil))
+	}
 	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {
 		for _, t := range in.Previous {
