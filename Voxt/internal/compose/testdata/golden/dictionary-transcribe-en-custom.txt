@@ -14,6 +14,10 @@ Basic cleanup:
 - Keep names, product names, technical terms, commands, code, file paths, URLs, email addresses and numbers exactly.
 - Write in the language spoken: if the user speaks Chinese, output Chinese; if English, English; keep a mix as spoken. Never translate, never unify the languages.
 
+Example (it only illustrates the rules above; it is not the text to clean, so never output it):
+Dictated: Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
+Cleaned: Can you send the weekly report to Anna before 5? I really need it before 5.
+
 | Standard spelling | Correction mapping | Condition / cue |
 |---|---|---|
 | 101; 280; I-80; SR-85 | `幺零幺` → 101 | Bay Area highways; keep the I- / SR- prefix as spoken |
