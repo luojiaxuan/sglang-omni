@@ -162,6 +162,27 @@ The faults without the example were the self-corrections kept and "uh" left in. 
 - It costs about 80–160 ms more of the first token: the example is about 60 more prompt tokens.
 - compose's golden prompts show the turn (`internal/compose/testdata/golden`).
 
+### Transcribe on AASR-Bench, 917 clips (11-19)
+
+From 2.0.3 (#3699, FB3) to 2.1.1, Transcribe's system prompt had no clean-up rules: the model saw them only through the example turn. This compares that prompt with the rules put back, with one more rule for spelling clarifications, and with the same rules but no example turn, on a larger public set.
+
+- **Set**: AASR-Bench (`Andrew0425/AASR-Bench`, revision `802577d`), 917 dictations (510 Chinese, 407 English) in 11 scenes, scored by 6,637 rubric questions on content kept, fillers removed, format, and self-corrections and rewording. Its `explanation` scene (47 Chinese clips) spells out words as it goes, the way 立早章 names 章.
+- **Setup**: one Qwen3-ASR-1.7B transcript per clip, the same for every row. The requests and the final text come from compose itself (`BuildParts`, `CleanOutput`, `JoinParts`, built at the commit under test) with Transcribe's defaults: Cleanup on, Structure off, the clip's language as the main language. Qwen3-4B-Instruct-2507 and Qwen3-30B-A3B-Instruct-2507 on vLLM with their own sampling defaults (Voxt sends none); GPT through the ChatGPT (Codex) language model at low reasoning. Judge: Gemma-4-31B-IT with the benchmark's scoring code, one verdict per question. Scores out of 100.
+
+| model | 2.1.1: example only | + rules | **+ rules with the clarification rule** | the same, no example |
+|---|---|---|---|---|
+| Qwen3-4B | 61.5 | 72.3 | **73.6** | 67.5 |
+| Qwen3-30B-A3B | 63.1 | 71.0 | **72.1** | 64.9 |
+| GPT | 79.6 | 79.2 | **81.7** | 81.5 |
+
+Paired differences over the same 917 clips, with 95% bootstrap intervals (10,000 resamples of the clips):
+
+- **Rules with the clarification rule against 2.1.1**: Qwen3-4B +12.2 (+11.1 to +13.3), Qwen3-30B-A3B +9.1 (+8.1 to +10.1), GPT +2.1 (+1.1 to +3.1). The small models gain on fillers (+32 and +19), self-corrections (+24 and +17) and format (+11 and +12); content kept falls by 2.5 and 0.9.
+- **The clarification rule alone**: +1.4, +1.1 and +2.5 overall; on the `explanation` scene +11.5, +6.1 and +46.4 (GPT 42.7 → 89.1). With the rules and no such rule, GPT kept the spelling-out in the text more often than with no rules at all (57.1). The two prompts differ only in that line.
+- **No example turn**: Qwen3-4B −6.1 (−7.2 to −5.1), Qwen3-30B-A3B −7.2 (−8.3 to −6.2), GPT −0.1 (−0.7 to +0.4). The small models lose on fillers and self-corrections; Qwen3-30B-A3B also returned an empty answer for two dictated requests to optimise a Python loop.
+
+**Decision: Transcribe sends the clean-up rules as a layer before Form or Structure, with the example turn, to every language model.** The gain follows the model's size, not where it runs, and with the clarification rule the remote model gains too. Translate and Rewrite are unchanged and were not measured here.
+
 ### Long dictation (two clips, 95–104 s; M3b, TestEvalLong)
 
 The two long clips by their words: `long-zh` (441 characters, Chinese with English words) and `long-all` (742 characters, whole sentences alternating between English and Chinese, starting in English). M3 found that `llm.balanced` translated all of `long-all` into English. M3b measured where that starts, and how to cut the text so that it does not.
